@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import '../app_icons.dart';
 import 'package:provider/provider.dart';
@@ -5,18 +7,30 @@ import '../app_state.dart';
 import '../player.dart';
 import '../theme.dart';
 import '../widgets/mini_player.dart';
+import 'desktop_shell.dart';
 import 'home_screen.dart';
 import 'songs_screen.dart';
 import 'artists_screen.dart';
 import 'playlists_screen.dart';
 
-class RootScreen extends StatefulWidget {
+bool get _isDesktop => !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+
+class RootScreen extends StatelessWidget {
   const RootScreen({super.key});
   @override
-  State<RootScreen> createState() => _RootScreenState();
+  Widget build(BuildContext context) {
+    // Desktop gets the web-style sidebar layout; mobile keeps the bottom nav.
+    return _isDesktop ? const DesktopShell() : const _MobileRoot();
+  }
 }
 
-class _RootScreenState extends State<RootScreen> {
+class _MobileRoot extends StatefulWidget {
+  const _MobileRoot();
+  @override
+  State<_MobileRoot> createState() => _RootScreenState();
+}
+
+class _RootScreenState extends State<_MobileRoot> {
   int _index = 0;
   static const _titles = ["Home", "Songs", "Artists", "Playlists"];
 

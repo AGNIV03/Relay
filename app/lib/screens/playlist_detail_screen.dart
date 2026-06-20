@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../api.dart';
+import '../app_icons.dart';
+import '../downloads.dart';
 import '../models.dart';
 import '../player.dart';
 import '../theme.dart';
@@ -40,14 +42,42 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                   textAlign: TextAlign.center, style: TextStyle(color: kMuted)),
             );
           }
+          final downloads = context.watch<DownloadManager>();
+          final allDown = downloads.allDownloaded(tracks);
+          final downCount = downloads.downloadedCount(tracks);
           return Column(
             children: [
               Padding(
                 padding: const EdgeInsets.all(8),
-                child: FilledButton.icon(
-                  icon: const Icon(Icons.play_arrow),
-                  label: const Text('Play'),
-                  onPressed: () => context.read<PlayerModel>().playQueue(tracks),
+                child: Row(
+                  children: [
+                    FilledButton.icon(
+                      icon: const Icon(Icons.play_arrow),
+                      label: const Text('Play'),
+                      onPressed: () => context.read<PlayerModel>().playQueue(tracks),
+                    ),
+                    const SizedBox(width: 10),
+                    if (downloads.supported)
+                      OutlinedButton.icon(
+                        icon: Icon(
+                          allDown ? LucideIcons.checkCircle : LucideIcons.download,
+                          size: 18,
+                          color: allDown ? kAccent : null,
+                        ),
+                        label: Text(allDown
+                            ? 'Downloaded'
+                            : downCount > 0
+                                ? 'Download ($downCount/${tracks.length})'
+                                : 'Download'),
+                        onPressed: () async {
+                          if (allDown) {
+                            await downloads.removeAll(tracks);
+                          } else {
+                            await downloads.downloadAll(tracks);
+                          }
+                        },
+                      ),
+                  ],
                 ),
               ),
               Expanded(

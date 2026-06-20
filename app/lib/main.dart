@@ -20,21 +20,18 @@ bool get _isDesktop => !kIsWeb && (Platform.isWindows || Platform.isLinux || Pla
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Desktop: close button hides the window to the system tray (keeps playback
-  // alive) instead of quitting; the app is actually closed from the tray menu.
-  if (_isDesktop) {
-    await windowManager.ensureInitialized();
-    await windowManager.setPreventClose(true);
-    await _CloseToTray.instance.setup();
-  }
-
-  final api = Api(baseUrl: '');
-  final downloads = DownloadManager(api);
-
-  // Audio backend init must never block/crash startup.
+  // Initialize the audio backend FIRST — before window_manager and before any
+  // AudioPlayer is constructed. On desktop this registers the media_kit
+  // (libmpv) platform implementation for just_audio; if it doesn't run first,
+  // just_audio binds to a platform with no desktop support and nothing plays.
   try {
     if (_isDesktop) {
-      JustAudioMediaKit.ensureInitialized();
+      JustAudioMediaKit.ensureInitialized(
+        windows: true,
+        linux: true,
+        macOS: true,
+      );
+      debugPrint('audio backend: media_kit initialized (desktop)');
     } else {
       await JustAudioBackground.init(
         androidNotificationChannelId: 'site.agniv.stream.audio',
@@ -45,6 +42,17 @@ Future<void> main() async {
   } catch (e, st) {
     debugPrint('audio backend init failed (continuing): $e\n$st');
   }
+
+  // Desktop: close button hides the window to the system tray (keeps playback
+  // alive) instead of quitting; the app is actually closed from the tray menu.
+  if (_isDesktop) {
+    await windowManager.ensureInitialized();
+    await windowManager.setPreventClose(true);
+    await _CloseToTray.instance.setup();
+  }
+
+  final api = Api(baseUrl: '');
+  final downloads = DownloadManager(api);
 
   try {
     await downloads.init();

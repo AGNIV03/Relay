@@ -48,6 +48,11 @@ class PlayerModel extends ChangeNotifier {
       }
       notifyListeners();
     });
+    // Surface playback errors (codec/network/auth) instead of silently failing.
+    _player.playbackEventStream.listen(
+      (_) {},
+      onError: (Object e, StackTrace st) => debugPrint('player playback error: $e'),
+    );
     // Stall watchdog: if we're "playing" but the position hasn't advanced and
     // we're not legitimately buffering, the stream likely dropped — reload it.
     _watchdog = Timer.periodic(const Duration(seconds: 4), (_) => _checkStall());
@@ -106,18 +111,47 @@ class PlayerModel extends ChangeNotifier {
     }
   }
 
-  Future<void> next() => _player.seekToNext();
+  // Manual next/previous wrap around the ends so a playlist always loops.
+  Future<void> next() async {
+    if (_player.hasNext) {
+      await _player.seekToNext();
+    } else {
+      await _player.seek(Duration.zero, index: 0); // wrap to first
+    }
+  }
+
   Future<void> previous() async {
     if (_player.position.inSeconds > 3) {
       await _player.seek(Duration.zero);
-    } else {
+    } else if (_player.hasPrevious) {
       await _player.seekToPrevious();
+    } else {
+      final last = _queue.isEmpty ? 0 : _queue.length - 1;
+      await _player.seek(Duration.zero, index: last); // wrap to last
     }
   }
 
   Future<void> seek(Duration d) => _player.seek(d);
   Future<void> setVolume(double v) => _player.setVolume(v);
   double get volume => _player.volume;
+
+  // ---- Repeat (off / all / one) + shuffle ----
+  LoopMode get loopMode => _player.loopMode;
+  bool get shuffleEnabled => _player.shuffleModeEnabled;
+
+  Future<void> cycleRepeat() async {
+    const order = [LoopMode.off, LoopMode.all, LoopMode.one];
+    final next = order[(order.indexOf(_player.loopMode) + 1) % order.length];
+    await _player.setLoopMode(next);
+    notifyListeners();
+  }
+
+  Future<void> toggleShuffle() async {
+    final enable = !_player.shuffleModeEnabled;
+    if (enable) await _player.shuffle(); // generate a fresh shuffle order
+    await _player.setShuffleModeEnabled(enable);
+    notifyListeners();
+  }
 
   // ---- Lyrics ----
   Future<void> _loadLyrics() async {

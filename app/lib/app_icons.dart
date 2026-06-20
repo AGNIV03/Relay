@@ -31,5 +31,10 @@ class LucideIcons {
   static const IconData user = Symbols.person;
   static const IconData moreVertical = Symbols.more_vert;
   static const IconData check = Symbols.check;
+  static const IconData checkCircle = Symbols.check_circle;
   static const IconData listPlus = Symbols.playlist_add;
+  static const IconData heart = Symbols.favorite; // use Icon(..., fill: 1) when liked
+  static const IconData shuffle = Symbols.shuffle;
+  static const IconData repeat = Symbols.repeat;
+  static const IconData repeatOne = Symbols.repeat_one;
 }

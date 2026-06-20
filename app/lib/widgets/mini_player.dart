@@ -5,6 +5,7 @@ import '../api.dart';
 import '../player.dart';
 import '../theme.dart';
 import 'cover.dart';
+import 'like_button.dart';
 import '../screens/now_playing_screen.dart';
 
 /// Floating "bubble" player pinned just above the bottom nav on every page.
@@ -59,6 +60,7 @@ class MiniPlayer extends StatelessWidget {
                         ],
                       ),
                     ),
+                    LikeButton(trackId: track.id, size: 20),
                     IconButton(
                       visualDensity: VisualDensity.compact,
                       icon: const Icon(LucideIcons.skipBack, size: 20),

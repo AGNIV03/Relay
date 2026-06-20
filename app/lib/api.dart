@@ -165,6 +165,14 @@ class Api {
   Future<Lyrics> lyrics(String trackId) async =>
       Lyrics.fromJson(await _get('/api/library/tracks/$trackId/lyrics'));
 
+  // ---- Likes / Liked Songs ----
+  Future<List<String>> likedIds() async =>
+      (await _get('/api/library/liked/ids') as List).cast<String>();
+  Future<Playlist> liked() async => Playlist.fromJson(await _get('/api/library/liked'));
+  Future<void> like(String trackId) =>
+      _send('POST', '/api/library/like', body: {'trackId': trackId});
+  Future<void> unlike(String trackId) => _send('DELETE', '/api/library/like/$trackId');
+
   // ---- Playlists ----
   Future<List<Playlist>> playlists() async =>
       (await _get('/api/playlists') as List).map((e) => Playlist.fromJson(e)).toList();

@@ -67,6 +67,26 @@ class DownloadManager extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ---- Whole-playlist download toggle ----
+  bool allDownloaded(List<Track> tracks) =>
+      tracks.isNotEmpty && tracks.every((t) => _downloaded.contains(t.id));
+  int downloadedCount(List<Track> tracks) =>
+      tracks.where((t) => _downloaded.contains(t.id)).length;
+
+  /// Download every track in a playlist (skips ones already local).
+  Future<void> downloadAll(List<Track> tracks) async {
+    for (final t in tracks) {
+      await download(t);
+    }
+  }
+
+  /// Delete every downloaded file for a playlist's tracks.
+  Future<void> removeAll(List<Track> tracks) async {
+    for (final t in tracks) {
+      await remove(t.id);
+    }
+  }
+
   Future<void> _save() async {
     final p = await SharedPreferences.getInstance();
     await p.setStringList(_kKey, _downloaded.toList());

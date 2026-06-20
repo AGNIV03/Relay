@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:just_audio/just_audio.dart';
 import '../app_icons.dart';
 import 'package:provider/provider.dart';
 import '../api.dart';
 import '../player.dart';
 import '../theme.dart';
 import '../widgets/cover.dart';
+import '../widgets/like_button.dart';
+import '../widgets/squiggly_progress.dart';
 
 class NowPlayingScreen extends StatefulWidget {
   const NowPlayingScreen({super.key});
@@ -51,19 +54,44 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(24, 0, 24, 28),
                   child: Column(children: [
-                    Text(track.title,
-                        textAlign: TextAlign.center,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 21, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 4),
-                    Text(track.artistName, style: const TextStyle(color: kMuted, fontSize: 15)),
-                    const SizedBox(height: 18),
-                    _ProgressBar(player: player, fmt: _fmt),
-                    const SizedBox(height: 8),
+                    Row(children: [
+                      Expanded(
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Text(track.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 21, fontWeight: FontWeight.bold)),
+                          const SizedBox(height: 4),
+                          Text(track.artistName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(color: kMuted, fontSize: 15)),
+                        ]),
+                      ),
+                      LikeButton(trackId: track.id, size: 26),
+                    ]),
+                    const SizedBox(height: 14),
+                    SquigglyProgress(
+                      position: player.position,
+                      duration: player.duration,
+                      playing: player.playing,
+                      onSeek: player.seek,
+                    ),
+                    Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                      Text(_fmt(player.position), style: const TextStyle(color: kMuted, fontSize: 12)),
+                      Text(_fmt(player.duration), style: const TextStyle(color: kMuted, fontSize: 12)),
+                    ]),
+                    const SizedBox(height: 10),
                     Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                      IconButton(
+                        iconSize: 24,
+                        icon: Icon(LucideIcons.shuffle,
+                            color: player.shuffleEnabled ? kAccent : kMuted),
+                        onPressed: player.toggleShuffle,
+                      ),
+                      const SizedBox(width: 8),
                       IconButton(iconSize: 34, icon: const Icon(LucideIcons.skipBack), onPressed: player.previous),
-                      const SizedBox(width: 14),
+                      const SizedBox(width: 12),
                       GestureDetector(
                         onTap: player.toggle,
                         child: Container(
@@ -74,45 +102,23 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                               size: 28, color: kAccentInk),
                         ),
                       ),
-                      const SizedBox(width: 14),
+                      const SizedBox(width: 12),
                       IconButton(iconSize: 34, icon: const Icon(LucideIcons.skipForward), onPressed: player.next),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        iconSize: 24,
+                        icon: Icon(
+                          player.loopMode == LoopMode.one ? LucideIcons.repeatOne : LucideIcons.repeat,
+                          color: player.loopMode == LoopMode.off ? kMuted : kAccent,
+                        ),
+                        onPressed: player.cycleRepeat,
+                      ),
                     ]),
                   ]),
                 ),
               ],
             ),
     );
-  }
-}
-
-class _ProgressBar extends StatelessWidget {
-  final PlayerModel player;
-  final String Function(Duration) fmt;
-  const _ProgressBar({required this.player, required this.fmt});
-  @override
-  Widget build(BuildContext context) {
-    final max = player.duration.inMilliseconds.toDouble();
-    final value = player.position.inMilliseconds.toDouble().clamp(0.0, max == 0 ? 1.0 : max);
-    return Column(children: [
-      SliderTheme(
-        data: SliderTheme.of(context).copyWith(
-          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-          overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-        ),
-        child: Slider(
-          value: value,
-          max: max == 0 ? 1.0 : max,
-          onChanged: (v) => player.seek(Duration(milliseconds: v.toInt())),
-        ),
-      ),
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8),
-        child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          Text(fmt(player.position), style: const TextStyle(color: kMuted, fontSize: 12)),
-          Text(fmt(player.duration), style: const TextStyle(color: kMuted, fontSize: 12)),
-        ]),
-      ),
-    ]);
   }
 }
 

@@ -7,6 +7,7 @@ import '../models.dart';
 import '../player.dart';
 import '../theme.dart';
 import 'cover.dart';
+import 'like_button.dart';
 
 /// A single track row. Tapping plays [tracks] starting at [index].
 class TrackTile extends StatelessWidget {
@@ -45,10 +46,11 @@ class TrackTile extends StatelessWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          LikeButton(trackId: track.id, size: 18),
           if (downloads.isDownloading(track.id))
             const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
           else if (downloads.isDownloaded(track.id))
-            const Icon(LucideIcons.check, size: 17, color: kAccent),
+            const Icon(LucideIcons.checkCircle, size: 17, color: kAccent),
           _menu(context, track, downloads),
         ],
       ),
