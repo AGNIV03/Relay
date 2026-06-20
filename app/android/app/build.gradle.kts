@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "site.agniv.stream"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 36 // file_picker's flutter_plugin_android_lifecycle requires >= 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
