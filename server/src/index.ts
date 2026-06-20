@@ -8,7 +8,6 @@ import libraryRoutes from "./routes/library.js";
 import streamRoutes from "./routes/stream.js";
 import searchRoutes from "./routes/search.js";
 import playlistRoutes from "./routes/playlists.js";
-import favoriteRoutes from "./routes/favorites.js";
 import adminRoutes from "./routes/admin.js";
 
 const app = express();
@@ -23,7 +22,6 @@ app.use("/api/library", libraryRoutes);
 app.use("/api/stream", streamRoutes);
 app.use("/api/search", searchRoutes);
 app.use("/api/playlists", playlistRoutes);
-app.use("/api/favorites", favoriteRoutes);
 app.use("/api/admin", adminRoutes);
 
 // Fallback error handler

@@ -33,7 +33,7 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
     volumes:
-      - ${MUSIC_DIR}:/music:ro # your audio library (read-only)
+      - ${MUSIC_DIR}:/music # your audio library (writable — in-app uploads land here)
       - appdata:/data # extracted cover art, etc.
     ports:
       - "4000:4000"

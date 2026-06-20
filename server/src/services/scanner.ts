@@ -3,6 +3,7 @@ import path from "node:path";
 import { parseFile } from "music-metadata";
 import { prisma } from "../lib/prisma.js";
 import { env } from "../lib/env.js";
+import { fetchLyrics } from "./lyrics.service.js";
 
 const AUDIO_EXT = new Set([".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".wma"]);
 
@@ -70,14 +71,31 @@ async function saveCover(albumId: string, picture: { format: string; data: Uint8
   return rel;
 }
 
-async function processFile(file: string, result: ScanResult) {
+/** Look up + persist lyrics for a track. Best-effort; never throws. */
+export async function fetchAndStoreLyrics(trackId: string): Promise<void> {
+  const t = await prisma.track.findUnique({
+    where: { id: trackId },
+    include: { artist: true, album: true },
+  });
+  if (!t) return;
+  const r = await fetchLyrics(t.artist?.name ?? "", t.title, t.album?.title, t.duration);
+  await prisma.track.update({
+    where: { id: trackId },
+    data: { lyricsPlain: r.plain, lyricsSynced: r.synced, lyricsChecked: r.checked },
+  });
+}
+
+/**
+ * Parse a single audio file and upsert it (artist/album/cover/track). Returns
+ * the track id and whether it was newly created. Shared by full scans and uploads.
+ */
+export async function ingestFile(
+  file: string,
+): Promise<{ trackId: string; created: boolean } | null> {
   const stat = await fs.stat(file);
   const existing = await prisma.track.findUnique({ where: { path: file } });
-
-  // Skip unchanged files (same size) on rescans for speed.
   if (existing && existing.size === stat.size) {
-    result.scanned++;
-    return;
+    return { trackId: existing.id, created: false }; // unchanged
   }
 
   const meta = await parseFile(file, { duration: true });
@@ -88,7 +106,6 @@ async function processFile(file: string, result: ScanResult) {
   const artistId = await findOrCreateArtist(artistName);
   const albumId = await findOrCreateAlbum(common.album || "Unknown Album", artistId, common.year);
 
-  // Cover art: store once per album if we don't have one yet.
   const album = await prisma.album.findUnique({ where: { id: albumId } });
   if (album && !album.coverPath && common.picture?.[0]) {
     const rel = await saveCover(albumId, common.picture[0]);
@@ -110,12 +127,23 @@ async function processFile(file: string, result: ScanResult) {
 
   if (existing) {
     await prisma.track.update({ where: { id: existing.id }, data });
-    result.updated++;
-  } else {
-    await prisma.track.create({ data: { ...data, path: file } });
-    result.added++;
+    return { trackId: existing.id, created: false };
   }
+  const created = await prisma.track.create({ data: { ...data, path: file } });
+  return { trackId: created.id, created: true };
+}
+
+async function processFile(file: string, result: ScanResult) {
+  const r = await ingestFile(file);
+  if (!r) return;
   result.scanned++;
+  if (r.created) {
+    result.added++;
+    // Fetch lyrics for new tracks (best-effort, don't block on failure).
+    await fetchAndStoreLyrics(r.trackId).catch(() => {});
+  } else {
+    result.updated++;
+  }
 }
 
 /** Remove DB tracks whose files no longer exist on disk. */
@@ -129,7 +157,6 @@ async function pruneMissing(result: ScanResult) {
       result.removed++;
     }
   }
-  // Clean up albums/artists with no remaining tracks.
   await prisma.album.deleteMany({ where: { tracks: { none: {} } } });
   await prisma.artist.deleteMany({ where: { tracks: { none: {} }, albums: { none: {} } } });
 }
@@ -148,6 +175,13 @@ export async function runScan(): Promise<ScanResult> {
       }
     }
     await pruneMissing(result);
+    // Backfill lyrics for any tracks not yet checked (e.g. earlier failures).
+    const pending = await prisma.track.findMany({
+      where: { lyricsChecked: false },
+      select: { id: true },
+      take: 200,
+    });
+    for (const t of pending) await fetchAndStoreLyrics(t.id).catch(() => {});
     lastResult = result;
     console.log("[scan] complete:", result);
     return result;
