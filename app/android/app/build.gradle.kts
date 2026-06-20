@@ -26,9 +26,13 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+            // R8/resource-shrinking strips resources only referenced by string at
+            // runtime (e.g. audio_service's notification control drawables), which
+            // breaks the media-session/lock-screen controls. Disable it.
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 }
