@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output
+dist/
+.next/
+build/
+
+# Env / secrets
+.env
+.env.local
+*.local
+
+# Local toolchain (Flutter SDK, JDK, Android SDK/NDK, VS Build Tools, installers).
+# All downloaded/installed locally and far too large for GitHub — never commit.
+tools/
+
+# Flutter app build artifacts
+app/build/
+app/.dart_tool/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/.gradle/
+app/android/.gradle/
+
+# Music + data (never commit your library or DB)
+music/
+data/
+uploads/
+*.sqlite
+*.db
+
+# Logs / OS
+*.log
+.DS_Store
+Thumbs.db

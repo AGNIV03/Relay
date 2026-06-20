@@ -1,0 +1,11 @@
+**/node_modules
+**/dist
+**/.next
+tools/
+music/
+data/
+.env
+.git
+*.log
+app/build
+app/.dart_tool

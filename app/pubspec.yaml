@@ -1,0 +1,40 @@
+name: stream_app
+description: "Self-hosted music streaming client (Windows / Android / web)."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # Networking
+  http: ^1.2.2
+
+  # Audio playback + background controls (Android / iOS / macOS / web)
+  just_audio: ^0.9.42
+  just_audio_background: ^0.0.1-beta.13
+  # Windows/Linux desktop audio backend for just_audio. NOTE: this also pulls a
+  # large Android NDK + libmpv binaries into Android builds it never uses, so for
+  # a lean *mobile-only* APK you can comment these two out (and the desktop init
+  # in main.dart). They are required for the Windows .exe to play audio.
+  just_audio_media_kit: ^2.0.6
+  media_kit_libs_audio: ^1.0.5
+
+  # State management
+  provider: ^6.1.2
+
+  # Local persistence + downloads
+  shared_preferences: ^2.3.3
+  path_provider: ^2.1.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

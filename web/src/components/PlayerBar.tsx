@@ -1,0 +1,91 @@
+"use client";
+
+import { useState } from "react";
+import { usePlayer } from "@/context/PlayerContext";
+import { fmtTime } from "@/lib/format";
+
+export function PlayerBar() {
+  const p = usePlayer();
+  const [imgError, setImgError] = useState(false);
+
+  if (!p.current) {
+    return (
+      <div className="flex h-20 shrink-0 items-center justify-center border-t border-[var(--border)] bg-[var(--panel)] text-sm text-[var(--muted)]">
+        Pick a track to start playing
+      </div>
+    );
+  }
+
+  const t = p.current;
+
+  return (
+    <div className="flex h-20 shrink-0 items-center gap-4 border-t border-[var(--border)] bg-[var(--panel)] px-4">
+      {/* Now playing */}
+      <div className="flex w-1/4 min-w-0 items-center gap-3">
+        <div className="h-12 w-12 shrink-0 overflow-hidden rounded bg-[var(--panel-2)]">
+          {!imgError ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={p.coverFor(t)}
+              alt=""
+              className="h-full w-full object-cover"
+              onError={() => setImgError(true)}
+            />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center text-lg">♪</div>
+          )}
+        </div>
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium">{t.title}</div>
+          <div className="truncate text-xs text-[var(--muted)]">{t.artist?.name}</div>
+        </div>
+      </div>
+
+      {/* Controls + seek */}
+      <div className="flex flex-1 flex-col items-center gap-1">
+        <div className="flex items-center gap-5">
+          <button onClick={p.prev} className="text-[var(--muted)] hover:text-white" title="Previous">
+            ⏮
+          </button>
+          <button
+            onClick={p.toggle}
+            className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-black hover:scale-105"
+            title="Play / pause"
+          >
+            {p.playing ? "⏸" : "▶"}
+          </button>
+          <button onClick={p.next} className="text-[var(--muted)] hover:text-white" title="Next">
+            ⏭
+          </button>
+        </div>
+        <div className="flex w-full max-w-xl items-center gap-2 text-xs text-[var(--muted)]">
+          <span className="w-10 text-right tabular-nums">{fmtTime(p.position)}</span>
+          <input
+            type="range"
+            min={0}
+            max={p.duration || 0}
+            step={0.1}
+            value={p.position}
+            onChange={(e) => p.seek(Number(e.target.value))}
+            className="flex-1"
+          />
+          <span className="w-10 tabular-nums">{fmtTime(p.duration)}</span>
+        </div>
+      </div>
+
+      {/* Volume */}
+      <div className="flex w-1/4 items-center justify-end gap-2">
+        <span className="text-[var(--muted)]">🔊</span>
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.01}
+          value={p.volume}
+          onChange={(e) => p.setVolume(Number(e.target.value))}
+          className="w-24"
+        />
+      </div>
+    </div>
+  );
+}

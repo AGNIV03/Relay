@@ -1,0 +1,185 @@
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'models.dart';
+
+/// Thin API client for the Stream server. Holds the base URL + tokens,
+/// refreshes the access token transparently on 401.
+class Api {
+  String baseUrl;
+  String? _access;
+  String? _refresh;
+
+  Api({this.baseUrl = ''});
+
+  static const _kBase = 'server_url';
+  static const _kAccess = 'access_token';
+  static const _kRefresh = 'refresh_token';
+
+  bool get isLoggedIn => _access != null;
+  String? get accessToken => _access;
+
+  Future<void> load() async {
+    final p = await SharedPreferences.getInstance();
+    baseUrl = p.getString(_kBase) ?? baseUrl;
+    _access = p.getString(_kAccess);
+    _refresh = p.getString(_kRefresh);
+  }
+
+  Future<void> _persist() async {
+    final p = await SharedPreferences.getInstance();
+    await p.setString(_kBase, baseUrl);
+    if (_access != null) await p.setString(_kAccess, _access!);
+    if (_refresh != null) await p.setString(_kRefresh, _refresh!);
+  }
+
+  Future<void> clearTokens() async {
+    _access = null;
+    _refresh = null;
+    final p = await SharedPreferences.getInstance();
+    await p.remove(_kAccess);
+    await p.remove(_kRefresh);
+  }
+
+  Uri _uri(String path) => Uri.parse('$baseUrl$path');
+
+  Map<String, String> get _headers => {
+        'Content-Type': 'application/json',
+        if (_access != null) 'Authorization': 'Bearer $_access',
+      };
+
+  // ---- Auth ----
+  Future<AppUser> login(String url, String username, String password) async {
+    baseUrl = url.replaceAll(RegExp(r'/$'), '');
+    final res = await http.post(
+      _uri('/api/auth/login'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'username': username, 'password': password}),
+    );
+    if (res.statusCode != 200) {
+      throw ApiException(_errorMessage(res));
+    }
+    final body = jsonDecode(res.body);
+    _access = body['accessToken'];
+    _refresh = body['refreshToken'];
+    await _persist();
+    return AppUser.fromJson(body['user']);
+  }
+
+  Future<bool> _tryRefresh() async {
+    if (_refresh == null) return false;
+    final res = await http.post(
+      _uri('/api/auth/refresh'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'refreshToken': _refresh}),
+    );
+    if (res.statusCode != 200) return false;
+    final body = jsonDecode(res.body);
+    _access = body['accessToken'];
+    _refresh = body['refreshToken'];
+    await _persist();
+    return true;
+  }
+
+  Future<AppUser?> me() async {
+    try {
+      final body = await _get('/api/auth/me');
+      return AppUser.fromJson(body);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // ---- Generic request helpers (with one refresh retry) ----
+  Future<dynamic> _get(String path, {bool retry = true}) async {
+    final res = await http.get(_uri(path), headers: _headers);
+    if (res.statusCode == 401 && retry && await _tryRefresh()) {
+      return _get(path, retry: false);
+    }
+    if (res.statusCode >= 400) throw ApiException(_errorMessage(res));
+    return res.body.isEmpty ? null : jsonDecode(res.body);
+  }
+
+  Future<dynamic> _send(String method, String path, {Object? body, bool retry = true}) async {
+    final req = http.Request(method, _uri(path));
+    req.headers.addAll(_headers);
+    if (body != null) req.body = jsonEncode(body);
+    final streamed = await http.Client().send(req);
+    final res = await http.Response.fromStream(streamed);
+    if (res.statusCode == 401 && retry && await _tryRefresh()) {
+      return _send(method, path, body: body, retry: false);
+    }
+    if (res.statusCode >= 400) throw ApiException(_errorMessage(res));
+    return res.body.isEmpty ? null : jsonDecode(res.body);
+  }
+
+  String _errorMessage(http.Response res) {
+    try {
+      return jsonDecode(res.body)['error'] ?? 'Error ${res.statusCode}';
+    } catch (_) {
+      return 'Error ${res.statusCode}';
+    }
+  }
+
+  // ---- Library ----
+  Future<List<Album>> recentAlbums() async =>
+      (await _get('/api/library/albums?recent=1') as List).map((e) => Album.fromJson(e)).toList();
+
+  Future<List<Album>> albums() async =>
+      (await _get('/api/library/albums') as List).map((e) => Album.fromJson(e)).toList();
+
+  Future<Album> album(String id) async => Album.fromJson(await _get('/api/library/albums/$id'));
+
+  Future<List<Artist>> artists() async =>
+      (await _get('/api/library/artists') as List).map((e) => Artist.fromJson(e)).toList();
+
+  Future<Artist> artist(String id) async => Artist.fromJson(await _get('/api/library/artists/$id'));
+
+  Future<List<Album>> artistAlbums(String id) async {
+    final j = await _get('/api/library/artists/$id');
+    return (j['albums'] as List?)?.map((e) => Album.fromJson(e)).toList() ?? [];
+  }
+
+  // ---- Search ----
+  Future<Map<String, dynamic>> search(String q) async {
+    final j = await _get('/api/search?q=${Uri.encodeQueryComponent(q)}');
+    return {
+      'tracks': (j['tracks'] as List).map((e) => Track.fromJson(e)).toList(),
+      'albums': (j['albums'] as List).map((e) => Album.fromJson(e)).toList(),
+      'artists': (j['artists'] as List).map((e) => Artist.fromJson(e)).toList(),
+    };
+  }
+
+  // ---- Favorites ----
+  Future<List<Track>> favorites() async =>
+      (await _get('/api/favorites') as List).map((e) => Track.fromJson(e)).toList();
+  Future<void> addFavorite(String trackId) => _send('PUT', '/api/favorites/$trackId');
+  Future<void> removeFavorite(String trackId) => _send('DELETE', '/api/favorites/$trackId');
+  Future<void> scrobble(String trackId) =>
+      _send('POST', '/api/favorites/scrobble', body: {'trackId': trackId});
+
+  // ---- Playlists ----
+  Future<List<Playlist>> playlists() async =>
+      (await _get('/api/playlists') as List).map((e) => Playlist.fromJson(e)).toList();
+  Future<Playlist> playlist(String id) async => Playlist.fromJson(await _get('/api/playlists/$id'));
+  Future<void> createPlaylist(String name) =>
+      _send('POST', '/api/playlists', body: {'name': name});
+  Future<void> deletePlaylist(String id) => _send('DELETE', '/api/playlists/$id');
+  Future<void> addToPlaylist(String playlistId, String trackId) =>
+      _send('POST', '/api/playlists/$playlistId/tracks', body: {'trackId': trackId});
+  Future<void> removeFromPlaylist(String playlistId, String trackId) =>
+      _send('DELETE', '/api/playlists/$playlistId/tracks/$trackId');
+
+  // ---- Media URLs (token in query so the audio engine can authenticate) ----
+  String streamUrl(String trackId) => '$baseUrl/api/stream/$trackId?token=$_access';
+  String albumCoverUrl(String albumId) =>
+      '$baseUrl/api/stream/album/$albumId/cover?token=$_access';
+  String trackCoverUrl(String trackId) => '$baseUrl/api/stream/$trackId/cover?token=$_access';
+}
+
+class ApiException implements Exception {
+  final String message;
+  ApiException(this.message);
+  @override
+  String toString() => message;
+}
