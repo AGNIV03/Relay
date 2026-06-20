@@ -318,7 +318,7 @@ class _DesktopPlayerBar extends StatelessWidget {
                     IconButton(
                       tooltip: 'Lyrics',
                       iconSize: 19,
-                      icon: const Icon(LucideIcons.mic2, color: kMuted),
+                      icon: const Icon(LucideIcons.lyrics, color: kMuted),
                       onPressed: () => Navigator.of(context).push(MaterialPageRoute(
                         builder: (_) => const NowPlayingScreen(showLyrics: true),
                       )),

@@ -33,7 +33,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
         actions: [
           IconButton(
             tooltip: "Lyrics",
-            icon: Icon(LucideIcons.mic2, size: 20, color: _showLyrics ? kAccent : kMuted),
+            icon: Icon(LucideIcons.lyrics, size: 20, color: _showLyrics ? kAccent : kMuted),
             onPressed: () => setState(() => _showLyrics = !_showLyrics),
           ),
         ],
