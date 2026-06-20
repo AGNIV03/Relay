@@ -32,6 +32,9 @@ class _DesktopShellState extends State<DesktopShell> {
   int _index = 0;
   final List<GlobalKey<NavigatorState>> _navKeys =
       List.generate(4, (_) => GlobalKey<NavigatorState>());
+  // The open lyrics route per tab, so the lyrics button toggles instead of
+  // stacking duplicate lyrics pages.
+  final List<Route<dynamic>?> _lyricsRoutes = List.filled(4, null);
 
   @override
   void initState() {
@@ -45,6 +48,25 @@ class _DesktopShellState extends State<DesktopShell> {
   /// bar stay visible).
   void _openInTab(Widget page) {
     _navKeys[_index].currentState?.push(MaterialPageRoute(builder: (_) => page));
+  }
+
+  /// Toggle the lyrics page in the active tab: open it if closed, close it if
+  /// it's currently showing (so the note button doesn't stack duplicates).
+  void _toggleLyrics() {
+    final i = _index;
+    final nav = _navKeys[i].currentState;
+    if (nav == null) return;
+    final open = _lyricsRoutes[i];
+    if (open != null && open.isCurrent) {
+      nav.pop();
+      _lyricsRoutes[i] = null;
+    } else {
+      final route = MaterialPageRoute<void>(builder: (_) => const LyricsScreen());
+      _lyricsRoutes[i] = route;
+      nav.push(route).then((_) {
+        if (_lyricsRoutes[i] == route) _lyricsRoutes[i] = null;
+      });
+    }
   }
 
   @override
@@ -71,7 +93,7 @@ class _DesktopShellState extends State<DesktopShell> {
         ],
       ),
       bottomNavigationBar: _DesktopPlayerBar(
-        onOpenLyrics: () => _openInTab(const LyricsScreen()),
+        onOpenLyrics: _toggleLyrics,
       ),
     );
   }
