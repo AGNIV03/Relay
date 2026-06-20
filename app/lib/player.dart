@@ -132,7 +132,10 @@ class PlayerModel extends ChangeNotifier {
   }
 
   Future<void> seek(Duration d) => _player.seek(d);
-  Future<void> setVolume(double v) => _player.setVolume(v);
+  Future<void> setVolume(double v) async {
+    await _player.setVolume(v);
+    notifyListeners(); // update the slider immediately, even while paused
+  }
   double get volume => _player.volume;
 
   // ---- Repeat (off / all / one) + shuffle ----
