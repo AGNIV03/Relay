@@ -9,9 +9,14 @@ import {
   Volume2,
   Music,
   Mic2,
+  Shuffle,
+  Repeat,
+  Repeat1,
 } from "lucide-react";
 import { usePlayer } from "@/context/PlayerContext";
 import { fmtTime } from "@/lib/format";
+import { LikeButton } from "./LikeButton";
+import { SquigglyProgress } from "./SquigglyProgress";
 
 export function PlayerBar({
   onToggleLyrics,
@@ -56,11 +61,21 @@ export function PlayerBar({
           <div className="truncate text-sm font-medium">{t.title}</div>
           <div className="truncate text-xs text-[var(--muted)]">{t.artist?.name}</div>
         </div>
+        <LikeButton trackId={t.id} size={16} />
       </div>
 
       {/* Controls + seek */}
       <div className="flex flex-1 flex-col items-center gap-1">
         <div className="flex items-center gap-5">
+          <button
+            onClick={p.toggleShuffle}
+            title="Shuffle"
+            className={`transition hover:text-white ${
+              p.shuffle ? "text-[var(--accent)]" : "text-[var(--muted)]"
+            }`}
+          >
+            <Shuffle size={17} />
+          </button>
           <button onClick={p.prev} className="text-[var(--muted)] transition hover:text-white" title="Previous">
             <SkipBack size={20} />
           </button>
@@ -74,17 +89,23 @@ export function PlayerBar({
           <button onClick={p.next} className="text-[var(--muted)] transition hover:text-white" title="Next">
             <SkipForward size={20} />
           </button>
+          <button
+            onClick={p.toggleRepeat}
+            title={p.repeat === "one" ? "Repeat one" : p.repeat === "all" ? "Repeat all" : "Repeat"}
+            className={`transition hover:text-white ${
+              p.repeat !== "off" ? "text-[var(--accent)]" : "text-[var(--muted)]"
+            }`}
+          >
+            {p.repeat === "one" ? <Repeat1 size={17} /> : <Repeat size={17} />}
+          </button>
         </div>
-        <div className="flex w-full max-w-xl items-center gap-2 text-xs text-[var(--muted)]">
+        <div className="flex w-full max-w-md items-center gap-2 text-xs text-[var(--muted)]">
           <span className="w-10 text-right tabular-nums">{fmtTime(p.position)}</span>
-          <input
-            type="range"
-            min={0}
-            max={p.duration || 0}
-            step={0.1}
-            value={p.position}
-            onChange={(e) => p.seek(Number(e.target.value))}
-            className="flex-1"
+          <SquigglyProgress
+            position={p.position}
+            duration={p.duration}
+            playing={p.playing}
+            onSeek={p.seek}
           />
           <span className="w-10 tabular-nums">{fmtTime(p.duration)}</span>
         </div>

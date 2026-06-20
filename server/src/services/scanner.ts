@@ -91,6 +91,7 @@ export async function fetchAndStoreLyrics(trackId: string): Promise<void> {
  */
 export async function ingestFile(
   file: string,
+  uploaderId?: string,
 ): Promise<{ trackId: string; created: boolean } | null> {
   const stat = await fs.stat(file);
   const existing = await prisma.track.findUnique({ where: { path: file } });
@@ -129,7 +130,9 @@ export async function ingestFile(
     await prisma.track.update({ where: { id: existing.id }, data });
     return { trackId: existing.id, created: false };
   }
-  const created = await prisma.track.create({ data: { ...data, path: file } });
+  const created = await prisma.track.create({
+    data: { ...data, path: file, uploaderId: uploaderId ?? null },
+  });
   return { trackId: created.id, created: true };
 }
 

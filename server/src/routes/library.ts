@@ -1,11 +1,44 @@
 import { Router } from "express";
 import { z } from "zod";
+import multer from "multer";
+import path from "node:path";
+import fs from "node:fs";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
-import { fetchAndStoreLyrics } from "../services/scanner.js";
+import { fetchAndStoreLyrics, ingestFile } from "../services/scanner.js";
+import { env } from "../lib/env.js";
 
 const router = Router();
 router.use(requireAuth);
+
+const AUDIO_EXT = new Set([".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".wma", ".aiff", ".alac"]);
+
+// Uploads are written verbatim to the music library — NO transcoding, so original
+// quality (incl. lossless) is preserved byte-for-byte. Any signed-in user may
+// upload; the track becomes visible to everyone (this is a sharing app).
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    const dir = path.join(env.musicPath, "uploads");
+    fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (_req, file, cb) => {
+    const base = path.basename(file.originalname).replace(/[\\/:*?"<>|]/g, "_");
+    let name = base;
+    let i = 1;
+    while (fs.existsSync(path.join(env.musicPath, "uploads", name))) {
+      const ext = path.extname(base);
+      name = `${path.basename(base, ext)} (${i++})${ext}`;
+    }
+    cb(null, name);
+  },
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 2 * 1024 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) =>
+    cb(null, AUDIO_EXT.has(path.extname(file.originalname).toLowerCase())),
+});
 
 /** GET /api/library/artists */
 router.get("/artists", async (_req, res) => {
@@ -191,6 +224,88 @@ router.get("/tracks/:id/lyrics", async (req, res) => {
     track = await prisma.track.findUnique({ where: { id: req.params.id } });
   }
   res.json({ synced: track?.lyricsSynced ?? null, plain: track?.lyricsPlain ?? null });
+});
+
+// ---- Likes / "Liked Songs" ------------------------------------------------
+
+/** GET /api/library/liked — the user's liked tracks (newest first), playlist-shaped */
+router.get("/liked", async (req, res) => {
+  const favs = await prisma.favorite.findMany({
+    where: { userId: req.user!.id },
+    orderBy: { createdAt: "desc" },
+    include: { track: { include: { artist: true, album: true } } },
+  });
+  res.json({
+    id: "liked",
+    name: "Liked Songs",
+    system: true,
+    tracks: favs.map((f, i) => ({ id: f.id, position: i, addedAt: f.createdAt, track: f.track })),
+  });
+});
+
+/** GET /api/library/liked/ids — set of liked track ids, for cheap client-side state */
+router.get("/liked/ids", async (req, res) => {
+  const favs = await prisma.favorite.findMany({
+    where: { userId: req.user!.id },
+    select: { trackId: true },
+  });
+  res.json(favs.map((f) => f.trackId));
+});
+
+/** POST /api/library/like { trackId } — like a track (idempotent) */
+router.post("/like", async (req, res) => {
+  const parsed = z.object({ trackId: z.string() }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid input" });
+  await prisma.favorite
+    .upsert({
+      where: { userId_trackId: { userId: req.user!.id, trackId: parsed.data.trackId } },
+      create: { userId: req.user!.id, trackId: parsed.data.trackId },
+      update: {},
+    })
+    .catch(() => {});
+  res.status(204).end();
+});
+
+/** DELETE /api/library/like/:trackId — unlike a track */
+router.delete("/like/:trackId", async (req, res) => {
+  await prisma.favorite.deleteMany({
+    where: { userId: req.user!.id, trackId: req.params.trackId },
+  });
+  res.status(204).end();
+});
+
+// ---- Uploads (any signed-in user) -----------------------------------------
+
+/** POST /api/library/upload (multipart "files") — add audio; uploader auto-likes it */
+router.post("/upload", upload.array("files", 50), async (req, res) => {
+  const files = (req.files as Express.Multer.File[]) ?? [];
+  if (files.length === 0) return res.status(400).json({ error: "No audio files uploaded" });
+  const uploaderId = req.user!.id;
+  const added: string[] = [];
+  const failed: string[] = [];
+  for (const f of files) {
+    try {
+      const r = await ingestFile(f.path, uploaderId);
+      if (r) {
+        // Auto-like every uploaded track for its uploader.
+        await prisma.favorite
+          .upsert({
+            where: { userId_trackId: { userId: uploaderId, trackId: r.trackId } },
+            create: { userId: uploaderId, trackId: r.trackId },
+            update: {},
+          })
+          .catch(() => {});
+        if (r.created) {
+          added.push(f.originalname);
+          await fetchAndStoreLyrics(r.trackId).catch(() => {});
+        }
+      }
+    } catch (e) {
+      failed.push(f.originalname);
+      console.error(`[upload] ingest failed for ${f.originalname}:`, (e as Error).message);
+    }
+  }
+  res.status(201).json({ added: added.length, failed: failed.length, addedNames: added, failedNames: failed });
 });
 
 export default router;

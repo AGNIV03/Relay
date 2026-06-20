@@ -8,6 +8,7 @@ import { usePlayer } from "@/context/PlayerContext";
 import { fmtTime, fmtDateAdded } from "@/lib/format";
 import type { Track } from "@/lib/types";
 import { AddToPlaylist } from "@/components/AddToPlaylist";
+import { LikeButton } from "@/components/LikeButton";
 
 export default function SongsPage() {
   const { user } = useAuth();
@@ -101,16 +102,15 @@ export default function SongsPage() {
               <Play size={16} /> Play all
             </button>
           )}
-          {isAdmin && (
-            <button
-              onClick={() => fileInput.current?.click()}
-              disabled={uploadPct !== null}
-              className="flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--panel)] px-4 py-2 text-sm font-medium hover:bg-[var(--panel-2)] disabled:opacity-50"
-            >
-              <Upload size={16} />
-              {uploadPct !== null ? `Uploading ${uploadPct}%` : "Upload"}
-            </button>
-          )}
+          <button
+            onClick={() => fileInput.current?.click()}
+            disabled={uploadPct !== null}
+            title="Upload music — shared with everyone, auto-added to your Liked Songs"
+            className="flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--panel)] px-4 py-2 text-sm font-medium hover:bg-[var(--panel-2)] disabled:opacity-50"
+          >
+            <Upload size={16} />
+            {uploadPct !== null ? `Uploading ${uploadPct}%` : "Upload"}
+          </button>
           <button
             onClick={refresh}
             disabled={scanning}
@@ -172,7 +172,7 @@ export default function SongsPage() {
                 <th className="px-3 py-2">Title</th>
                 <th className="hidden px-3 py-2 md:table-cell">Album</th>
                 <th className="hidden px-3 py-2 lg:table-cell">Added</th>
-                <th className="w-12 px-3 py-2"></th>
+                <th className="w-20 px-3 py-2"></th>
                 <th className="w-16 px-3 py-2 text-right">⏱</th>
               </tr>
             </thead>
@@ -236,8 +236,11 @@ export default function SongsPage() {
                     <td className="hidden px-3 py-2 text-[var(--muted)] lg:table-cell">
                       {fmtDateAdded(t.createdAt)}
                     </td>
-                    <td className="px-3 py-2 text-center">
-                      <AddToPlaylist trackId={t.id} />
+                    <td className="px-3 py-2">
+                      <div className="flex items-center justify-center gap-3">
+                        <LikeButton trackId={t.id} />
+                        <AddToPlaylist trackId={t.id} />
+                      </div>
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums text-[var(--muted)]">
                       {fmtTime(t.duration)}

@@ -59,9 +59,10 @@ export interface Lyrics {
 export interface Playlist {
   id: string;
   name: string;
-  createdAt: string;
+  createdAt?: string;
+  system?: boolean; // true for the permanent "Liked Songs" playlist
   _count?: { tracks: number };
-  tracks?: { id: string; position: number; track: Track }[];
+  tracks?: { id: string; position: number; addedAt?: string; track: Track }[];
 }
 
 export interface Stats {

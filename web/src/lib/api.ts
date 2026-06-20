@@ -90,7 +90,7 @@ export function uploadFiles(
     const form = new FormData();
     for (const f of files) form.append("files", f);
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${API_URL}/api/admin/upload`);
+    xhr.open("POST", `${API_URL}/api/library/upload`);
     const access = tokens.access;
     if (access) xhr.setRequestHeader("Authorization", `Bearer ${access}`);
     xhr.upload.onprogress = (e) => {

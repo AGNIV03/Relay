@@ -21,6 +21,8 @@ model User {
 
   playlists Playlist[]
   history   PlayHistory[]
+  favorites Favorite[]
+  uploads   Track[]       @relation("Uploads")
 }
 
 model Artist {
@@ -67,14 +69,32 @@ model Track {
   artistId String
   artist   Artist  @relation(fields: [artistId], references: [id], onDelete: Cascade)
 
+  // Who first uploaded this track (null for tracks added by a filesystem scan).
+  // The library is global — all tracks are visible to every user regardless.
+  uploaderId String?
+  uploader   User?   @relation("Uploads", fields: [uploaderId], references: [id], onDelete: SetNull)
+
   createdAt DateTime @default(now())
 
   playlistTracks PlaylistTrack[]
   history        PlayHistory[]
+  favorites      Favorite[]
 
   @@index([albumId])
   @@index([artistId])
   @@index([title])
+}
+
+model Favorite {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  trackId   String
+  track     Track    @relation(fields: [trackId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, trackId])
+  @@index([userId])
 }
 
 model Playlist {

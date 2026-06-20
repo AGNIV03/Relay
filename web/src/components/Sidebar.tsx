@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Home, Music2, Mic2, ListMusic, Settings, LogOut, ChevronDown, Plus } from "lucide-react";
+import { Home, Music2, Mic2, ListMusic, Settings, LogOut, ChevronDown, Plus, Heart } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import type { Playlist } from "@/lib/types";
@@ -66,6 +66,17 @@ export function Sidebar() {
           </div>
           {plOpen && (
             <div className="ml-3 mt-0.5 flex flex-col border-l border-[var(--border)] pl-2">
+              {/* Permanent, undeletable Liked Songs playlist */}
+              <Link
+                href="/liked"
+                className={`flex items-center gap-2 truncate rounded px-2 py-1 text-sm transition ${
+                  pathname === "/liked"
+                    ? "text-[var(--accent)]"
+                    : "text-[var(--muted)] hover:text-white"
+                }`}
+              >
+                <Heart size={13} fill="currentColor" className="text-[var(--accent)]" /> Liked Songs
+              </Link>
               {playlists.length === 0 && (
                 <span className="px-2 py-1 text-xs text-[var(--muted)]">No playlists</span>
               )}

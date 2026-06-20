@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { AuthProvider } from "@/context/AuthContext";
 import { PlayerProvider } from "@/context/PlayerContext";
+import { LikedProvider } from "@/context/LikedContext";
 import { AppShell } from "@/components/AppShell";
 
 export const metadata: Metadata = {
@@ -14,9 +15,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body>
         <AuthProvider>
-          <PlayerProvider>
-            <AppShell>{children}</AppShell>
-          </PlayerProvider>
+          <LikedProvider>
+            <PlayerProvider>
+              <AppShell>{children}</AppShell>
+            </PlayerProvider>
+          </LikedProvider>
         </AuthProvider>
       </body>
     </html>
