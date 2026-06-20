@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { Plus } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Playlist } from "@/lib/types";
 
@@ -30,10 +31,10 @@ export function AddToPlaylist({ trackId }: { trackId: string }) {
     <div className="relative inline-block" ref={ref}>
       <button
         onClick={() => setOpen((o) => !o)}
-        className="opacity-60 hover:opacity-100"
+        className="text-[var(--muted)] opacity-70 transition hover:text-white hover:opacity-100"
         title="Add to playlist"
       >
-        ➕
+        <Plus size={16} />
       </button>
       {open && (
         <div className="absolute right-0 z-20 mt-1 w-48 rounded-lg border border-[var(--border)] bg-[var(--panel-2)] py-1 text-left text-sm shadow-xl">

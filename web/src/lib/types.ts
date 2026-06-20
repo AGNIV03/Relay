@@ -39,6 +39,21 @@ export interface Track {
   artist?: Artist;
   artistId?: string;
   createdAt?: string;
+  playCount?: number;
+}
+
+export interface WrappedStats {
+  totalPlays: number;
+  totalMinutes: number;
+  distinctTracks: number;
+  topArtists: { name: string; count: number }[];
+  topGenres: { name: string; count: number }[];
+  topTracks: { id: string; title: string; artist: string; playCount: number }[];
+}
+
+export interface Lyrics {
+  synced: string | null;
+  plain: string | null;
 }
 
 export interface Playlist {

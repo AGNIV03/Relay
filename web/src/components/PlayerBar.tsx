@@ -1,10 +1,25 @@
 "use client";
 
 import { useState } from "react";
+import {
+  Play,
+  Pause,
+  SkipBack,
+  SkipForward,
+  Volume2,
+  Music,
+  Mic2,
+} from "lucide-react";
 import { usePlayer } from "@/context/PlayerContext";
 import { fmtTime } from "@/lib/format";
 
-export function PlayerBar() {
+export function PlayerBar({
+  onToggleLyrics,
+  lyricsOpen,
+}: {
+  onToggleLyrics: () => void;
+  lyricsOpen: boolean;
+}) {
   const p = usePlayer();
   const [imgError, setImgError] = useState(false);
 
@@ -22,7 +37,7 @@ export function PlayerBar() {
     <div className="flex h-20 shrink-0 items-center gap-4 border-t border-[var(--border)] bg-[var(--panel)] px-4">
       {/* Now playing */}
       <div className="flex w-1/4 min-w-0 items-center gap-3">
-        <div className="h-12 w-12 shrink-0 overflow-hidden rounded bg-[var(--panel-2)]">
+        <div className="h-12 w-12 shrink-0 overflow-hidden rounded-md bg-[var(--panel-2)]">
           {!imgError ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
@@ -32,7 +47,9 @@ export function PlayerBar() {
               onError={() => setImgError(true)}
             />
           ) : (
-            <div className="flex h-full w-full items-center justify-center text-lg">♪</div>
+            <div className="flex h-full w-full items-center justify-center">
+              <Music size={18} className="text-[var(--muted)]" />
+            </div>
           )}
         </div>
         <div className="min-w-0">
@@ -44,18 +61,18 @@ export function PlayerBar() {
       {/* Controls + seek */}
       <div className="flex flex-1 flex-col items-center gap-1">
         <div className="flex items-center gap-5">
-          <button onClick={p.prev} className="text-[var(--muted)] hover:text-white" title="Previous">
-            ⏮
+          <button onClick={p.prev} className="text-[var(--muted)] transition hover:text-white" title="Previous">
+            <SkipBack size={20} />
           </button>
           <button
             onClick={p.toggle}
-            className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-black hover:scale-105"
+            className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--accent)] text-[var(--accent-ink)] transition hover:scale-105"
             title="Play / pause"
           >
-            {p.playing ? "⏸" : "▶"}
+            {p.playing ? <Pause size={18} /> : <Play size={18} className="translate-x-[1px]" />}
           </button>
-          <button onClick={p.next} className="text-[var(--muted)] hover:text-white" title="Next">
-            ⏭
+          <button onClick={p.next} className="text-[var(--muted)] transition hover:text-white" title="Next">
+            <SkipForward size={20} />
           </button>
         </div>
         <div className="flex w-full max-w-xl items-center gap-2 text-xs text-[var(--muted)]">
@@ -73,9 +90,18 @@ export function PlayerBar() {
         </div>
       </div>
 
-      {/* Volume */}
-      <div className="flex w-1/4 items-center justify-end gap-2">
-        <span className="text-[var(--muted)]">🔊</span>
+      {/* Lyrics toggle + volume */}
+      <div className="flex w-1/4 items-center justify-end gap-3">
+        <button
+          onClick={onToggleLyrics}
+          title="Lyrics"
+          className={`rounded-md p-1.5 transition hover:text-white ${
+            lyricsOpen ? "text-[var(--accent)]" : "text-[var(--muted)]"
+          }`}
+        >
+          <Mic2 size={18} />
+        </button>
+        <Volume2 size={18} className="text-[var(--muted)]" />
         <input
           type="range"
           min={0}

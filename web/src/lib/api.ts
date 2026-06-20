@@ -76,8 +76,47 @@ export const api = {
     request<T>(path, { method: "POST", body: body ? JSON.stringify(body) : undefined }),
   put: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "PUT", body: body ? JSON.stringify(body) : undefined }),
+  patch: <T>(path: string, body?: unknown) =>
+    request<T>(path, { method: "PATCH", body: body ? JSON.stringify(body) : undefined }),
   del: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 };
+
+/** Upload audio files (multipart) with progress. Originals are preserved (no transcode). */
+export function uploadFiles(
+  files: File[],
+  onProgress?: (pct: number) => void,
+): Promise<{ added: number; failed: number; addedNames: string[]; failedNames: string[] }> {
+  return new Promise((resolve, reject) => {
+    const form = new FormData();
+    for (const f of files) form.append("files", f);
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_URL}/api/admin/upload`);
+    const access = tokens.access;
+    if (access) xhr.setRequestHeader("Authorization", `Bearer ${access}`);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch {
+          reject(new Error("Bad response"));
+        }
+      } else {
+        let msg = `Upload failed (${xhr.status})`;
+        try {
+          msg = JSON.parse(xhr.responseText).error ?? msg;
+        } catch {
+          /* ignore */
+        }
+        reject(new Error(msg));
+      }
+    };
+    xhr.onerror = () => reject(new Error("Network error during upload"));
+    xhr.send(form);
+  });
+}
 
 /** Build an authenticated media URL for <audio>/<img> (token in query). */
 export function streamUrl(trackId: string, opts?: { format?: string; bitrate?: number }) {

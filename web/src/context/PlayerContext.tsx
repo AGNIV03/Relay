@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { api, streamUrl, coverUrl } from "@/lib/api";
-import type { Track } from "@/lib/types";
+import type { Track, Lyrics } from "@/lib/types";
 
 interface PlayerState {
   queue: Track[];
@@ -20,6 +20,7 @@ interface PlayerState {
   position: number;
   duration: number;
   volume: number;
+  lyrics: Lyrics | null;
   /** Play a list of tracks starting at `start`. */
   playQueue: (tracks: Track[], start?: number) => void;
   toggle: () => void;
@@ -40,6 +41,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVol] = useState(1);
+  const [lyrics, setLyrics] = useState<Lyrics | null>(null);
   const scrobbled = useRef<Set<string>>(new Set());
 
   const current = queue[index] ?? null;
@@ -55,7 +57,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const t = queue[index];
       if (t && audio.currentTime > 5 && !scrobbled.current.has(t.id)) {
         scrobbled.current.add(t.id);
-        api.post("/api/favorites/scrobble", { trackId: t.id }).catch(() => {});
+        api.post("/api/library/scrobble", { trackId: t.id }).catch(() => {});
       }
     };
     const onMeta = () => setDuration(audio.duration || 0);
@@ -87,6 +89,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     audio.src = streamUrl(current.id);
     audio.play().catch(() => setPlaying(false));
     setPosition(0);
+    // Fetch lyrics for the new track (synced LRC + plain fallback).
+    setLyrics(null);
+    api
+      .get<Lyrics>(`/api/library/tracks/${current.id}/lyrics`)
+      .then(setLyrics)
+      .catch(() => setLyrics(null));
     // Media Session (lock-screen / media-key controls in the browser).
     if ("mediaSession" in navigator) {
       navigator.mediaSession.metadata = new MediaMetadata({
@@ -144,6 +152,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         position,
         duration,
         volume,
+        lyrics,
         playQueue,
         toggle,
         next,

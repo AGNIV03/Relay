@@ -1,14 +1,15 @@
 @import "tailwindcss";
 
 :root {
-  --bg: #0a0a0f;
-  --panel: #14141c;
-  --panel-2: #1c1c28;
-  --border: #26263a;
-  --text: #e7e7ee;
-  --muted: #9a9ab0;
-  --accent: #7c5cff;
-  --accent-2: #a78bfa;
+  --bg: #0a0a0b; /* near-black */
+  --panel: #131316;
+  --panel-2: #1d1d21;
+  --border: #29292e;
+  --text: #f4f4f5;
+  --muted: #a1a1aa;
+  --accent: #22d3ee; /* cyan — modern, not purple */
+  --accent-2: #67e8f9;
+  --accent-ink: #08272c; /* dark text on accent fills (cyan is light) */
 }
 
 html,
@@ -50,5 +51,15 @@ input[type="range"]::-webkit-slider-thumb {
   width: 13px;
   height: 13px;
   border-radius: 50%;
-  background: var(--accent-2);
+  background: var(--accent);
+}
+
+/* Synced-lyrics active line pulse */
+@keyframes lyricIn {
+  from {
+    opacity: 0.4;
+  }
+  to {
+    opacity: 1;
+  }
 }

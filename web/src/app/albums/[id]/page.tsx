@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import { Play, Disc3 } from "lucide-react";
 import { api, albumCoverUrl } from "@/lib/api";
 import { usePlayer } from "@/context/PlayerContext";
 import { TrackList } from "@/components/TrackList";
@@ -27,7 +28,7 @@ export default function AlbumPage() {
   return (
     <div>
       <div className="mb-6 flex flex-col items-center gap-5 sm:flex-row sm:items-end">
-        <div className="h-44 w-44 shrink-0 overflow-hidden rounded-xl bg-[var(--panel-2)]">
+        <div className="flex h-44 w-44 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-[var(--panel-2)]">
           {!err ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
@@ -37,7 +38,7 @@ export default function AlbumPage() {
               onError={() => setErr(true)}
             />
           ) : (
-            <div className="flex h-full w-full items-center justify-center text-5xl">💿</div>
+            <Disc3 size={56} className="text-[var(--muted)]" />
           )}
         </div>
         <div className="text-center sm:text-left">
@@ -52,9 +53,9 @@ export default function AlbumPage() {
           </div>
           <button
             onClick={() => player.playQueue(tracks, 0)}
-            className="mt-4 rounded-full bg-[var(--accent)] px-6 py-2 text-sm font-medium text-white hover:bg-[var(--accent-2)]"
+            className="mt-4 flex items-center gap-2 rounded-full bg-[var(--accent)] px-6 py-2 text-sm font-medium text-[var(--accent-ink)] hover:brightness-110"
           >
-            ▶ Play
+            <Play size={16} /> Play
           </button>
         </div>
       </div>

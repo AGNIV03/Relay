@@ -106,15 +106,25 @@ export default function AdminPage() {
                 <tr key={u.id} className="border-b border-[var(--border)]/50">
                   <td className="px-4 py-2 font-medium">{u.username}</td>
                   <td className="px-4 py-2">
-                    <span
-                      className={`rounded px-2 py-0.5 text-xs ${
-                        u.role === "ADMIN"
-                          ? "bg-[var(--accent)]/20 text-[var(--accent-2)]"
-                          : "bg-[var(--panel-2)] text-[var(--muted)]"
-                      }`}
-                    >
-                      {u.role}
-                    </span>
+                    {u.id === user.id ? (
+                      <span className="rounded px-2 py-0.5 text-xs bg-[var(--accent)]/20 text-[var(--accent)]">
+                        {u.role} (you)
+                      </span>
+                    ) : (
+                      <select
+                        value={u.role}
+                        onChange={async (e) => {
+                          await api
+                            .patch(`/api/admin/users/${u.id}/role`, { role: e.target.value })
+                            .catch(() => {});
+                          loadUsers();
+                        }}
+                        className="rounded-md border border-[var(--border)] bg-[var(--bg)] px-2 py-1 text-xs outline-none focus:border-[var(--accent)]"
+                      >
+                        <option value="USER">USER</option>
+                        <option value="ADMIN">ADMIN</option>
+                      </select>
+                    )}
                   </td>
                   <td className="px-4 py-2 text-[var(--muted)]">
                     {u.createdAt ? new Date(u.createdAt).toLocaleDateString() : "—"}
