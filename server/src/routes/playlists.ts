@@ -6,14 +6,31 @@ import { requireAuth } from "../middleware/auth.js";
 const router = Router();
 router.use(requireAuth);
 
-/** GET /api/playlists — current user's playlists */
+/** GET /api/playlists — current user's playlists, most-played first */
 router.get("/", async (req, res) => {
+  const userId = req.user!.id;
   const playlists = await prisma.playlist.findMany({
-    where: { userId: req.user!.id },
-    orderBy: { createdAt: "desc" },
-    include: { _count: { select: { tracks: true } } },
+    where: { userId },
+    include: {
+      _count: { select: { tracks: true } },
+      tracks: { select: { trackId: true } },
+    },
   });
-  res.json(playlists);
+  // How many times the user has played each track, to rank playlists by total plays.
+  const history = await prisma.playHistory.groupBy({
+    by: ["trackId"],
+    where: { userId },
+    _count: { trackId: true },
+  });
+  const counts = new Map(history.map((h) => [h.trackId, h._count.trackId]));
+  const ranked = playlists
+    .map((pl) => {
+      const playCount = pl.tracks.reduce((sum, t) => sum + (counts.get(t.trackId) ?? 0), 0);
+      const { tracks: _tracks, ...rest } = pl; // omit the id list from the response
+      return { ...rest, playCount };
+    })
+    .sort((a, b) => b.playCount - a.playCount || b.createdAt.getTime() - a.createdAt.getTime());
+  res.json(ranked);
 });
 
 /** GET /api/playlists/:id — playlist with ordered tracks */
