@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../app_icons.dart';
 import 'package:provider/provider.dart';
 import '../api.dart';
+import '../app_state.dart';
 import '../models.dart';
 import '../theme.dart';
 import '../widgets/track_tile.dart';
@@ -50,6 +51,7 @@ class _SongsScreenState extends State<SongsScreen> {
 
   Future<void> _upload() async {
     final api = context.read<Api>();
+    final appState = context.read<AppState>();
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['mp3', 'flac'],
@@ -63,10 +65,13 @@ class _SongsScreenState extends State<SongsScreen> {
       if (!mounted) return;
       final added = r['added'] ?? 0;
       final failed = r['failed'] ?? 0;
+      final dupes = r['duplicates'] ?? 0;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text('Uploaded $added song${added == 1 ? '' : 's'}'
+            '${dupes > 0 ? ', $dupes already in library' : ''}'
             '${failed > 0 ? ', $failed rejected' : ''}'),
       ));
+      appState.reloadLiked(); // uploads are auto-liked — refresh hearts
       _load(_controller.text);
     } catch (e) {
       if (mounted) {

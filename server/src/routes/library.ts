@@ -306,6 +306,16 @@ router.post("/upload", upload.array("files", 50), async (req, res) => {
   const uploaderId = req.user!.id;
   const added: string[] = [];
   const failed: string[] = [];
+  const duplicates: string[] = [];
+  // Auto-like a track for the uploader (idempotent).
+  const like = (trackId: string) =>
+    prisma.favorite
+      .upsert({
+        where: { userId_trackId: { userId: uploaderId, trackId } },
+        create: { userId: uploaderId, trackId },
+        update: {},
+      })
+      .catch(() => {});
   for (const f of files) {
     try {
       // Reject anything whose contents aren't actually MP3/FLAC (e.g. a renamed
@@ -315,16 +325,17 @@ router.post("/upload", upload.array("files", 50), async (req, res) => {
         failed.push(f.originalname);
         continue;
       }
-      const r = await ingestFile(f.path, uploaderId);
+      const r = await ingestFile(f.path, uploaderId, true /* dedupe */);
+      if (r?.duplicate) {
+        // Same song already in the library — drop the upload, but still add the
+        // existing track to the uploader's Liked Songs.
+        fs.rmSync(f.path, { force: true });
+        await like(r.trackId);
+        duplicates.push(f.originalname);
+        continue;
+      }
       if (r) {
-        // Auto-like every uploaded track for its uploader.
-        await prisma.favorite
-          .upsert({
-            where: { userId_trackId: { userId: uploaderId, trackId: r.trackId } },
-            create: { userId: uploaderId, trackId: r.trackId },
-            update: {},
-          })
-          .catch(() => {});
+        await like(r.trackId); // uploads are auto-liked
         if (r.created) {
           added.push(f.originalname);
           await fetchAndStoreLyrics(r.trackId).catch(() => {});
@@ -337,7 +348,14 @@ router.post("/upload", upload.array("files", 50), async (req, res) => {
       console.error(`[upload] ingest failed for ${f.originalname}:`, (e as Error).message);
     }
   }
-  res.status(201).json({ added: added.length, failed: failed.length, addedNames: added, failedNames: failed });
+  res.status(201).json({
+    added: added.length,
+    failed: failed.length,
+    duplicates: duplicates.length,
+    addedNames: added,
+    failedNames: failed,
+    duplicateNames: duplicates,
+  });
 });
 
 export default router;

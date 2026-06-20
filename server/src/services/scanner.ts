@@ -92,7 +92,8 @@ export async function fetchAndStoreLyrics(trackId: string): Promise<void> {
 export async function ingestFile(
   file: string,
   uploaderId?: string,
-): Promise<{ trackId: string; created: boolean } | null> {
+  dedupe = false,
+): Promise<{ trackId: string; created: boolean; duplicate?: boolean } | null> {
   const stat = await fs.stat(file);
   const existing = await prisma.track.findUnique({ where: { path: file } });
   if (existing && existing.size === stat.size) {
@@ -105,6 +106,17 @@ export async function ingestFile(
 
   const artistName = common.artist || common.albumartist || "Unknown Artist";
   const artistId = await findOrCreateArtist(artistName);
+
+  const title = common.title || path.basename(file, path.extname(file));
+  // Reject duplicate songs (same title + artist already in the library). Checked
+  // before creating the album so we don't leave an orphan album behind.
+  if (dedupe && !existing) {
+    const dup = await prisma.track.findFirst({
+      where: { title: { equals: title, mode: "insensitive" }, artistId },
+    });
+    if (dup) return { trackId: dup.id, created: false, duplicate: true };
+  }
+
   const albumId = await findOrCreateAlbum(common.album || "Unknown Album", artistId, common.year);
 
   const album = await prisma.album.findUnique({ where: { id: albumId } });
@@ -114,7 +126,7 @@ export async function ingestFile(
   }
 
   const data = {
-    title: common.title || path.basename(file, path.extname(file)),
+    title,
     duration: fmt.duration ?? 0,
     trackNo: common.track?.no ?? null,
     discNo: common.disk?.no ?? null,

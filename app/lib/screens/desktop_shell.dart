@@ -10,6 +10,7 @@ import '../theme.dart';
 import '../widgets/cover.dart';
 import '../widgets/like_button.dart';
 import '../widgets/squiggly_progress.dart';
+import '../widgets/tab_navigator.dart';
 import 'home_screen.dart';
 import 'songs_screen.dart';
 import 'artists_screen.dart';
@@ -28,6 +29,8 @@ class DesktopShell extends StatefulWidget {
 
 class _DesktopShellState extends State<DesktopShell> {
   int _index = 0;
+  final List<GlobalKey<NavigatorState>> _navKeys =
+      List.generate(4, (_) => GlobalKey<NavigatorState>());
 
   @override
   void initState() {
@@ -37,6 +40,12 @@ class _DesktopShellState extends State<DesktopShell> {
     });
   }
 
+  /// Open a detail page inside the active tab's content area (sidebar + player
+  /// bar stay visible).
+  void _openInTab(Widget page) {
+    _navKeys[_index].currentState?.push(MaterialPageRoute(builder: (_) => page));
+  }
+
   @override
   Widget build(BuildContext context) {
     const pages = [HomeScreen(), SongsScreen(), ArtistsScreen(), PlaylistsScreen()];
@@ -44,8 +53,20 @@ class _DesktopShellState extends State<DesktopShell> {
       body: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _Sidebar(index: _index, onSelect: (i) => setState(() => _index = i)),
-          Expanded(child: IndexedStack(index: _index, children: pages)),
+          _Sidebar(
+            index: _index,
+            onSelect: (i) => setState(() => _index = i),
+            onOpen: _openInTab,
+          ),
+          Expanded(
+            child: IndexedStack(
+              index: _index,
+              children: [
+                for (var i = 0; i < 4; i++)
+                  TabNavigator(navKey: _navKeys[i], rootBuilder: (_) => pages[i]),
+              ],
+            ),
+          ),
         ],
       ),
       bottomNavigationBar: const _DesktopPlayerBar(),
@@ -56,7 +77,8 @@ class _DesktopShellState extends State<DesktopShell> {
 class _Sidebar extends StatefulWidget {
   final int index;
   final ValueChanged<int> onSelect;
-  const _Sidebar({required this.index, required this.onSelect});
+  final ValueChanged<Widget> onOpen;
+  const _Sidebar({required this.index, required this.onSelect, required this.onOpen});
   @override
   State<_Sidebar> createState() => _SidebarState();
 }
@@ -117,9 +139,7 @@ class _SidebarState extends State<_Sidebar> {
             label: 'Liked Songs',
             iconColor: kAccent,
             filled: true,
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const LikedSongsScreen()),
-            ),
+            onTap: () => widget.onOpen(const LikedSongsScreen()),
           ),
           Expanded(
             child: ListView(
@@ -133,12 +153,8 @@ class _SidebarState extends State<_Sidebar> {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(fontSize: 13, color: kMuted)),
-                    onTap: () async {
-                      await Navigator.of(context).push(MaterialPageRoute(
-                        builder: (_) => PlaylistDetailScreen(playlistId: pl.id, name: pl.name),
-                      ));
-                      _loadPlaylists();
-                    },
+                    onTap: () =>
+                        widget.onOpen(PlaylistDetailScreen(playlistId: pl.id, name: pl.name)),
                   ),
               ],
             ),
@@ -295,10 +311,19 @@ class _DesktopPlayerBar extends StatelessWidget {
                     ],
                   ),
                 ),
-                // Volume
+                // Lyrics + volume
                 Expanded(
                   flex: 3,
                   child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                    IconButton(
+                      tooltip: 'Lyrics',
+                      iconSize: 19,
+                      icon: const Icon(LucideIcons.mic2, color: kMuted),
+                      onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+                        builder: (_) => const NowPlayingScreen(showLyrics: true),
+                      )),
+                    ),
+                    const SizedBox(width: 4),
                     const Icon(LucideIcons.volume2, size: 18, color: kMuted),
                     SizedBox(
                       width: 120,

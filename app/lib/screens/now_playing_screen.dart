@@ -10,13 +10,14 @@ import '../widgets/like_button.dart';
 import '../widgets/squiggly_progress.dart';
 
 class NowPlayingScreen extends StatefulWidget {
-  const NowPlayingScreen({super.key});
+  final bool showLyrics;
+  const NowPlayingScreen({super.key, this.showLyrics = false});
   @override
   State<NowPlayingScreen> createState() => _NowPlayingScreenState();
 }
 
 class _NowPlayingScreenState extends State<NowPlayingScreen> {
-  bool _showLyrics = false;
+  late bool _showLyrics = widget.showLyrics;
 
   String _fmt(Duration d) => "${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}";
 

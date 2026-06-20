@@ -5,6 +5,7 @@ import { Search, Upload, RefreshCw, Play, Music, X } from "lucide-react";
 import { api, coverUrl, uploadFiles } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { usePlayer } from "@/context/PlayerContext";
+import { useLiked } from "@/context/LikedContext";
 import { fmtTime, fmtDateAdded } from "@/lib/format";
 import type { Track } from "@/lib/types";
 import { AddToPlaylist } from "@/components/AddToPlaylist";
@@ -13,6 +14,7 @@ import { LikeButton } from "@/components/LikeButton";
 export default function SongsPage() {
   const { user } = useAuth();
   const player = usePlayer();
+  const liked = useLiked();
   const isAdmin = user?.role === "ADMIN";
   const [tracks, setTracks] = useState<Track[]>([]);
   const [total, setTotal] = useState(0);
@@ -75,7 +77,12 @@ export default function SongsPage() {
     setUploadPct(0);
     try {
       const r = await uploadFiles(Array.from(files), setUploadPct);
-      showToast(`Uploaded ${r.added} song${r.added === 1 ? "" : "s"}${r.failed ? `, ${r.failed} failed` : ""}`);
+      showToast(
+        `Uploaded ${r.added} song${r.added === 1 ? "" : "s"}` +
+          (r.duplicates ? `, ${r.duplicates} already in library` : "") +
+          (r.failed ? `, ${r.failed} rejected` : ""),
+      );
+      liked.refresh(); // uploads are auto-liked — refresh hearts
       await load("");
       setQ("");
     } catch (e) {

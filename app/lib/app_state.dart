@@ -24,6 +24,9 @@ class AppState extends ChangeNotifier {
     } catch (_) {}
   }
 
+  /// Re-fetch liked ids (e.g. after uploading, which auto-likes).
+  Future<void> reloadLiked() => _loadLiked();
+
   /// Like / unlike a track (optimistic).
   Future<void> toggleLike(String trackId) async {
     final wasLiked = _liked.contains(trackId);

@@ -8,6 +8,8 @@ interface LikedState {
   likedIds: Set<string>;
   isLiked: (trackId: string) => boolean;
   toggleLike: (trackId: string) => Promise<void>;
+  /** re-fetch liked ids from the server (e.g. after uploading, which auto-likes) */
+  refresh: () => Promise<void>;
   /** bump on every change so views (e.g. the Liked Songs page) can refetch */
   version: number;
 }
@@ -31,6 +33,16 @@ export function LikedProvider({ children }: { children: ReactNode }) {
   }, [user]);
 
   const isLiked = useCallback((id: string) => likedIds.has(id), [likedIds]);
+
+  const refresh = useCallback(async () => {
+    try {
+      const ids = await api.get<string[]>("/api/library/liked/ids");
+      setLikedIds(new Set(ids));
+      setVersion((v) => v + 1);
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   const toggleLike = useCallback(
     async (trackId: string) => {
@@ -60,7 +72,7 @@ export function LikedProvider({ children }: { children: ReactNode }) {
   );
 
   return (
-    <LikedContext.Provider value={{ likedIds, isLiked, toggleLike, version }}>
+    <LikedContext.Provider value={{ likedIds, isLiked, toggleLike, refresh, version }}>
       {children}
     </LikedContext.Provider>
   );

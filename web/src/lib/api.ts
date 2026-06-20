@@ -85,7 +85,7 @@ export const api = {
 export function uploadFiles(
   files: File[],
   onProgress?: (pct: number) => void,
-): Promise<{ added: number; failed: number; addedNames: string[]; failedNames: string[] }> {
+): Promise<{ added: number; failed: number; duplicates?: number; addedNames: string[]; failedNames: string[] }> {
   return new Promise((resolve, reject) => {
     const form = new FormData();
     for (const f of files) form.append("files", f);

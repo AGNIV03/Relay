@@ -7,6 +7,7 @@ import '../app_state.dart';
 import '../player.dart';
 import '../theme.dart';
 import '../widgets/mini_player.dart';
+import '../widgets/tab_navigator.dart';
 import 'desktop_shell.dart';
 import 'home_screen.dart';
 import 'songs_screen.dart';
@@ -33,6 +34,8 @@ class _MobileRoot extends StatefulWidget {
 class _RootScreenState extends State<_MobileRoot> {
   int _index = 0;
   static const _titles = ["Home", "Songs", "Artists", "Playlists"];
+  final List<GlobalKey<NavigatorState>> _navKeys =
+      List.generate(4, (_) => GlobalKey<NavigatorState>());
 
   @override
   void initState() {
@@ -43,12 +46,14 @@ class _RootScreenState extends State<_MobileRoot> {
     });
   }
 
-  @override
-  Widget build(BuildContext context) {
+  // Each tab's root page, wrapped in a Scaffold with its own app bar. Detail
+  // pages push on top of this WITHIN the tab navigator, so the bottom nav +
+  // mini-player below stay visible.
+  Widget _tabRoot(int i) {
     const pages = [HomeScreen(), SongsScreen(), ArtistsScreen(), PlaylistsScreen()];
     return Scaffold(
       appBar: AppBar(
-        title: Text(_titles[_index]),
+        title: Text(_titles[i]),
         actions: [
           IconButton(
             icon: const Icon(LucideIcons.logOut, size: 20),
@@ -57,24 +62,52 @@ class _RootScreenState extends State<_MobileRoot> {
           ),
         ],
       ),
-      body: IndexedStack(index: _index, children: pages),
-      bottomNavigationBar: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const MiniPlayer(),
-          NavigationBar(
-            height: 64,
-            backgroundColor: kPanel,
-            selectedIndex: _index,
-            onDestinationSelected: (i) => setState(() => _index = i),
-            destinations: const [
-              NavigationDestination(icon: Icon(LucideIcons.home), label: "Home"),
-              NavigationDestination(icon: Icon(LucideIcons.music2), label: "Songs"),
-              NavigationDestination(icon: Icon(LucideIcons.mic2), label: "Artists"),
-              NavigationDestination(icon: Icon(LucideIcons.listMusic), label: "Playlists"),
-            ],
-          ),
-        ],
+      body: pages[i],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        final nav = _navKeys[_index].currentState;
+        if (nav != null && nav.canPop()) nav.pop();
+      },
+      child: Scaffold(
+        body: IndexedStack(
+          index: _index,
+          children: [
+            for (var i = 0; i < 4; i++)
+              TabNavigator(navKey: _navKeys[i], rootBuilder: (_) => _tabRoot(i)),
+          ],
+        ),
+        bottomNavigationBar: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const MiniPlayer(),
+            NavigationBar(
+              height: 64,
+              backgroundColor: kPanel,
+              selectedIndex: _index,
+              onDestinationSelected: (i) {
+                // Re-tapping the active tab pops it back to its root.
+                if (i == _index) {
+                  _navKeys[i].currentState?.popUntil((r) => r.isFirst);
+                } else {
+                  setState(() => _index = i);
+                }
+              },
+              destinations: const [
+                NavigationDestination(icon: Icon(LucideIcons.home), label: "Home"),
+                NavigationDestination(icon: Icon(LucideIcons.music2), label: "Songs"),
+                NavigationDestination(icon: Icon(LucideIcons.mic2), label: "Artists"),
+                NavigationDestination(icon: Icon(LucideIcons.listMusic), label: "Playlists"),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
