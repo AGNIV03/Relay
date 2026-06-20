@@ -165,6 +165,24 @@ class Api {
   Future<Lyrics> lyrics(String trackId) async =>
       Lyrics.fromJson(await _get('/api/library/tracks/$trackId/lyrics'));
 
+  // ---- Uploads ----
+  /// Upload local audio files (multipart). Server restricts to MP3/FLAC and
+  /// validates contents. Returns {added, failed, addedNames, failedNames}.
+  Future<Map<String, dynamic>> uploadTracks(List<String> paths, {bool retry = true}) async {
+    final req = http.MultipartRequest('POST', _uri('/api/library/upload'));
+    if (_access != null) req.headers['Authorization'] = 'Bearer $_access';
+    for (final p in paths) {
+      req.files.add(await http.MultipartFile.fromPath('files', p));
+    }
+    final streamed = await req.send();
+    final res = await http.Response.fromStream(streamed);
+    if (res.statusCode == 401 && retry && await _tryRefresh()) {
+      return uploadTracks(paths, retry: false);
+    }
+    if (res.statusCode >= 400) throw ApiException(_errorMessage(res));
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
   // ---- Likes / Liked Songs ----
   Future<List<String>> likedIds() async =>
       (await _get('/api/library/liked/ids') as List).cast<String>();

@@ -35,7 +35,8 @@ export function Sidebar() {
     <aside className="flex w-60 shrink-0 flex-col border-r border-[var(--border)] bg-[var(--panel)] p-4">
       <div className="mb-6 px-2">
         <div className="flex items-center gap-2 text-xl font-bold tracking-tight">
-          <Music2 className="text-[var(--accent)]" size={22} /> Stream
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/logo.png" alt="Relay" className="h-6 w-6" /> Relay
         </div>
         <div className="text-xs text-[var(--muted)]">self-hosted music</div>
       </div>

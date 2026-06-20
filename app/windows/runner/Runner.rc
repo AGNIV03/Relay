@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "eco.regenesis" "\0"
-            VALUE "FileDescription", "stream_app" "\0"
+            VALUE "CompanyName", "Relay" "\0"
+            VALUE "FileDescription", "Relay" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "stream_app" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 eco.regenesis. All rights reserved." "\0"
-            VALUE "OriginalFilename", "stream_app.exe" "\0"
-            VALUE "ProductName", "stream_app" "\0"
+            VALUE "InternalName", "Relay" "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 Relay. All rights reserved." "\0"
+            VALUE "OriginalFilename", "Relay.exe" "\0"
+            VALUE "ProductName", "Relay" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

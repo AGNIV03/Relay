@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import '../app_icons.dart';
 import 'package:provider/provider.dart';
@@ -18,6 +19,7 @@ class _SongsScreenState extends State<SongsScreen> {
   Timer? _debounce;
   List<Track> _tracks = [];
   bool _loading = true;
+  bool _uploading = false;
 
   @override
   void initState() {
@@ -46,29 +48,74 @@ class _SongsScreenState extends State<SongsScreen> {
     _debounce = Timer(const Duration(milliseconds: 300), () => _load(q));
   }
 
+  Future<void> _upload() async {
+    final api = context.read<Api>();
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['mp3', 'flac'],
+      allowMultiple: true,
+    );
+    final paths = result?.files.map((f) => f.path).whereType<String>().toList() ?? [];
+    if (paths.isEmpty) return;
+    setState(() => _uploading = true);
+    try {
+      final r = await api.uploadTracks(paths);
+      if (!mounted) return;
+      final added = r['added'] ?? 0;
+      final failed = r['failed'] ?? 0;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Uploaded $added song${added == 1 ? '' : 's'}'
+            '${failed > 0 ? ', $failed rejected' : ''}'),
+      ));
+      _load(_controller.text);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Upload failed: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _uploading = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
-          child: TextField(
-            controller: _controller,
-            onChanged: _onSearch,
-            decoration: InputDecoration(
-              prefixIcon: const Icon(LucideIcons.search, size: 18),
-              hintText: "Search songs, artists, albums…",
-              suffixIcon: _controller.text.isEmpty
-                  ? null
-                  : IconButton(
-                      icon: const Icon(LucideIcons.x, size: 18),
-                      onPressed: () {
-                        _controller.clear();
-                        _load("");
-                        setState(() {});
-                      },
-                    ),
-            ),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _controller,
+                  onChanged: _onSearch,
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(LucideIcons.search, size: 18),
+                    hintText: "Search songs, artists, albums…",
+                    suffixIcon: _controller.text.isEmpty
+                        ? null
+                        : IconButton(
+                            icon: const Icon(LucideIcons.x, size: 18),
+                            onPressed: () {
+                              _controller.clear();
+                              _load("");
+                              setState(() {});
+                            },
+                          ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton.icon(
+                onPressed: _uploading ? null : _upload,
+                icon: _uploading
+                    ? const SizedBox(
+                        width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(LucideIcons.upload, size: 18),
+                label: Text(_uploading ? 'Uploading…' : 'Upload'),
+              ),
+            ],
           ),
         ),
         Expanded(

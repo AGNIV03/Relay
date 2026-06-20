@@ -95,9 +95,9 @@ class _SidebarState extends State<_Sidebar> {
           const Padding(
             padding: EdgeInsets.fromLTRB(20, 22, 20, 4),
             child: Row(children: [
-              Icon(LucideIcons.music2, color: kAccent, size: 24),
+              Image(image: AssetImage('assets/logo.png'), width: 26, height: 26),
               SizedBox(width: 8),
-              Text('Stream', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              Text('Relay', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
             ]),
           ),
           const Padding(

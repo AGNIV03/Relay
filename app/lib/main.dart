@@ -35,7 +35,7 @@ Future<void> main() async {
     } else {
       await JustAudioBackground.init(
         androidNotificationChannelId: 'site.agniv.stream.audio',
-        androidNotificationChannelName: 'Stream playback',
+        androidNotificationChannelName: 'Relay playback',
         androidNotificationOngoing: true,
       ).timeout(const Duration(seconds: 8));
     }
@@ -76,9 +76,9 @@ class _CloseToTray with WindowListener, TrayListener {
     trayManager.addListener(this);
     try {
       await trayManager.setIcon('assets/tray_icon.ico');
-      await trayManager.setToolTip('Stream');
+      await trayManager.setToolTip('Relay');
       await trayManager.setContextMenu(Menu(items: [
-        MenuItem(key: 'show', label: 'Open Stream'),
+        MenuItem(key: 'show', label: 'Open Relay'),
         MenuItem.separator(),
         MenuItem(key: 'quit', label: 'Quit'),
       ]));
@@ -142,7 +142,7 @@ class StreamApp extends StatelessWidget {
         Provider.value(value: api),
       ],
       child: MaterialApp(
-        title: 'Stream',
+        title: 'Relay',
         debugShowCheckedModeBanner: false,
         theme: buildTheme(),
         home: const _Gate(),

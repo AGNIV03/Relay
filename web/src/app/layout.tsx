@@ -6,7 +6,7 @@ import { LikedProvider } from "@/context/LikedContext";
 import { AppShell } from "@/components/AppShell";
 
 export const metadata: Metadata = {
-  title: "Stream — your music",
+  title: "Relay — your music",
   description: "Self-hosted music streaming",
 };
 

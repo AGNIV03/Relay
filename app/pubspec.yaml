@@ -40,12 +40,31 @@ dependencies:
   window_manager: ^0.4.3
   tray_manager: ^0.5.0
 
+  # Pick local audio files to upload (desktop + mobile).
+  file_picker: ^8.1.4
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.3
+
+# App icons generated from the Relay logo (run: dart run flutter_launcher_icons)
+flutter_launcher_icons:
+  android: true
+  image_path: "assets/icon/logo.png"
+  adaptive_icon_background: "#0A0A0B"
+  adaptive_icon_foreground: "assets/icon/logo_padded.png"
+  remove_alpha_ios: false
+  windows:
+    generate: true
+    image_path: "assets/icon/logo.png"
+    icon_size: 256
+  web:
+    generate: false
 
 flutter:
   uses-material-design: true
   assets:
     - assets/tray_icon.ico
+    - assets/logo.png

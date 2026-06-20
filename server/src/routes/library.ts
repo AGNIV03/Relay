@@ -11,7 +11,30 @@ import { env } from "../lib/env.js";
 const router = Router();
 router.use(requireAuth);
 
-const AUDIO_EXT = new Set([".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".wma", ".aiff", ".alac"]);
+// Uploads are restricted to MP3 + FLAC only.
+const UPLOAD_EXT = new Set([".mp3", ".flac"]);
+
+/**
+ * Sniff the first bytes to confirm the file is genuinely an MP3 or FLAC — not a
+ * renamed executable/script. FLAC starts with "fLaC"; MP3 starts with an "ID3"
+ * tag or an MPEG audio frame sync (0xFF Ex/Fx).
+ */
+function looksLikeAudio(filePath: string): boolean {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, "r");
+    const buf = Buffer.alloc(4);
+    fs.readSync(fd, buf, 0, 4, 0);
+    if (buf.toString("latin1") === "fLaC") return true; // FLAC
+    if (buf.toString("latin1", 0, 3) === "ID3") return true; // MP3 with ID3v2
+    if (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) return true; // MPEG frame sync
+    return false;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
 
 // Uploads are written verbatim to the music library — NO transcoding, so original
 // quality (incl. lossless) is preserved byte-for-byte. Any signed-in user may
@@ -37,7 +60,7 @@ const upload = multer({
   storage,
   limits: { fileSize: 2 * 1024 * 1024 * 1024 },
   fileFilter: (_req, file, cb) =>
-    cb(null, AUDIO_EXT.has(path.extname(file.originalname).toLowerCase())),
+    cb(null, UPLOAD_EXT.has(path.extname(file.originalname).toLowerCase())),
 });
 
 /** GET /api/library/artists */
@@ -285,6 +308,13 @@ router.post("/upload", upload.array("files", 50), async (req, res) => {
   const failed: string[] = [];
   for (const f of files) {
     try {
+      // Reject anything whose contents aren't actually MP3/FLAC (e.g. a renamed
+      // executable). Delete it so junk never lands in the music library.
+      if (!looksLikeAudio(f.path)) {
+        fs.rmSync(f.path, { force: true });
+        failed.push(f.originalname);
+        continue;
+      }
       const r = await ingestFile(f.path, uploaderId);
       if (r) {
         // Auto-like every uploaded track for its uploader.
@@ -301,6 +331,8 @@ router.post("/upload", upload.array("files", 50), async (req, res) => {
         }
       }
     } catch (e) {
+      // Parsing failed (corrupt / not real audio) — drop the file.
+      fs.rmSync(f.path, { force: true });
       failed.push(f.originalname);
       console.error(`[upload] ingest failed for ${f.originalname}:`, (e as Error).message);
     }
