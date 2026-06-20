@@ -31,6 +31,12 @@ dependencies:
   shared_preferences: ^2.3.3
   path_provider: ^2.1.5
 
+  # Modern, minimal icon set (matches the web app's Lucide icons)
+  lucide_icons: ^0.257.0
+
+  # Desktop window control (minimize-to-taskbar instead of quitting on close)
+  window_manager: ^0.4.3
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

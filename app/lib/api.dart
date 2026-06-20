@@ -140,23 +140,30 @@ class Api {
     return (j['albums'] as List?)?.map((e) => Album.fromJson(e)).toList() ?? [];
   }
 
-  // ---- Search ----
-  Future<Map<String, dynamic>> search(String q) async {
-    final j = await _get('/api/search?q=${Uri.encodeQueryComponent(q)}');
-    return {
-      'tracks': (j['tracks'] as List).map((e) => Track.fromJson(e)).toList(),
-      'albums': (j['albums'] as List).map((e) => Album.fromJson(e)).toList(),
-      'artists': (j['artists'] as List).map((e) => Artist.fromJson(e)).toList(),
-    };
+  // ---- Songs (flat list + search) ----
+  Future<List<Track>> tracks({String? q, int limit = 500}) async {
+    final params = <String, String>{'limit': '$limit'};
+    if (q != null && q.trim().isNotEmpty) params['q'] = q.trim();
+    final qs = Uri(queryParameters: params).query;
+    final j = await _get('/api/library/tracks?$qs');
+    return (j['tracks'] as List).map((e) => Track.fromJson(e)).toList();
   }
 
-  // ---- Favorites ----
-  Future<List<Track>> favorites() async =>
-      (await _get('/api/favorites') as List).map((e) => Track.fromJson(e)).toList();
-  Future<void> addFavorite(String trackId) => _send('PUT', '/api/favorites/$trackId');
-  Future<void> removeFavorite(String trackId) => _send('DELETE', '/api/favorites/$trackId');
+  // ---- Playback history / personal stats ----
   Future<void> scrobble(String trackId) =>
-      _send('POST', '/api/favorites/scrobble', body: {'trackId': trackId});
+      _send('POST', '/api/library/scrobble', body: {'trackId': trackId});
+
+  Future<List<Track>> recentlyPlayed() async =>
+      (await _get('/api/library/recently-played') as List).map((e) => Track.fromJson(e)).toList();
+
+  Future<List<Track>> mostPlayed() async =>
+      (await _get('/api/library/most-played') as List).map((e) => Track.fromJson(e)).toList();
+
+  Future<WrappedStats> statsMe() async => WrappedStats.fromJson(await _get('/api/library/stats/me'));
+
+  // ---- Lyrics ----
+  Future<Lyrics> lyrics(String trackId) async =>
+      Lyrics.fromJson(await _get('/api/library/tracks/$trackId/lyrics'));
 
   // ---- Playlists ----
   Future<List<Playlist>> playlists() async =>

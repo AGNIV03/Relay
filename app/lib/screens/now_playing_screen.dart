@@ -1,18 +1,21 @@
 import 'package:flutter/material.dart';
+import 'package:lucide_icons/lucide_icons.dart';
 import 'package:provider/provider.dart';
 import '../api.dart';
 import '../player.dart';
 import '../theme.dart';
 import '../widgets/cover.dart';
 
-class NowPlayingScreen extends StatelessWidget {
+class NowPlayingScreen extends StatefulWidget {
   const NowPlayingScreen({super.key});
+  @override
+  State<NowPlayingScreen> createState() => _NowPlayingScreenState();
+}
 
-  String _fmt(Duration d) {
-    final m = d.inMinutes;
-    final s = d.inSeconds % 60;
-    return '$m:${s.toString().padLeft(2, '0')}';
-  }
+class _NowPlayingScreenState extends State<NowPlayingScreen> {
+  bool _showLyrics = false;
+
+  String _fmt(Duration d) => "${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}";
 
   @override
   Widget build(BuildContext context) {
@@ -21,53 +24,62 @@ class NowPlayingScreen extends StatelessWidget {
     final track = player.current;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Now Playing')),
+      appBar: AppBar(
+        title: const Text("Now Playing"),
+        actions: [
+          IconButton(
+            tooltip: "Lyrics",
+            icon: Icon(LucideIcons.mic2, size: 20, color: _showLyrics ? kAccent : kMuted),
+            onPressed: () => setState(() => _showLyrics = !_showLyrics),
+          ),
+        ],
+      ),
       body: track == null
-          ? const Center(child: Text('Nothing playing', style: TextStyle(color: kMuted)))
-          : Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                children: [
-                  const Spacer(),
-                  Cover(url: api.trackCoverUrl(track.id), size: 280, radius: 16),
-                  const SizedBox(height: 32),
-                  Text(track.title,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 6),
-                  Text(track.artistName, style: const TextStyle(color: kMuted, fontSize: 16)),
-                  const SizedBox(height: 24),
-                  _ProgressBar(player: player, fmt: _fmt),
-                  const SizedBox(height: 12),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      IconButton(
-                        iconSize: 40,
-                        icon: const Icon(Icons.skip_previous),
-                        onPressed: player.previous,
-                      ),
-                      const SizedBox(width: 12),
-                      Container(
-                        decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
-                        child: IconButton(
-                          iconSize: 44,
-                          color: Colors.black,
-                          icon: Icon(player.playing ? Icons.pause : Icons.play_arrow),
-                          onPressed: player.toggle,
+          ? const Center(child: Text("Nothing playing", style: TextStyle(color: kMuted)))
+          : Column(
+              children: [
+                Expanded(
+                  child: _showLyrics
+                      ? _LyricsPane(player: player)
+                      : Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(28),
+                            child: Cover(url: api.trackCoverUrl(track.id), size: 300, radius: 18),
+                          ),
+                        ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 28),
+                  child: Column(children: [
+                    Text(track.title,
+                        textAlign: TextAlign.center,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 21, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 4),
+                    Text(track.artistName, style: const TextStyle(color: kMuted, fontSize: 15)),
+                    const SizedBox(height: 18),
+                    _ProgressBar(player: player, fmt: _fmt),
+                    const SizedBox(height: 8),
+                    Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                      IconButton(iconSize: 34, icon: const Icon(LucideIcons.skipBack), onPressed: player.previous),
+                      const SizedBox(width: 14),
+                      GestureDetector(
+                        onTap: player.toggle,
+                        child: Container(
+                          width: 64,
+                          height: 64,
+                          decoration: const BoxDecoration(color: kAccent, shape: BoxShape.circle),
+                          child: Icon(player.playing ? LucideIcons.pause : LucideIcons.play,
+                              size: 28, color: kAccentInk),
                         ),
                       ),
-                      const SizedBox(width: 12),
-                      IconButton(
-                        iconSize: 40,
-                        icon: const Icon(Icons.skip_next),
-                        onPressed: player.next,
-                      ),
-                    ],
-                  ),
-                  const Spacer(),
-                ],
-              ),
+                      const SizedBox(width: 14),
+                      IconButton(iconSize: 34, icon: const Icon(LucideIcons.skipForward), onPressed: player.next),
+                    ]),
+                  ]),
+                ),
+              ],
             ),
     );
   }
@@ -77,39 +89,115 @@ class _ProgressBar extends StatelessWidget {
   final PlayerModel player;
   final String Function(Duration) fmt;
   const _ProgressBar({required this.player, required this.fmt});
+  @override
+  Widget build(BuildContext context) {
+    final max = player.duration.inMilliseconds.toDouble();
+    final value = player.position.inMilliseconds.toDouble().clamp(0.0, max == 0 ? 1.0 : max);
+    return Column(children: [
+      SliderTheme(
+        data: SliderTheme.of(context).copyWith(
+          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+          overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+        ),
+        child: Slider(
+          value: value,
+          max: max == 0 ? 1.0 : max,
+          onChanged: (v) => player.seek(Duration(milliseconds: v.toInt())),
+        ),
+      ),
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Text(fmt(player.position), style: const TextStyle(color: kMuted, fontSize: 12)),
+          Text(fmt(player.duration), style: const TextStyle(color: kMuted, fontSize: 12)),
+        ]),
+      ),
+    ]);
+  }
+}
+
+class _LyricsPane extends StatefulWidget {
+  final PlayerModel player;
+  const _LyricsPane({required this.player});
+  @override
+  State<_LyricsPane> createState() => _LyricsPaneState();
+}
+
+class _LyricsPaneState extends State<_LyricsPane> {
+  final _scroll = ScrollController();
+  int _active = -1;
+
+  List<({double t, String text})> _parse(String lrc) {
+    final out = <({double t, String text})>[];
+    final re = RegExp(r'\[(\d+):(\d+)(?:\.(\d+))?\]');
+    for (final line in lrc.split("\n")) {
+      final ms = re.allMatches(line).toList();
+      if (ms.isEmpty) continue;
+      final text = line.replaceAll(re, "").trim();
+      for (final m in ms) {
+        final min = int.parse(m.group(1)!);
+        final sec = int.parse(m.group(2)!);
+        final frac = m.group(3) != null ? double.parse("0.${m.group(3)}") : 0.0;
+        out.add((t: min * 60 + sec + frac, text: text));
+      }
+    }
+    out.sort((a, b) => a.t.compareTo(b.t));
+    return out;
+  }
 
   @override
   Widget build(BuildContext context) {
-    final dur = player.duration;
-    final pos = player.position;
-    final max = dur.inMilliseconds.toDouble();
-    final value = pos.inMilliseconds.toDouble().clamp(0.0, max == 0 ? 1.0 : max);
-    return Column(
-      children: [
-        SliderTheme(
-          data: SliderTheme.of(context).copyWith(
-            trackHeight: 3,
-            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-          ),
-          child: Slider(
-            value: value,
-            max: max == 0 ? 1.0 : max,
-            activeColor: kAccent2,
-            inactiveColor: kPanel2,
-            onChanged: (v) => player.seek(Duration(milliseconds: v.toInt())),
+    final lyrics = widget.player.lyrics;
+    if (lyrics == null) {
+      return const Center(child: Text("Loading lyrics…", style: TextStyle(color: kMuted)));
+    }
+    if (lyrics.synced != null && lyrics.synced!.isNotEmpty) {
+      final lines = _parse(lyrics.synced!);
+      final pos = widget.player.position.inMilliseconds / 1000.0;
+      int active = -1;
+      for (int i = 0; i < lines.length; i++) {
+        if (pos >= lines[i].t - 0.2) {
+          active = i;
+        } else {
+          break;
+        }
+      }
+      if (active != _active) {
+        _active = active;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_scroll.hasClients && active >= 0) {
+            _scroll.animateTo((active * 44.0 - 160).clamp(0, _scroll.position.maxScrollExtent),
+                duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+          }
+        });
+      }
+      return ListView.builder(
+        controller: _scroll,
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 30),
+        itemCount: lines.length,
+        itemBuilder: (_, i) => GestureDetector(
+          onTap: () => widget.player.seek(Duration(milliseconds: (lines[i].t * 1000).toInt())),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 7),
+            child: Text(
+              lines[i].text.isEmpty ? "♪" : lines[i].text,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: i == active ? FontWeight.bold : FontWeight.w500,
+                color: i == active ? kAccent : kMuted.withValues(alpha: 0.6),
+              ),
+            ),
           ),
         ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(fmt(pos), style: const TextStyle(color: kMuted, fontSize: 12)),
-              Text(fmt(dur), style: const TextStyle(color: kMuted, fontSize: 12)),
-            ],
-          ),
-        ),
-      ],
-    );
+      );
+    }
+    if (lyrics.plain != null && lyrics.plain!.isNotEmpty) {
+      return SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Text(lyrics.plain!, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16)),
+      );
+    }
+    return const Center(child: Text("No lyrics found", style: TextStyle(color: kMuted)));
   }
 }

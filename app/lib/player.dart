@@ -1,13 +1,16 @@
+import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:just_audio_background/just_audio_background.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'api.dart';
 import 'downloads.dart';
 import 'models.dart';
 
-/// Wraps a just_audio [AudioPlayer], exposing the current queue + playback
-/// state to the UI and bridging into the OS media controls via
-/// just_audio_background (Android / iOS / web).
+/// Wraps a just_audio [AudioPlayer]: queue, playback state, lyrics, resume-on-
+/// reopen persistence, and a stall watchdog that auto-recovers if a stream
+/// silently stops (mitigates the mid-track cutout some networks/proxies cause).
 class PlayerModel extends ChangeNotifier {
   final Api api;
   final DownloadManager downloads;
@@ -16,24 +19,40 @@ class PlayerModel extends ChangeNotifier {
   List<Track> _queue = [];
   int _index = 0;
   bool _scrobbled = false;
+  Lyrics? _lyrics;
+  Timer? _watchdog;
+  Timer? _saveTimer;
+  Duration _lastPos = Duration.zero;
+  int _frozenTicks = 0;
+  bool _recovering = false;
+
+  static const _kSession = 'last_session';
 
   PlayerModel(this.api, this.downloads) {
     _player.currentIndexStream.listen((i) {
       if (i != null && i != _index) {
         _index = i;
         _scrobbled = false;
+        _loadLyrics();
         notifyListeners();
       }
     });
-    _player.playerStateStream.listen((_) => notifyListeners());
+    _player.playerStateStream.listen((_) {
+      _saveSession();
+      notifyListeners();
+    });
     _player.positionStream.listen((pos) {
-      // Scrobble a play once we're a few seconds in.
       if (!_scrobbled && pos.inSeconds >= 5 && current != null) {
         _scrobbled = true;
         api.scrobble(current!.id).catchError((_) {});
       }
       notifyListeners();
     });
+    // Stall watchdog: if we're "playing" but the position hasn't advanced and
+    // we're not legitimately buffering, the stream likely dropped — reload it.
+    _watchdog = Timer.periodic(const Duration(seconds: 4), (_) => _checkStall());
+    // Persist position periodically so "resume where you left off" is accurate.
+    _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) => _saveSession());
   }
 
   AudioPlayer get raw => _player;
@@ -43,6 +62,7 @@ class PlayerModel extends ChangeNotifier {
   bool get playing => _player.playing;
   Duration get position => _player.position;
   Duration get duration => _player.duration ?? Duration.zero;
+  Lyrics? get lyrics => _lyrics;
 
   AudioSource _sourceFor(Track t) {
     final local = downloads.localPath(t.id);
@@ -64,11 +84,15 @@ class PlayerModel extends ChangeNotifier {
     _queue = List.of(tracks);
     _index = start;
     _scrobbled = false;
+    _loadLyrics();
     notifyListeners();
-    final source = ConcatenatingAudioSource(children: tracks.map(_sourceFor).toList());
     try {
-      await _player.setAudioSource(source, initialIndex: start);
+      await _player.setAudioSource(
+        ConcatenatingAudioSource(children: tracks.map(_sourceFor).toList()),
+        initialIndex: start,
+      );
       await _player.play();
+      _saveSession();
     } catch (e) {
       debugPrint('play error: $e');
     }
@@ -95,8 +119,108 @@ class PlayerModel extends ChangeNotifier {
   Future<void> setVolume(double v) => _player.setVolume(v);
   double get volume => _player.volume;
 
+  // ---- Lyrics ----
+  Future<void> _loadLyrics() async {
+    _lyrics = null;
+    notifyListeners();
+    final t = current;
+    if (t == null) return;
+    try {
+      final l = await api.lyrics(t.id);
+      if (current?.id == t.id) {
+        _lyrics = l;
+        notifyListeners();
+      }
+    } catch (_) {}
+  }
+
+  // ---- Stall recovery (cutout mitigation) ----
+  void _checkStall() {
+    final t = current;
+    if (t == null || _recovering) return;
+    final st = _player.processingState;
+    final isStreaming = downloads.localPath(t.id) == null;
+    if (_player.playing && isStreaming && st == ProcessingState.ready) {
+      if (_player.position == _lastPos) {
+        _frozenTicks++;
+        if (_frozenTicks >= 2) _recoverStream();
+      } else {
+        _frozenTicks = 0;
+      }
+    } else {
+      _frozenTicks = 0;
+    }
+    _lastPos = _player.position;
+  }
+
+  Future<void> _recoverStream() async {
+    if (_recovering || _queue.isEmpty) return;
+    _recovering = true;
+    _frozenTicks = 0;
+    final at = _player.position;
+    final idx = _index;
+    debugPrint('player: stream stalled — recovering at $at');
+    try {
+      await _player.setAudioSource(
+        ConcatenatingAudioSource(children: _queue.map(_sourceFor).toList()),
+        initialIndex: idx,
+        initialPosition: at,
+      );
+      await _player.play();
+    } catch (e) {
+      debugPrint('recover failed: $e');
+    } finally {
+      _recovering = false;
+    }
+  }
+
+  // ---- Resume persistence ----
+  Future<void> _saveSession() async {
+    if (_queue.isEmpty) return;
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setString(
+        _kSession,
+        jsonEncode({
+          'queue': _queue.map((t) => t.toJson()).toList(),
+          'index': _index,
+          'position': _player.position.inMilliseconds,
+        }),
+      );
+    } catch (_) {}
+  }
+
+  /// Restore the last session paused at its saved position (call on startup).
+  Future<void> restoreSession() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      final raw = p.getString(_kSession);
+      if (raw == null) return;
+      final data = jsonDecode(raw) as Map<String, dynamic>;
+      final tracks = (data['queue'] as List).map((e) => Track.fromJson(e)).toList();
+      if (tracks.isEmpty) return;
+      _queue = tracks;
+      _index = (data['index'] as int?) ?? 0;
+      if (_index < 0 || _index >= _queue.length) _index = 0;
+      final posMs = (data['position'] as int?) ?? 0;
+      _loadLyrics();
+      notifyListeners();
+      await _player.setAudioSource(
+        ConcatenatingAudioSource(children: _queue.map(_sourceFor).toList()),
+        initialIndex: _index,
+        initialPosition: Duration(milliseconds: posMs),
+        preload: false,
+      );
+      // Do NOT auto-play — leave it paused so the user can resume.
+    } catch (e) {
+      debugPrint('restore failed: $e');
+    }
+  }
+
   @override
   void dispose() {
+    _watchdog?.cancel();
+    _saveTimer?.cancel();
     _player.dispose();
     super.dispose();
   }

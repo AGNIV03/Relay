@@ -50,6 +50,7 @@ class Track {
   final int? trackNo;
   final String? format;
   final int? bitrate;
+  final int? playCount;
   final Artist? artist;
   final Album? album;
 
@@ -60,6 +61,7 @@ class Track {
     this.trackNo,
     this.format,
     this.bitrate,
+    this.playCount,
     this.artist,
     this.album,
   });
@@ -71,12 +73,71 @@ class Track {
         trackNo: j['trackNo'] as int?,
         format: j['format'] as String?,
         bitrate: j['bitrate'] as int?,
+        playCount: j['playCount'] as int?,
         artist: j['artist'] != null ? Artist.fromJson(j['artist']) : null,
         album: j['album'] != null ? Album.fromJson(j['album']) : null,
       );
 
   String get artistName => artist?.name ?? '';
   String get albumTitle => album?.title ?? '';
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'duration': duration,
+        'trackNo': trackNo,
+        'format': format,
+        'bitrate': bitrate,
+        'artist': artist == null ? null : {'id': artist!.id, 'name': artist!.name},
+        'album': album == null
+            ? null
+            : {'id': album!.id, 'title': album!.title, 'year': album!.year},
+      };
+}
+
+class WrappedStats {
+  final int totalPlays;
+  final int totalMinutes;
+  final int distinctTracks;
+  final List<({String name, int count})> topArtists;
+  final List<({String name, int count})> topGenres;
+  final List<({String title, String artist, int playCount})> topTracks;
+
+  WrappedStats({
+    required this.totalPlays,
+    required this.totalMinutes,
+    required this.distinctTracks,
+    required this.topArtists,
+    required this.topGenres,
+    required this.topTracks,
+  });
+
+  factory WrappedStats.fromJson(Map<String, dynamic> j) => WrappedStats(
+        totalPlays: j['totalPlays'] as int? ?? 0,
+        totalMinutes: j['totalMinutes'] as int? ?? 0,
+        distinctTracks: j['distinctTracks'] as int? ?? 0,
+        topArtists: ((j['topArtists'] as List?) ?? [])
+            .map((e) => (name: e['name'] as String, count: e['count'] as int))
+            .toList(),
+        topGenres: ((j['topGenres'] as List?) ?? [])
+            .map((e) => (name: e['name'] as String, count: e['count'] as int))
+            .toList(),
+        topTracks: ((j['topTracks'] as List?) ?? [])
+            .map((e) => (
+                  title: e['title'] as String,
+                  artist: e['artist'] as String,
+                  playCount: e['playCount'] as int
+                ))
+            .toList(),
+      );
+}
+
+class Lyrics {
+  final String? synced;
+  final String? plain;
+  Lyrics({this.synced, this.plain});
+  factory Lyrics.fromJson(Map<String, dynamic> j) =>
+      Lyrics(synced: j['synced'] as String?, plain: j['plain'] as String?);
 }
 
 class Playlist {

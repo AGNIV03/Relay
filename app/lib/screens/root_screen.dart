@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:lucide_icons/lucide_icons.dart';
 import 'package:provider/provider.dart';
 import '../app_state.dart';
+import '../player.dart';
+import '../theme.dart';
 import '../widgets/mini_player.dart';
 import 'home_screen.dart';
-import 'search_screen.dart';
-import 'library_screen.dart';
-import 'favorites_screen.dart';
+import 'songs_screen.dart';
+import 'artists_screen.dart';
+import 'playlists_screen.dart';
 
 class RootScreen extends StatefulWidget {
   const RootScreen({super.key});
@@ -15,19 +18,27 @@ class RootScreen extends StatefulWidget {
 
 class _RootScreenState extends State<RootScreen> {
   int _index = 0;
+  static const _titles = ["Home", "Songs", "Artists", "Playlists"];
 
-  static const _titles = ['Home', 'Search', 'Library', 'Favorites'];
+  @override
+  void initState() {
+    super.initState();
+    // Resume whatever was playing when the app was last closed (paused).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      context.read<PlayerModel>().restoreSession();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
-    final pages = const [HomeScreen(), SearchScreen(), LibraryScreen(), FavoritesScreen()];
+    const pages = [HomeScreen(), SongsScreen(), ArtistsScreen(), PlaylistsScreen()];
     return Scaffold(
       appBar: AppBar(
         title: Text(_titles[_index]),
         actions: [
           IconButton(
-            icon: const Icon(Icons.logout),
-            tooltip: 'Sign out',
+            icon: const Icon(LucideIcons.logOut, size: 20),
+            tooltip: "Sign out",
             onPressed: () => context.read<AppState>().logout(),
           ),
         ],
@@ -38,13 +49,15 @@ class _RootScreenState extends State<RootScreen> {
         children: [
           const MiniPlayer(),
           NavigationBar(
+            height: 64,
+            backgroundColor: kPanel,
             selectedIndex: _index,
             onDestinationSelected: (i) => setState(() => _index = i),
             destinations: const [
-              NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'Home'),
-              NavigationDestination(icon: Icon(Icons.search), label: 'Search'),
-              NavigationDestination(icon: Icon(Icons.library_music_outlined), selectedIcon: Icon(Icons.library_music), label: 'Library'),
-              NavigationDestination(icon: Icon(Icons.favorite_border), selectedIcon: Icon(Icons.favorite), label: 'Favorites'),
+              NavigationDestination(icon: Icon(LucideIcons.home), label: "Home"),
+              NavigationDestination(icon: Icon(LucideIcons.music2), label: "Songs"),
+              NavigationDestination(icon: Icon(LucideIcons.mic2), label: "Artists"),
+              NavigationDestination(icon: Icon(LucideIcons.listMusic), label: "Playlists"),
             ],
           ),
         ],

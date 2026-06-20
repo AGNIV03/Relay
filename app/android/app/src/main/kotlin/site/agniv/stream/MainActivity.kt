@@ -1,4 +1,4 @@
-package eco.regenesis.stream_app
+package site.agniv.stream
 
 // just_audio_background / audio_service requires the host Activity to extend
 // AudioServiceActivity (not the default FlutterActivity) so it provides the

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 import 'package:just_audio_media_kit/just_audio_media_kit.dart';
 import 'package:provider/provider.dart';
+import 'package:window_manager/window_manager.dart';
 
 import 'api.dart';
 import 'app_state.dart';
@@ -13,36 +14,52 @@ import 'theme.dart';
 import 'screens/login_screen.dart';
 import 'screens/root_screen.dart';
 
+bool get _isDesktop => !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Desktop: keep running on window-close (minimize to taskbar like a music app).
+  if (_isDesktop) {
+    await windowManager.ensureInitialized();
+    await windowManager.setPreventClose(true);
+    windowManager.addListener(_CloseToTaskbar());
+  }
 
   final api = Api(baseUrl: '');
   final downloads = DownloadManager(api);
 
-  // Audio backend init must NEVER block or crash app startup (a throw/hang here
-  // would leave the user staring at a black screen). Wrap it defensively.
+  // Audio backend init must never block/crash startup.
   try {
-    final isWinOrLinux = !kIsWeb && (Platform.isWindows || Platform.isLinux);
-    if (isWinOrLinux) {
+    if (_isDesktop) {
       JustAudioMediaKit.ensureInitialized();
     } else {
       await JustAudioBackground.init(
-        androidNotificationChannelId: 'eco.regenesis.stream.audio',
+        androidNotificationChannelId: 'site.agniv.stream.audio',
         androidNotificationChannelName: 'Stream playback',
         androidNotificationOngoing: true,
       ).timeout(const Duration(seconds: 8));
     }
   } catch (e, st) {
-    debugPrint('audio backend init failed (continuing without it): $e\n$st');
+    debugPrint('audio backend init failed (continuing): $e\n$st');
   }
 
   try {
     await downloads.init();
   } catch (e) {
-    debugPrint('downloads init failed (continuing): $e');
+    debugPrint('downloads init failed: $e');
   }
 
   runApp(StreamApp(api: api, downloads: downloads));
+}
+
+/// On desktop, the window-close button minimizes instead of quitting so playback
+/// continues (taskbar).
+class _CloseToTaskbar extends WindowListener {
+  @override
+  void onWindowClose() async {
+    await windowManager.minimize();
+  }
 }
 
 class StreamApp extends StatelessWidget {
