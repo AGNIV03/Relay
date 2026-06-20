@@ -16,22 +16,31 @@ import 'screens/root_screen.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Windows/Linux: register the media_kit backend for just_audio.
-  // Android/iOS/macOS/web: OS media controls / lock-screen via just_audio_background.
-  final isWinOrLinux = !kIsWeb && (Platform.isWindows || Platform.isLinux);
-  if (isWinOrLinux) {
-    JustAudioMediaKit.ensureInitialized();
-  } else {
-    await JustAudioBackground.init(
-      androidNotificationChannelId: 'eco.regenesis.stream.audio',
-      androidNotificationChannelName: 'Stream playback',
-      androidNotificationOngoing: true,
-    );
-  }
-
   final api = Api(baseUrl: '');
   final downloads = DownloadManager(api);
-  await downloads.init();
+
+  // Audio backend init must NEVER block or crash app startup (a throw/hang here
+  // would leave the user staring at a black screen). Wrap it defensively.
+  try {
+    final isWinOrLinux = !kIsWeb && (Platform.isWindows || Platform.isLinux);
+    if (isWinOrLinux) {
+      JustAudioMediaKit.ensureInitialized();
+    } else {
+      await JustAudioBackground.init(
+        androidNotificationChannelId: 'eco.regenesis.stream.audio',
+        androidNotificationChannelName: 'Stream playback',
+        androidNotificationOngoing: true,
+      ).timeout(const Duration(seconds: 8));
+    }
+  } catch (e, st) {
+    debugPrint('audio backend init failed (continuing without it): $e\n$st');
+  }
+
+  try {
+    await downloads.init();
+  } catch (e) {
+    debugPrint('downloads init failed (continuing): $e');
+  }
 
   runApp(StreamApp(api: api, downloads: downloads));
 }

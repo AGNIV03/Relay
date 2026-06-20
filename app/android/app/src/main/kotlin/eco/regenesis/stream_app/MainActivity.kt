@@ -1,5 +1,8 @@
 package eco.regenesis.stream_app
 
-import io.flutter.embedding.android.FlutterActivity
+// just_audio_background / audio_service requires the host Activity to extend
+// AudioServiceActivity (not the default FlutterActivity) so it provides the
+// correct FlutterEngine. Using FlutterActivity crashes JustAudioBackground.init().
+import com.ryanheise.audioservice.AudioServiceActivity
 
-class MainActivity : FlutterActivity()
+class MainActivity : AudioServiceActivity()
