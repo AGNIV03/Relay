@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 import 'package:just_audio_media_kit/just_audio_media_kit.dart';
 import 'package:provider/provider.dart';
+import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'api.dart';
@@ -19,11 +20,12 @@ bool get _isDesktop => !kIsWeb && (Platform.isWindows || Platform.isLinux || Pla
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Desktop: keep running on window-close (minimize to taskbar like a music app).
+  // Desktop: close button hides the window to the system tray (keeps playback
+  // alive) instead of quitting; the app is actually closed from the tray menu.
   if (_isDesktop) {
     await windowManager.ensureInitialized();
     await windowManager.setPreventClose(true);
-    windowManager.addListener(_CloseToTaskbar());
+    await _CloseToTray.instance.setup();
   }
 
   final api = Api(baseUrl: '');
@@ -53,12 +55,67 @@ Future<void> main() async {
   runApp(StreamApp(api: api, downloads: downloads));
 }
 
-/// On desktop, the window-close button minimizes instead of quitting so playback
-/// continues (taskbar).
-class _CloseToTaskbar extends WindowListener {
+/// On desktop, the window-close button hides the window into the system tray
+/// (notification area / overflow chevron) instead of quitting, so playback keeps
+/// going. A tray icon stays in the tray: left-click re-opens the window;
+/// right-click → "Quit" actually exits the app.
+class _CloseToTray with WindowListener, TrayListener {
+  _CloseToTray._();
+  static final instance = _CloseToTray._();
+
+  Future<void> setup() async {
+    windowManager.addListener(this);
+    trayManager.addListener(this);
+    try {
+      await trayManager.setIcon('assets/tray_icon.ico');
+      await trayManager.setToolTip('Stream');
+      await trayManager.setContextMenu(Menu(items: [
+        MenuItem(key: 'show', label: 'Open Stream'),
+        MenuItem.separator(),
+        MenuItem(key: 'quit', label: 'Quit'),
+      ]));
+    } catch (e) {
+      debugPrint('[tray] setup failed: $e');
+    }
+  }
+
+  Future<void> _restore() async {
+    await windowManager.show();
+    await windowManager.focus();
+  }
+
+  // Close button -> hide to tray. Hiding the window (SW_HIDE) already removes its
+  // taskbar button, leaving only the tray icon.
   @override
   void onWindowClose() async {
-    await windowManager.minimize();
+    debugPrint('[tray] onWindowClose -> hide');
+    try {
+      await windowManager.hide();
+    } catch (e) {
+      debugPrint('[tray] hide failed: $e');
+    }
+  }
+
+  // Left-click the tray icon -> bring the window back.
+  @override
+  void onTrayIconMouseDown() => _restore();
+
+  // Right-click the tray icon -> show the Open/Quit menu. bringAppToFront makes
+  // our (hidden) window the foreground owner so the menu dismisses on an
+  // outside click instead of sticking (Win32 TrackPopupMenu quirk).
+  @override
+  void onTrayIconRightMouseDown() =>
+      trayManager.popUpContextMenu(bringAppToFront: true);
+
+  @override
+  void onTrayMenuItemClick(MenuItem menuItem) async {
+    if (menuItem.key == 'show') {
+      await _restore();
+    } else if (menuItem.key == 'quit') {
+      await trayManager.destroy();
+      await windowManager.setPreventClose(false);
+      await windowManager.destroy();
+    }
   }
 }
 

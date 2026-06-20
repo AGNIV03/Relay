@@ -35,8 +35,10 @@ dependencies:
   # Aliased to Lucide-style names in lib/app_icons.dart.
   material_symbols_icons: ^4.2719.0
 
-  # Desktop window control (minimize-to-taskbar instead of quitting on close)
+  # Desktop window control + system-tray (close button hides to the tray instead
+  # of quitting; quit from the tray's right-click menu).
   window_manager: ^0.4.3
+  tray_manager: ^0.5.0
 
 dev_dependencies:
   flutter_test:
@@ -45,3 +47,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/tray_icon.ico
