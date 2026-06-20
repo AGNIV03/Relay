@@ -36,8 +36,8 @@ export function SquigglyProgress({
   useEffect(() => {
     const H = 26;
     const mid = H / 2;
-    const amp = 4.5; // wave height
-    const wavelength = 22; // px per cycle
+    const amp = 5; // gentle wave height
+    const wavelength = 80; // long, rolling waves
     let phase = 0;
     let last = performance.now();
     let raf = 0;
@@ -64,7 +64,7 @@ export function SquigglyProgress({
       const frac = Math.max(0, Math.min(1, dispPos.current / d));
       const headX = frac * W;
 
-      if (isPlaying.current && !dragging.current) phase += dt * 7; // ripple speed
+      if (isPlaying.current && !dragging.current) phase += dt * 1.1; // slow, calm roll
 
       // Build the played wave path. Amplitude tapers to 0 at the head so the
       // wave meets the thumb cleanly (Pixel-style).
@@ -72,7 +72,7 @@ export function SquigglyProgress({
       const step = 3;
       for (let x = 0; x <= headX; x += step) {
         const distToHead = headX - x;
-        const taper = Math.min(1, distToHead / 16);
+        const taper = Math.min(1, distToHead / 24);
         const y = mid + Math.sin(x / wavelength * Math.PI * 2 - phase) * amp * taper;
         pd += ` L ${x.toFixed(1)} ${y.toFixed(1)}`;
       }
