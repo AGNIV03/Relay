@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Playlist } from "@/lib/types";
 
@@ -45,7 +46,7 @@ export default function PlaylistsPage() {
         />
         <button
           type="submit"
-          className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-2)]"
+          className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--accent-ink)] hover:brightness-110"
         >
           Create
         </button>
@@ -71,7 +72,7 @@ export default function PlaylistsPage() {
                 className="ml-2 text-[var(--muted)] hover:text-red-400"
                 title="Delete"
               >
-                🗑
+                <Trash2 size={16} />
               </button>
             </div>
           ))}

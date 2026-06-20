@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
+import { Play, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { usePlayer } from "@/context/PlayerContext";
 import { fmtTime } from "@/lib/format";
@@ -37,9 +38,9 @@ export default function PlaylistPage() {
         {tracks.length > 0 && (
           <button
             onClick={() => player.playQueue(tracks, 0)}
-            className="rounded-full bg-[var(--accent)] px-6 py-2 text-sm font-medium text-white hover:bg-[var(--accent-2)]"
+            className="flex items-center gap-2 rounded-full bg-[var(--accent)] px-6 py-2 text-sm font-medium text-[var(--accent-ink)] hover:brightness-110"
           >
-            ▶ Play
+            <Play size={16} /> Play
           </button>
         )}
       </div>
@@ -57,7 +58,7 @@ export default function PlaylistPage() {
                   onClick={() => player.playQueue(tracks, i)}
                 >
                   <span className="group-hover:hidden">{i + 1}</span>
-                  <span className="hidden group-hover:inline">▶</span>
+                  <Play size={13} className="mx-auto hidden group-hover:block" />
                 </td>
                 <td
                   className="cursor-pointer px-3 py-2"
@@ -78,7 +79,7 @@ export default function PlaylistPage() {
                     className="text-[var(--muted)] opacity-0 hover:text-red-400 group-hover:opacity-100"
                     title="Remove"
                   >
-                    ✕
+                    <X size={15} />
                   </button>
                 </td>
               </tr>
