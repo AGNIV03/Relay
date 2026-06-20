@@ -57,9 +57,9 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
                       label: Text(allDown ? 'Downloaded' : 'Download'),
                       onPressed: () async {
                         if (allDown) {
-                          await downloads.removeAll(tracks);
+                          await downloads.removeAll(tracks, 'liked');
                         } else {
-                          await downloads.downloadAll(tracks);
+                          await downloads.downloadAll(tracks, 'liked');
                         }
                       },
                     ),

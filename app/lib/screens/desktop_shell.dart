@@ -16,6 +16,7 @@ import 'songs_screen.dart';
 import 'artists_screen.dart';
 import 'playlists_screen.dart';
 import 'liked_songs_screen.dart';
+import 'lyrics_screen.dart';
 import 'playlist_detail_screen.dart';
 import 'now_playing_screen.dart';
 
@@ -69,7 +70,9 @@ class _DesktopShellState extends State<DesktopShell> {
           ),
         ],
       ),
-      bottomNavigationBar: const _DesktopPlayerBar(),
+      bottomNavigationBar: _DesktopPlayerBar(
+        onOpenLyrics: () => _openInTab(const LyricsScreen()),
+      ),
     );
   }
 }
@@ -206,7 +209,8 @@ class _NavItem extends StatelessWidget {
 }
 
 class _DesktopPlayerBar extends StatelessWidget {
-  const _DesktopPlayerBar();
+  final VoidCallback onOpenLyrics;
+  const _DesktopPlayerBar({required this.onOpenLyrics});
 
   String _fmt(Duration d) => "${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}";
 
@@ -319,9 +323,7 @@ class _DesktopPlayerBar extends StatelessWidget {
                       tooltip: 'Lyrics',
                       iconSize: 19,
                       icon: const Icon(LucideIcons.lyrics, color: kMuted),
-                      onPressed: () => Navigator.of(context).push(MaterialPageRoute(
-                        builder: (_) => const NowPlayingScreen(showLyrics: true),
-                      )),
+                      onPressed: onOpenLyrics,
                     ),
                     const SizedBox(width: 4),
                     const Icon(LucideIcons.volume2, size: 18, color: kMuted),

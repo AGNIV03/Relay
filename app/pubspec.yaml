@@ -43,6 +43,12 @@ dependencies:
   # Pick local audio files to upload (desktop + mobile).
   file_picker: ^8.1.4
 
+# Patched just_audio_background: media notification shows prev/play/next only
+# (no stop button). See third_party/just_audio_background.
+dependency_overrides:
+  just_audio_background:
+    path: third_party/just_audio_background
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

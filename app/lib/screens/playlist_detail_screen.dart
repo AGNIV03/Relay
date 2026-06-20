@@ -71,9 +71,9 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                                 : 'Download'),
                         onPressed: () async {
                           if (allDown) {
-                            await downloads.removeAll(tracks);
+                            await downloads.removeAll(tracks, widget.playlistId);
                           } else {
-                            await downloads.downloadAll(tracks);
+                            await downloads.downloadAll(tracks, widget.playlistId);
                           }
                         },
                       ),
@@ -93,9 +93,13 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                       child: const Icon(Icons.delete),
                     ),
                     onDismissed: (_) async {
-                      await context
-                          .read<Api>()
-                          .removeFromPlaylist(widget.playlistId, tracks[i].id);
+                      final id = tracks[i].id;
+                      final api = context.read<Api>();
+                      final downloads = context.read<DownloadManager>();
+                      await api.removeFromPlaylist(widget.playlistId, id);
+                      // Removed from this playlist — drop its download if no other
+                      // source still needs it.
+                      await downloads.onRemovedFromSource(id, widget.playlistId);
                     },
                     child: TrackTile(tracks: tracks, index: i),
                   ),

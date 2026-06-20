@@ -37,6 +37,7 @@ Future<void> main() async {
         androidNotificationChannelId: 'site.agniv.stream.audio',
         androidNotificationChannelName: 'Relay playback',
         androidNotificationOngoing: true,
+        androidNotificationIcon: 'drawable/ic_notification',
       ).timeout(const Duration(seconds: 8));
     }
   } catch (e, st) {
