@@ -35,3 +35,19 @@ uploads/
 *.log
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# Editors / IDEs (personal dev settings — not needed to build)
+.vscode/
+.idea/
+*.iml
+*.suo
+*.user
+*.swp
+*.swo
+*~
+
+# Misc build/test artifacts not needed for a server deploy
+coverage/
+*.tsbuildinfo
+.eslintcache
