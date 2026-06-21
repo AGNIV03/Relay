@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import '../app_icons.dart';
 import '../models.dart';
 import '../player.dart';
@@ -10,9 +11,9 @@ const _langNames = {
   'ar': 'Arabic', 'nl': 'Dutch', 'sv': 'Swedish', 'pl': 'Polish', 'tr': 'Turkish',
 };
 
-/// Scrolling, time-synced lyrics for the current track (tap a line to seek).
-/// When a translation exists it's shown line-by-line beneath each original line
-/// (the translation is downloaded + stored with the song, so it's instant).
+/// Scrolling, time-synced lyrics for the current track (tap a line to seek). The
+/// current line auto-centres in the view; the user can scroll freely, which pauses
+/// auto-follow and shows a "sync" button to re-centre + resume following.
 class LyricsPane extends StatefulWidget {
   final PlayerModel player;
   const LyricsPane({super.key, required this.player});
@@ -22,9 +23,11 @@ class LyricsPane extends StatefulWidget {
 
 class _LyricsPaneState extends State<LyricsPane> {
   final _scroll = ScrollController();
+  final _activeKey = GlobalKey();
   int _active = -1;
   String? _lastTrackId;
   bool _showTrans = true; // default on whenever a translation exists
+  bool _following = true; // auto-centre the current line until the user scrolls
 
   @override
   void dispose() {
@@ -62,6 +65,34 @@ class _LyricsPaneState extends State<LyricsPane> {
         .toList();
   }
 
+  /// Centre the active line in the viewport. If it isn't currently built (the user
+  /// scrolled it off-screen), jump near it first so it builds, then centre precisely.
+  void _centerActive() {
+    if (!_scroll.hasClients || _active < 0) return;
+    final ctx = _activeKey.currentContext;
+    if (ctx != null) {
+      Scrollable.ensureVisible(ctx,
+          alignment: 0.5, duration: const Duration(milliseconds: 350), curve: Curves.easeOut);
+      return;
+    }
+    // Off-screen: jump to a rough estimate, then refine next frame.
+    final est = (_active * 56.0 - _scroll.position.viewportDimension / 2)
+        .clamp(0.0, _scroll.position.maxScrollExtent);
+    _scroll.jumpTo(est);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final c = _activeKey.currentContext;
+      if (c != null) {
+        Scrollable.ensureVisible(c,
+            alignment: 0.5, duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
+      }
+    });
+  }
+
+  void _resync() {
+    setState(() => _following = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _centerActive());
+  }
+
   @override
   Widget build(BuildContext context) {
     final lyrics = widget.player.lyrics;
@@ -69,6 +100,7 @@ class _LyricsPaneState extends State<LyricsPane> {
     if (trackId != _lastTrackId) {
       _lastTrackId = trackId;
       _active = -1;
+      _following = true; // re-follow on a new track
     }
     final hasLyrics = lyrics != null && (lyrics.synced != null || lyrics.plain != null);
     final hasTrans = lyrics?.translated != null && lyrics!.translated!.trim().isNotEmpty;
@@ -123,51 +155,77 @@ class _LyricsPaneState extends State<LyricsPane> {
       }
       if (active != _active) {
         _active = active;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (_scroll.hasClients && active >= 0) {
-            _scroll.animateTo((active * 56.0 - 160).clamp(0, _scroll.position.maxScrollExtent),
-                duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
-          }
-        });
+        if (_following) {
+          WidgetsBinding.instance.addPostFrameCallback((_) => _centerActive());
+        }
       }
-      return ListView.builder(
-        controller: _scroll,
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 30),
-        itemCount: lines.length,
-        itemBuilder: (_, i) => GestureDetector(
-          onTap: () => widget.player.seek(Duration(milliseconds: (lines[i].t * 1000).toInt())),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 7),
-            child: Column(
-              children: [
-                Text(
-                  lines[i].text.isEmpty ? "♪" : lines[i].text,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: i == active ? FontWeight.bold : FontWeight.w500,
-                    color: i == active ? kAccent : kMuted.withValues(alpha: 0.6),
+      return Stack(
+        children: [
+          NotificationListener<ScrollNotification>(
+            // A user-initiated scroll pauses auto-follow.
+            onNotification: (n) {
+              if (n is UserScrollNotification &&
+                  n.direction != ScrollDirection.idle &&
+                  _following) {
+                setState(() => _following = false);
+              }
+              return false;
+            },
+            child: ListView.builder(
+              controller: _scroll,
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 30),
+              itemCount: lines.length,
+              itemBuilder: (_, i) => GestureDetector(
+                key: i == active ? _activeKey : null,
+                onTap: () => widget.player.seek(Duration(milliseconds: (lines[i].t * 1000).toInt())),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 7),
+                  child: Column(
+                    children: [
+                      Text(
+                        lines[i].text.isEmpty ? "♪" : lines[i].text,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: i == active ? FontWeight.bold : FontWeight.w500,
+                          color: i == active ? kAccent : kMuted.withValues(alpha: 0.6),
+                        ),
+                      ),
+                      if (showTrans && trans[i] != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 3),
+                          child: Text(
+                            trans[i]!,
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontStyle: FontStyle.italic,
+                              color: i == active
+                                  ? kAccent.withValues(alpha: 0.75)
+                                  : kMuted.withValues(alpha: 0.45),
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
-                if (showTrans && trans[i] != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 3),
-                    child: Text(
-                      trans[i]!,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontStyle: FontStyle.italic,
-                        color: i == active
-                            ? kAccent.withValues(alpha: 0.75)
-                            : kMuted.withValues(alpha: 0.45),
-                      ),
-                    ),
-                  ),
-              ],
+              ),
             ),
           ),
-        ),
+          // Re-sync button: only while auto-follow is paused and a line is active.
+          if (!_following && active >= 0)
+            Positioned(
+              right: 16,
+              bottom: 16,
+              child: FloatingActionButton.small(
+                backgroundColor: kAccent,
+                foregroundColor: kAccentInk,
+                onPressed: _resync,
+                tooltip: 'Sync to current line',
+                child: const Icon(Icons.vertical_align_center, size: 20),
+              ),
+            ),
+        ],
       );
     }
     if (lyrics.plain != null && lyrics.plain!.isNotEmpty) {

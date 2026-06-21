@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AlignVerticalJustifyCenter } from "lucide-react";
 import { usePlayer } from "@/context/PlayerContext";
 
 interface Line {
@@ -46,6 +47,7 @@ export function LyricsView({ onClose }: { onClose: () => void }) {
   const activeRef = useRef<HTMLDivElement>(null);
 
   const [showTrans, setShowTrans] = useState(false);
+  const [following, setFollowing] = useState(true);
 
   const lines = useMemo(() => (lyrics?.synced ? parseLrc(lyrics.synced) : []), [lyrics?.synced]);
   const plainLines = useMemo(
@@ -73,14 +75,34 @@ export function LyricsView({ onClose }: { onClose: () => void }) {
     return idx;
   }, [lines, position]);
 
+  // Auto-centre the active line while following.
   useEffect(() => {
-    activeRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [activeIdx]);
+    if (following) activeRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [activeIdx, following]);
 
-  // Default to showing translations whenever a non-English translation exists.
+  // A user-initiated scroll (wheel / touch / drag) pauses auto-follow.
   useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const pause = () => setFollowing(false);
+    el.addEventListener("wheel", pause, { passive: true });
+    el.addEventListener("touchmove", pause, { passive: true });
+    return () => {
+      el.removeEventListener("wheel", pause);
+      el.removeEventListener("touchmove", pause);
+    };
+  }, []);
+
+  // Re-follow on a new track; default translations on when one exists.
+  useEffect(() => {
+    setFollowing(true);
     setShowTrans(!!lyrics?.translated);
   }, [current?.id, lyrics?.translated]);
+
+  function resync() {
+    setFollowing(true);
+    activeRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
 
   const hasLyrics = lines.length > 0 || !!lyrics?.plain;
   const hasTrans = !!lyrics?.translated;
@@ -162,6 +184,17 @@ export function LyricsView({ onClose }: { onClose: () => void }) {
           </div>
         )}
       </div>
+
+      {/* Re-sync button: shown while auto-follow is paused. */}
+      {!following && lines.length > 0 && (
+        <button
+          onClick={resync}
+          title="Sync to current line"
+          className="absolute bottom-6 right-6 flex h-11 w-11 items-center justify-center rounded-full bg-[var(--accent)] text-[var(--accent-ink)] shadow-lg transition hover:scale-105"
+        >
+          <AlignVerticalJustifyCenter size={20} />
+        </button>
+      )}
     </div>
   );
 }
