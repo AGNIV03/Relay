@@ -1,10 +1,25 @@
 import { Router } from "express";
 import { z } from "zod";
+import multer from "multer";
+import path from "node:path";
+import { promises as fsp } from "node:fs";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
+import { env } from "../lib/env.js";
+import {
+  generatePlaylistCollage,
+  saveCustomPlaylistCover,
+  refreshAutoCollage,
+} from "../services/playlistCover.js";
 
 const router = Router();
 router.use(requireAuth);
+
+const coverUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => cb(null, file.mimetype.startsWith("image/")),
+});
 
 /** GET /api/playlists — current user's playlists, most-played first */
 router.get("/", async (req, res) => {
@@ -87,6 +102,7 @@ router.post("/:id/tracks", async (req, res) => {
     const item = await prisma.playlistTrack.create({
       data: { playlistId: playlist.id, trackId: parsed.data.trackId, position },
     });
+    refreshAutoCollage(playlist.id, playlist.coverCustom); // keep the collage fresh
     res.status(201).json(item);
   } catch {
     res.status(409).json({ error: "Track already in playlist" });
@@ -102,7 +118,58 @@ router.delete("/:id/tracks/:trackId", async (req, res) => {
   await prisma.playlistTrack.deleteMany({
     where: { playlistId: playlist.id, trackId: req.params.trackId },
   });
+  refreshAutoCollage(playlist.id, playlist.coverCustom);
   res.status(204).end();
+});
+
+// ---- Cover art ------------------------------------------------------------
+
+/** GET /api/playlists/:id/cover — collage (auto-generated on demand) or custom image */
+router.get("/:id/cover", async (req, res) => {
+  const pl = await prisma.playlist.findFirst({
+    where: { id: req.params.id, userId: req.user!.id },
+  });
+  if (!pl) return res.status(404).end();
+  let rel = pl.coverPath;
+  // Generate a collage lazily the first time (or if the file went missing).
+  if (rel) {
+    try {
+      await fsp.access(path.resolve(env.dataPath, rel));
+    } catch {
+      rel = null;
+    }
+  }
+  if (!rel) rel = await generatePlaylistCollage(pl.id).catch(() => null);
+  if (!rel) return res.status(404).end();
+  res.setHeader("Cache-Control", "no-cache");
+  res.sendFile(path.resolve(env.dataPath, rel));
+});
+
+/** POST /api/playlists/:id/cover/regenerate — rebuild the auto collage */
+router.post("/:id/cover/regenerate", async (req, res) => {
+  const pl = await prisma.playlist.findFirst({
+    where: { id: req.params.id, userId: req.user!.id },
+  });
+  if (!pl) return res.status(404).json({ error: "Not found" });
+  await prisma.playlist.update({ where: { id: pl.id }, data: { coverCustom: false } });
+  const rel = await generatePlaylistCollage(pl.id).catch(() => null);
+  if (!rel) return res.status(422).json({ error: "No track covers to make a collage from" });
+  res.json({ ok: true });
+});
+
+/** POST /api/playlists/:id/cover (multipart "cover") — upload a custom image */
+router.post("/:id/cover", coverUpload.single("cover"), async (req, res) => {
+  const pl = await prisma.playlist.findFirst({
+    where: { id: req.params.id, userId: req.user!.id },
+  });
+  if (!pl) return res.status(404).json({ error: "Not found" });
+  if (!req.file) return res.status(400).json({ error: "No image uploaded" });
+  try {
+    await saveCustomPlaylistCover(pl.id, req.file.buffer);
+    res.json({ ok: true });
+  } catch {
+    res.status(400).json({ error: "Could not process image" });
+  }
 });
 
 export default router;

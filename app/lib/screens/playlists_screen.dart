@@ -50,6 +50,23 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
     }
   }
 
+  Future<void> _delete(Playlist pl) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Delete "${pl.name}"?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (ok == true && mounted) {
+      await context.read<Api>().deletePlaylist(pl.id);
+      if (mounted) setState(_load);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -62,60 +79,101 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
         builder: (context, snap) {
           if (!snap.hasData) return const Center(child: CircularProgressIndicator());
           final playlists = snap.data!;
-          return ListView.builder(
+          return GridView.builder(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 90),
+            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 180,
+              mainAxisSpacing: 16,
+              crossAxisSpacing: 16,
+              childAspectRatio: 0.76,
+            ),
             itemCount: playlists.length + 1,
             itemBuilder: (context, idx) {
               if (idx == 0) {
-                // Permanent, undeletable Liked Songs playlist.
-                return Container(
-                  decoration: const BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [Color(0x3322D3EE), Colors.transparent],
-                      begin: Alignment.centerLeft,
-                      end: Alignment.centerRight,
+                return _Tile(
+                  title: 'Liked Songs',
+                  subtitle: 'Your favourites',
+                  cover: Container(
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(colors: [kAccent, kAccent2]),
+                    ),
+                    child: const Center(
+                      child: Icon(LucideIcons.heart, fill: 1, size: 48, color: kAccentInk),
                     ),
                   ),
-                  child: ListTile(
-                    leading: Container(
-                      width: 44,
-                      height: 44,
-                      decoration: BoxDecoration(
-                        gradient: const LinearGradient(colors: [kAccent, kAccent2]),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: const Icon(LucideIcons.heart, fill: 1, color: kAccentInk),
-                    ),
-                    title: const Text('Liked Songs',
-                        style: TextStyle(fontWeight: FontWeight.w600)),
-                    subtitle: const Text('Your favourites'),
-                    onTap: () => Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const LikedSongsScreen()),
-                    ),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const LikedSongsScreen()),
                   ),
                 );
               }
               final pl = playlists[idx - 1];
-              return ListTile(
-                leading: const Icon(Icons.queue_music),
-                title: Text(pl.name),
-                subtitle: Text('${pl.trackCount} tracks'),
-                trailing: IconButton(
-                  icon: const Icon(Icons.delete_outline),
-                  onPressed: () async {
-                    await context.read<Api>().deletePlaylist(pl.id);
-                    setState(_load);
-                  },
+              return _Tile(
+                title: pl.name,
+                subtitle: '${pl.trackCount} ${pl.trackCount == 1 ? 'song' : 'songs'}',
+                cover: Image.network(
+                  context.read<Api>().playlistCoverUrl(pl.id),
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, _, _) => Container(
+                    color: kPanel2,
+                    child: const Center(child: Icon(Icons.music_note, color: kMuted, size: 40)),
+                  ),
                 ),
                 onTap: () async {
                   await Navigator.of(context).push(MaterialPageRoute(
                     builder: (_) => PlaylistDetailScreen(playlistId: pl.id, name: pl.name),
                   ));
-                  setState(_load);
+                  if (mounted) setState(_load); // refresh cover/order on return
                 },
+                onLongPress: () => _delete(pl),
               );
             },
           );
         },
+      ),
+    );
+  }
+}
+
+class _Tile extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final Widget cover;
+  final VoidCallback onTap;
+  final VoidCallback? onLongPress;
+  const _Tile({
+    required this.title,
+    required this.subtitle,
+    required this.cover,
+    required this.onTap,
+    this.onLongPress,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      onLongPress: onLongPress,
+      borderRadius: BorderRadius.circular(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AspectRatio(
+            aspectRatio: 1,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: cover,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
+          Text(subtitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 11.5, color: kMuted)),
+        ],
       ),
     );
   }

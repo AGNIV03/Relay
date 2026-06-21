@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Trash2 } from "lucide-react";
-import { api } from "@/lib/api";
+import { Trash2, Music } from "lucide-react";
+import { api, playlistCoverUrl } from "@/lib/api";
 import type { Playlist } from "@/lib/types";
 
 export default function PlaylistsPage() {
@@ -57,27 +57,47 @@ export default function PlaylistsPage() {
       ) : playlists.length === 0 ? (
         <div className="text-[var(--muted)]">No playlists yet. Create one above.</div>
       ) : (
-        <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
           {playlists.map((pl) => (
-            <div
-              key={pl.id}
-              className="flex items-center justify-between rounded-xl border border-[var(--border)] bg-[var(--panel)] p-4 hover:bg-[var(--panel-2)]"
-            >
-              <Link href={`/playlists/${pl.id}`} className="min-w-0 flex-1">
-                <div className="truncate font-medium">{pl.name}</div>
-                <div className="text-xs text-[var(--muted)]">{pl._count?.tracks ?? 0} tracks</div>
+            <div key={pl.id} className="group relative">
+              <Link href={`/playlists/${pl.id}`} className="block">
+                <div className="relative mb-2 aspect-square overflow-hidden rounded-xl bg-[var(--panel-2)] shadow-lg">
+                  <PlaylistCover id={pl.id} />
+                </div>
+                <div className="truncate text-sm font-medium">{pl.name}</div>
+                <div className="text-xs text-[var(--muted)]">{pl._count?.tracks ?? 0} songs</div>
               </Link>
               <button
                 onClick={() => remove(pl.id)}
-                className="ml-2 text-[var(--muted)] hover:text-red-400"
+                className="absolute right-2 top-2 rounded-full bg-black/60 p-1.5 text-white opacity-0 transition group-hover:opacity-100 hover:text-red-400"
                 title="Delete"
               >
-                <Trash2 size={16} />
+                <Trash2 size={15} />
               </button>
             </div>
           ))}
         </div>
       )}
     </div>
+  );
+}
+
+function PlaylistCover({ id }: { id: string }) {
+  const [err, setErr] = useState(false);
+  if (err) {
+    return (
+      <div className="flex h-full w-full items-center justify-center">
+        <Music size={40} className="text-[var(--muted)]" />
+      </div>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={playlistCoverUrl(id)}
+      alt=""
+      className="h-full w-full object-cover"
+      onError={() => setErr(true)}
+    />
   );
 }

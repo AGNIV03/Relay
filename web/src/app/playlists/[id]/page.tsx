@@ -24,5 +24,5 @@ export default function PlaylistPage() {
     load();
   }
 
-  return <PlaylistView name={playlist.name} rows={rows} onRemove={removeTrack} />;
+  return <PlaylistView name={playlist.name} rows={rows} playlistId={id} onRemove={removeTrack} />;
 }

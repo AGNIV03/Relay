@@ -203,6 +203,26 @@ class Api {
   Future<void> removeFromPlaylist(String playlistId, String trackId) =>
       _send('DELETE', '/api/playlists/$playlistId/tracks/$trackId');
 
+  // ---- Playlist cover art ----
+  /// `v` busts the image cache after a regenerate/upload.
+  String playlistCoverUrl(String id, [int v = 0]) =>
+      '$baseUrl/api/playlists/$id/cover?token=$_access&v=$v';
+
+  Future<void> regeneratePlaylistCover(String id) =>
+      _send('POST', '/api/playlists/$id/cover/regenerate');
+
+  Future<void> uploadPlaylistCover(String id, String filePath, {bool retry = true}) async {
+    final req = http.MultipartRequest('POST', _uri('/api/playlists/$id/cover'));
+    if (_access != null) req.headers['Authorization'] = 'Bearer $_access';
+    req.files.add(await http.MultipartFile.fromPath('cover', filePath));
+    final streamed = await req.send();
+    final res = await http.Response.fromStream(streamed);
+    if (res.statusCode == 401 && retry && await _tryRefresh()) {
+      return uploadPlaylistCover(id, filePath, retry: false);
+    }
+    if (res.statusCode >= 400) throw ApiException(_errorMessage(res));
+  }
+
   // ---- Media URLs (token in query so the audio engine can authenticate) ----
   String streamUrl(String trackId) => '$baseUrl/api/stream/$trackId?token=$_access';
   String albumCoverUrl(String albumId) =>

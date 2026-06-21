@@ -130,6 +130,28 @@ export function coverUrl(trackId: string) {
   return `${API_URL}/api/stream/${trackId}/cover?token=${tokens.access ?? ""}`;
 }
 
+/** Playlist cover (auto collage or custom). `v` busts the cache after a change. */
+export function playlistCoverUrl(id: string, v?: number | string) {
+  const ver = v != null ? `&v=${v}` : "";
+  return `${API_URL}/api/playlists/${id}/cover?token=${tokens.access ?? ""}${ver}`;
+}
+
+/** Upload a custom playlist cover image (multipart). */
+export function uploadPlaylistCover(id: string, file: File): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const form = new FormData();
+    form.append("cover", file);
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_URL}/api/playlists/${id}/cover`);
+    const access = tokens.access;
+    if (access) xhr.setRequestHeader("Authorization", `Bearer ${access}`);
+    xhr.onload = () =>
+      xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error("Cover upload failed"));
+    xhr.onerror = () => reject(new Error("Network error"));
+    xhr.send(form);
+  });
+}
+
 export function albumCoverUrl(albumId: string) {
   return `${API_URL}/api/stream/album/${albumId}/cover?token=${tokens.access ?? ""}`;
 }

@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
-import { Play, Pause, Music, Heart, Clock, X, Shuffle } from "lucide-react";
-import { coverUrl } from "@/lib/api";
+import { useRef, useState } from "react";
+import { Play, Pause, Music, Heart, Clock, X, Shuffle, RefreshCw, Upload } from "lucide-react";
+import { api, coverUrl, playlistCoverUrl, uploadPlaylistCover } from "@/lib/api";
 import { usePlayer } from "@/context/PlayerContext";
 import { fmtTime, fmtDateAdded } from "@/lib/format";
 import type { Track } from "@/lib/types";
@@ -19,12 +19,14 @@ export function PlaylistView({
   rows,
   kind = "Playlist",
   liked = false,
+  playlistId,
   onRemove,
 }: {
   name: string;
   rows: PlaylistTrackRow[];
   kind?: string;
   liked?: boolean; // renders the Liked Songs gradient tile + label
+  playlistId?: string; // when set, the hero cover is the editable playlist collage
   onRemove?: (trackId: string) => void;
 }) {
   const player = usePlayer();
@@ -32,9 +34,38 @@ export function PlaylistView({
   const totalSec = tracks.reduce((s, t) => s + (t.duration || 0), 0);
   const [coverErr, setCoverErr] = useState(false);
   const [thumbErr, setThumbErr] = useState<Set<string>>(new Set());
+  const [coverVer, setCoverVer] = useState(0);
+  const [coverMenu, setCoverMenu] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const isPlayingThis = (id: string) => player.current?.id === id && player.playing;
   const heroCover = tracks[0] ? coverUrl(tracks[0].id) : null;
+
+  async function regenerateCover() {
+    if (!playlistId) return;
+    setCoverMenu(false);
+    try {
+      await api.post(`/api/playlists/${playlistId}/cover/regenerate`);
+      setCoverErr(false);
+      setCoverVer((v) => v + 1);
+    } catch {
+      /* no covers to collage */
+    }
+  }
+
+  async function onCoverFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    setCoverMenu(false);
+    if (!f || !playlistId) return;
+    try {
+      await uploadPlaylistCover(playlistId, f);
+      setCoverErr(false);
+      setCoverVer((v) => v + 1);
+    } catch {
+      /* ignore */
+    }
+    if (fileRef.current) fileRef.current.value = "";
+  }
 
   const fmtTotal = () => {
     const m = Math.round(totalSec / 60);
@@ -54,24 +85,65 @@ export function PlaylistView({
         }}
       >
         <div className="flex items-end gap-6">
-          <div className="h-40 w-40 shrink-0 overflow-hidden rounded-md shadow-2xl md:h-52 md:w-52">
-            {liked ? (
-              <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-[var(--accent)] to-[var(--accent-2)]">
-                <Heart size={64} className="text-[var(--accent-ink)]" fill="currentColor" />
-              </div>
-            ) : heroCover && !coverErr ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={heroCover}
-                alt=""
-                className="h-full w-full object-cover"
-                onError={() => setCoverErr(true)}
-              />
-            ) : (
-              <div className="flex h-full w-full items-center justify-center bg-[var(--panel-2)]">
-                <Music size={56} className="text-[var(--muted)]" />
+          <div className="relative h-40 w-40 shrink-0 md:h-52 md:w-52">
+            <div className="group/cover h-full w-full overflow-hidden rounded-md shadow-2xl">
+              {liked ? (
+                <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-[var(--accent)] to-[var(--accent-2)]">
+                  <Heart size={64} className="text-[var(--accent-ink)]" fill="currentColor" />
+                </div>
+              ) : playlistId && !coverErr ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={playlistCoverUrl(playlistId, coverVer)}
+                  alt=""
+                  className="h-full w-full object-cover"
+                  onError={() => setCoverErr(true)}
+                />
+              ) : heroCover && !coverErr ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={heroCover}
+                  alt=""
+                  className="h-full w-full object-cover"
+                  onError={() => setCoverErr(true)}
+                />
+              ) : (
+                <div className="flex h-full w-full items-center justify-center bg-[var(--panel-2)]">
+                  <Music size={56} className="text-[var(--muted)]" />
+                </div>
+              )}
+              {playlistId && (
+                <button
+                  onClick={() => setCoverMenu((o) => !o)}
+                  className="absolute inset-0 flex items-center justify-center bg-black/0 text-xs font-medium text-white opacity-0 transition group-hover/cover:bg-black/45 group-hover/cover:opacity-100"
+                >
+                  Edit cover
+                </button>
+              )}
+            </div>
+            {playlistId && coverMenu && (
+              <div className="absolute left-0 top-full z-20 mt-1 w-48 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--panel-2)] text-sm shadow-xl">
+                <button
+                  onClick={regenerateCover}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[var(--panel)]"
+                >
+                  <RefreshCw size={15} /> Regenerate collage
+                </button>
+                <button
+                  onClick={() => fileRef.current?.click()}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[var(--panel)]"
+                >
+                  <Upload size={15} /> Upload image
+                </button>
               </div>
             )}
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={onCoverFile}
+            />
           </div>
           <div className="min-w-0 pb-1">
             <div className="text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">

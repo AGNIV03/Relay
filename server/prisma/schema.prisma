@@ -98,12 +98,16 @@ model Favorite {
 }
 
 model Playlist {
-  id        String          @id @default(cuid())
-  name      String
-  userId    String
-  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tracks    PlaylistTrack[]
-  createdAt DateTime        @default(now())
+  id          String          @id @default(cuid())
+  name        String
+  userId      String
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tracks      PlaylistTrack[]
+  // Cover art: an auto-generated collage of the playlist's track covers, or a
+  // user-uploaded image (coverCustom = true, never auto-regenerated).
+  coverPath   String?
+  coverCustom Boolean         @default(false)
+  createdAt   DateTime        @default(now())
 
   @@index([userId])
 }
