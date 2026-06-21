@@ -452,6 +452,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         sendCommand({ queue: tracks.map((t) => t.id), index: start, positionMs: 0, playing: true });
         return;
       }
+      // Manually choosing music exits any listen-along session.
+      if (listenHostRef.current) {
+        restoreAfterCurrentRef.current = false;
+        savedSessionRef.current = null;
+        setListenHost(null);
+      }
       chorusAutoStopRef.current = false;
       scrobbled.current.clear();
       orderRef.current = shuffle
