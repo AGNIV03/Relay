@@ -27,7 +27,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   @override
   void initState() {
     super.initState();
-    _name = _name;
+    _name = widget.name;
     _load();
   }
 
