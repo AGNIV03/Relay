@@ -473,6 +473,20 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const targetSec = Math.max(0, targetMs / 1000);
 
     if (!sigMatch) {
+      // If we're the host and the shared state still reflects our own last update,
+      // our local state is newer (e.g. the track just auto-advanced) — push it
+      // instead of reverting to the stale shared index.
+      if (c.isHost && c.controllerId === c.hostId) {
+        api
+          .post("/api/chorus/state", {
+            queue: queueRef.current.map((t) => t.id),
+            index: indexRef.current,
+            positionMs: Math.round(audio.currentTime * 1000),
+            playing: playingRef.current,
+          })
+          .catch(() => {});
+        return;
+      }
       orderRef.current = Array.from({ length: c.queue.length }, (_, i) => i);
       const sameTrack = currentIdRef.current === sharedTrackId;
       scrobbled.current.clear();

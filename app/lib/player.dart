@@ -53,6 +53,9 @@ class PlayerModel extends ChangeNotifier {
         _scrobbled = false;
         _loadLyrics();
         _postActivity();
+        // In a chorus, the host must push natural track advances (song ended →
+        // next track) so the shared state doesn't lag and revert everyone.
+        if (inChorus && (chorus?.isHost ?? false) && !_applyingChorus) _broadcastChorus();
         notifyListeners();
       }
     });
@@ -388,6 +391,13 @@ class PlayerModel extends ChangeNotifier {
     if (targetMs < 0) targetMs = 0;
 
     if (!sigMatch) {
+      // If we're the host and the shared state still reflects our own last update,
+      // our local state is newer (e.g. the track just auto-advanced) — push it
+      // instead of reverting to the stale shared index.
+      if (c.isHost && c.controllerId == c.hostId) {
+        _broadcastChorus();
+        return;
+      }
       // Adopt the shared queue/index. Keep the current track's position when it's
       // unchanged; otherwise jump to the shared (extrapolated) position.
       final sameTrack = current?.id == sharedTrackId;
