@@ -41,9 +41,11 @@ class OfflineRoot extends StatelessWidget {
           ),
         ],
       ),
-      bottomNavigationBar: const Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [MiniPlayer()],
+      // SafeArea keeps the player controls above the system navigation bar
+      // (offline mode has no bottom nav bar to provide that inset).
+      bottomNavigationBar: const SafeArea(
+        top: false,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [MiniPlayer()]),
       ),
       body: ListView(
         children: [
@@ -108,7 +110,10 @@ class OfflinePlaylistScreen extends StatelessWidget {
     final tracks = playlist.tracks;
     return Scaffold(
       appBar: AppBar(title: Text(playlist.name)),
-      bottomNavigationBar: const Column(mainAxisSize: MainAxisSize.min, children: [MiniPlayer()]),
+      bottomNavigationBar: const SafeArea(
+        top: false,
+        child: Column(mainAxisSize: MainAxisSize.min, children: [MiniPlayer()]),
+      ),
       body: Column(
         children: [
           Padding(
