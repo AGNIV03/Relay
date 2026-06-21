@@ -38,6 +38,14 @@ Future<void> main() async {
         androidNotificationChannelName: 'Relay playback',
         androidNotificationOngoing: true,
         androidNotificationIcon: 'drawable/ic_notification',
+        // Android Auto: advertise content-style support so the head unit renders
+        // browsable categories as a grid and tracks as a list.
+        androidBrowsableRootExtras: const {
+          'android.media.browse.CONTENT_STYLE_SUPPORTED': true,
+          'android.media.browse.CONTENT_STYLE_BROWSABLE_HINT': 2,
+          'android.media.browse.CONTENT_STYLE_PLAYABLE_HINT': 1,
+          'android.media.browse.SEARCH_SUPPORTED': true,
+        },
       ).timeout(const Duration(seconds: 8));
     }
   } catch (e, st) {
@@ -53,6 +61,13 @@ Future<void> main() async {
   }
 
   final api = Api(baseUrl: '');
+  // Load saved server URL + tokens up front so a cold Android Auto launch (which
+  // starts the media-browser service without the UI) can serve the library tree.
+  try {
+    await api.load();
+  } catch (e) {
+    debugPrint('api.load failed: $e');
+  }
   final downloads = DownloadManager(api);
 
   try {

@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'api.dart';
+import 'auto_browse.dart';
 import 'downloads.dart';
 import 'models.dart';
 
@@ -80,6 +82,25 @@ class PlayerModel extends ChangeNotifier {
     _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) => _saveSession());
     // Broadcast presence (for the friends panel) periodically.
     _heartbeat = Timer.periodic(const Duration(seconds: 12), (_) => _postActivity());
+    // Android Auto / media-browser: expose a browsable library + handle taps.
+    if (!kIsWeb && Platform.isAndroid) {
+      final browse = AutoBrowse(api);
+      registerMediaBrowsing(
+        getChildren: browse.getChildren,
+        getMediaItem: browse.getMediaItem,
+        playFromMediaId: playFromMediaId,
+        search: browse.searchItems,
+      );
+    }
+  }
+
+  /// Play an item chosen from a media browser (e.g. Android Auto): loads the
+  /// whole context list and starts at the tapped track.
+  Future<void> playFromMediaId(String mediaId) async {
+    final browse = AutoBrowse(api);
+    final res = await browse.resolvePlay(mediaId);
+    if (res == null) return;
+    await playQueue(res.tracks, start: res.index);
   }
 
   void _postActivity() {

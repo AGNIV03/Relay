@@ -39,6 +39,14 @@
             android:name="flutterEmbedding"
             android:value="2" />
 
+        <!-- Android Auto: declare this as a media app so it appears in the car. -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+        <meta-data
+            android:name="com.google.android.gms.car.notification.SmallIcon"
+            android:resource="@drawable/ic_notification" />
+
         <!-- just_audio_background: media session service + media-button receiver -->
         <service
             android:name="com.ryanheise.audioservice.AudioService"

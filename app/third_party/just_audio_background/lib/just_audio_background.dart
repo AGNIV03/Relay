@@ -8,10 +8,40 @@ import 'package:just_audio_platform_interface/just_audio_platform_interface.dart
 import 'package:rxdart/rxdart.dart';
 import 'package:synchronized/synchronized.dart';
 
-export 'package:audio_service/audio_service.dart' show MediaItem;
+export 'package:audio_service/audio_service.dart'
+    show MediaItem, AudioServiceRepeatMode, AudioServiceShuffleMode;
 
 late SwitchAudioHandler _audioHandler;
 late JustAudioPlatform _platform;
+
+// --- Media browsing (Android Auto / Wear / other MediaBrowser clients) -------
+// just_audio_background only mirrors the active queue. To expose a browsable
+// library tree (and let a car head-unit start playback), the host app registers
+// these callbacks; the audio handler below forwards browser requests to them.
+typedef BrowseChildrenFn = Future<List<MediaItem>> Function(String parentMediaId);
+typedef BrowseItemFn = Future<MediaItem?> Function(String mediaId);
+typedef BrowsePlayFn = Future<void> Function(String mediaId);
+typedef BrowseSearchFn = Future<List<MediaItem>> Function(String query);
+
+BrowseChildrenFn? _onBrowseChildren;
+BrowseItemFn? _onBrowseItem;
+BrowsePlayFn? _onBrowsePlay;
+BrowseSearchFn? _onBrowseSearch;
+
+/// Register media-browser callbacks so clients like Android Auto can browse a
+/// library tree and start playback. Safe to call on any platform (only Android's
+/// MediaBrowserService actually invokes them). Call once the app/API is ready.
+void registerMediaBrowsing({
+  BrowseChildrenFn? getChildren,
+  BrowseItemFn? getMediaItem,
+  BrowsePlayFn? playFromMediaId,
+  BrowseSearchFn? search,
+}) {
+  _onBrowseChildren = getChildren;
+  _onBrowseItem = getMediaItem;
+  _onBrowsePlay = playFromMediaId;
+  _onBrowseSearch = search;
+}
 
 /// Provides the [init] method to initialise just_audio for background playback.
 class JustAudioBackground {
@@ -718,6 +748,64 @@ class _PlayerAudioHandler extends BaseAudioHandler
         _playerCompleter = _ValueCompleter<AudioPlayerPlatform>();
         await _platform.disposePlayer(DisposePlayerRequest(id: player.id));
       });
+
+  // --- Media browsing: forward to the host app's registered callbacks --------
+  @override
+  Future<List<MediaItem>> getChildren(String parentMediaId,
+      [Map<String, dynamic>? options]) async {
+    final fn = _onBrowseChildren;
+    if (fn == null) return const [];
+    try {
+      return await fn(parentMediaId);
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  @override
+  Future<MediaItem?> getMediaItem(String mediaId) async {
+    final fn = _onBrowseItem;
+    if (fn == null) return null;
+    try {
+      return await fn(mediaId);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> playFromMediaId(String mediaId,
+      [Map<String, dynamic>? extras]) async {
+    final fn = _onBrowsePlay;
+    if (fn != null) {
+      try {
+        await fn(mediaId);
+      } catch (_) {}
+    }
+  }
+
+  @override
+  Future<List<MediaItem>> search(String query,
+      [Map<String, dynamic>? extras]) async {
+    final fn = _onBrowseSearch;
+    if (fn == null) return const [];
+    try {
+      return await fn(query);
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  @override
+  Future<void> playFromSearch(String query,
+      [Map<String, dynamic>? extras]) async {
+    final fn = _onBrowseSearch;
+    if (fn == null) return;
+    try {
+      final results = await fn(query);
+      if (results.isNotEmpty) await playFromMediaId(results.first.id, extras);
+    } catch (_) {}
+  }
 
   Duration get currentPosition {
     if (_playing &&
