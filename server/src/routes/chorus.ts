@@ -5,13 +5,16 @@ import { requireAuth } from "../middleware/auth.js";
 import {
   type ChorusMode,
   approve,
+  addCommand,
   deny,
+  drainCommands,
   getChorusForUser,
   joinChorus,
   leaveChorus,
   removeMember,
   setMode,
   startChorus,
+  subscribe,
   updateState,
 } from "../lib/chorus.js";
 
@@ -25,9 +28,20 @@ const stateSchema = z.object({
   positionMs: z.number().int().nonnegative(),
   playing: z.boolean(),
 });
+// A member command is a partial intent (any subset of the playback fields).
+const commandSchema = z.object({
+  queue: z.array(z.string()).optional(),
+  index: z.number().int().nonnegative().optional(),
+  positionMs: z.number().int().nonnegative().optional(),
+  playing: z.boolean().optional(),
+});
 
-/** Hydrate a chorus into a client-facing payload (track objects + usernames). */
-async function hydrate(userId: string) {
+const LONG_POLL_MS = 25_000;
+
+/** Hydrate a chorus into a client-facing payload (track objects + usernames).
+ *  When `drain` is set and the caller is the host, queued member commands are
+ *  attached and cleared. */
+async function hydrate(userId: string, drain = false) {
   const c = getChorusForUser(userId);
   if (!c) return null;
   const userIds = [...new Set([...c.members, ...c.pending])];
@@ -46,12 +60,15 @@ async function hydrate(userId: string) {
     : [];
   const trackById = new Map(tracks.map((t) => [t.id, t]));
 
+  const isHost = c.hostId === userId;
+  const isPending = c.pending.has(userId) && !c.members.has(userId);
   const ref = (id: string) => ({ id, username: nameById.get(id) ?? "?" });
   return {
     hostId: c.hostId,
     hostName: nameById.get(c.hostId) ?? "?",
     mode: c.mode,
-    isHost: c.hostId === userId,
+    isHost,
+    isPending,
     members: [...c.members].map(ref),
     pending: [...c.pending].map(ref),
     queue: c.queue.map((id) => trackById.get(id)).filter(Boolean),
@@ -62,12 +79,50 @@ async function hydrate(userId: string) {
     updatedAt: c.updatedAt,
     controllerId: c.controllerId,
     controllerName: nameById.get(c.controllerId) ?? "?",
+    version: c.version,
+    serverNow: Date.now(),
+    // Pending member intents for the host to apply (cleared once delivered).
+    commands: isHost && drain ? drainCommands(c.hostId) : [],
   };
 }
 
 /** GET /api/chorus — the chorus the caller is in (host or member), hydrated. */
 router.get("/", async (req, res) => {
   res.json(await hydrate(req.user!.id));
+});
+
+/** GET /api/chorus/poll?since=<version> — long-poll: returns as soon as the
+ *  chorus changes past `since` (or after ~25s). Hosts also receive queued member
+ *  commands. This is the primary sync channel — near-instant, no busy polling. */
+router.get("/poll", async (req, res) => {
+  const userId = req.user!.id;
+  const since = Number(req.query.since ?? 0) || 0;
+
+  const current = getChorusForUser(userId);
+  // Not in a chorus, or already have a newer version → respond immediately.
+  if (!current) return res.json(null);
+  if (current.version > since) return res.json(await hydrate(userId, true));
+
+  let settled = false;
+  const finish = async () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    unsub();
+    try {
+      res.json(await hydrate(userId, true));
+    } catch {
+      if (!res.headersSent) res.json(null);
+    }
+  };
+  const unsub = subscribe(current.hostId, () => void finish());
+  const timer = setTimeout(() => void finish(), LONG_POLL_MS);
+  req.on("close", () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    unsub();
+  });
 });
 
 /** POST /api/chorus/start { mode, queue, index, positionMs, playing } */
@@ -136,12 +191,23 @@ router.post("/remove", (req, res) => {
   res.status(204).end();
 });
 
-/** POST /api/chorus/state { queue, index, positionMs, playing } — any member
- *  updates the shared playback (change song / queue / play-pause / seek). */
+/** POST /api/chorus/state { queue, index, positionMs, playing } — the HOST
+ *  publishes its real playback state (the single source of truth). */
 router.post("/state", (req, res) => {
   const parsed = stateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid input" });
   const ok = updateState(req.user!.id, parsed.data);
+  if (!ok) return res.status(409).json({ error: "Not the chorus host" });
+  res.status(204).end();
+});
+
+/** POST /api/chorus/command { queue?, index?, positionMs?, playing? } — a member
+ *  asks the host to change playback (song / queue / play-pause / seek). The host
+ *  applies it and re-broadcasts via /state. */
+router.post("/command", (req, res) => {
+  const parsed = commandSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid input" });
+  const ok = addCommand(req.user!.id, parsed.data);
   if (!ok) return res.status(409).json({ error: "Not in a chorus" });
   res.status(204).end();
 });

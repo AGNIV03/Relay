@@ -52,11 +52,19 @@ export interface Friend {
   chorusMode?: "open" | "ask" | null; // they're hosting a Chorus
 }
 
+export interface ChorusPatch {
+  queue?: string[];
+  index?: number;
+  positionMs?: number;
+  playing?: boolean;
+}
+
 export interface ChorusState {
   hostId: string;
   hostName: string;
   mode: "open" | "ask";
   isHost: boolean;
+  isPending: boolean; // I requested to join (ask mode), awaiting approval
   members: UserRef[];
   pending: UserRef[];
   queue: Track[];
@@ -67,6 +75,9 @@ export interface ChorusState {
   updatedAt: number;
   controllerId: string;
   controllerName: string;
+  version: number; // long-poll cursor
+  serverNow: number; // server clock at hydrate (skew-free extrapolation)
+  commands: ChorusPatch[]; // member intents for the host to apply
 }
 
 export interface HostActivity {
@@ -76,6 +87,8 @@ export interface HostActivity {
   playing: boolean;
   updatedAt?: number | string | null;
   online: boolean;
+  version?: number; // long-poll cursor
+  serverNow?: number; // server clock at response (skew-free extrapolation)
 }
 
 export interface WrappedStats {

@@ -37,6 +37,8 @@ class LucideIcons {
   static const IconData lyrics = Symbols.music_note; // note icon for the lyrics toggle
   static const IconData translate = Symbols.translate;
   static const IconData users = Symbols.group;
+  static const IconData userPlus = Symbols.person_add;
+  static const IconData radio = Symbols.podcasts;
   static const IconData headphones = Symbols.headphones;
   static const IconData shuffle = Symbols.shuffle;
   static const IconData repeat = Symbols.repeat;

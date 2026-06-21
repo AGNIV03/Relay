@@ -23,26 +23,45 @@ class PlayerModel extends ChangeNotifier {
   int _index = 0;
   bool _scrobbled = false;
   Lyrics? _lyrics;
+  String? _lyricsForId; // track whose lyrics are currently loaded
   Timer? _watchdog;
   Timer? _saveTimer;
   Timer? _heartbeat;
+  Timer? _chorusTick; // host: periodic truth broadcast so members never drift
   Duration _lastPos = Duration.zero;
   int _frozenTicks = 0;
   bool _recovering = false;
 
   // ---- Listen along ----
+  // The follower plays the host's music on THEIR OWN device, kept in sync.
   String? listenHostId;
   String? listenHostName;
-  Timer? _listenTimer;
+  bool _listenLooping = false;
+  int _listenVersion = 0;
   List<Track> _savedQueue = [];
   int _savedIndex = 0;
   bool _restoreAfterCurrent = false;
 
-  // ---- Chorus (collaborative synced listening) ----
+  // ---- Chorus (collaborative listening) ----
+  // Audio plays ONLY on the host's device. Members are remote controls: their
+  // local player stays silent and their UI mirrors the host's playback
+  // (extrapolated from positionMs/serverNow). Only the host writes the
+  // authoritative state; members enqueue commands the host applies + re-broadcasts.
   ChorusState? chorus;
-  Timer? _chorusTimer;
-  bool _applyingChorus = false; // guard: don't broadcast while adopting shared state
+  bool _chorusLooping = false; // long-poll loop running
+  int _chorusVersion = 0; // long-poll cursor
+  bool _applyingChorus = false; // guard while the host applies remote commands
+  bool _chorusAutoStop = false; // user stopped — don't auto-restart until next play
+  bool _lastHostPlaying = false; // last broadcast play state (host)
+  // Member-side position extrapolation (no local audio to read from).
+  int _memberPosBaseMs = 0;
+  int _memberPosBaseAt = 0;
+  Timer? _memberTicker;
+
   bool get inChorus => chorus != null;
+  bool get isChorusHost => chorus?.isHost ?? false;
+  // An *approved* member acting as a silent remote (pending requests don't count).
+  bool get isChorusMember => chorus != null && !chorus!.isHost && !chorus!.isPending;
 
   static const _kSession = 'last_session';
 
@@ -53,15 +72,19 @@ class PlayerModel extends ChangeNotifier {
         _scrobbled = false;
         _loadLyrics();
         _postActivity();
-        // In a chorus, the host must push natural track advances (song ended →
-        // next track) so the shared state doesn't lag and revert everyone.
-        if (inChorus && (chorus?.isHost ?? false) && !_applyingChorus) _broadcastChorus();
+        // Host: push natural track advances (song ended → next) so members follow.
+        if (isChorusHost && !_applyingChorus) _broadcastChorus();
         notifyListeners();
       }
     });
-    _player.playerStateStream.listen((_) {
+    _player.playerStateStream.listen((st) {
       _saveSession();
       _postActivity();
+      // Host: broadcast play/pause transitions (covers OS / lock-screen controls).
+      if (isChorusHost && !_applyingChorus && st.playing != _lastHostPlaying) {
+        _lastHostPlaying = st.playing;
+        _broadcastChorus();
+      }
       notifyListeners();
     });
     // When a listen-along session is stopped, finish the current song then return
@@ -91,6 +114,11 @@ class PlayerModel extends ChangeNotifier {
     _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) => _saveSession());
     // Broadcast presence (for the friends panel) periodically.
     _heartbeat = Timer.periodic(const Duration(seconds: 12), (_) => _postActivity());
+    // Host: low-frequency truth broadcast so members re-base position (no drift),
+    // on top of the instant broadcasts on every control event.
+    _chorusTick = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (isChorusHost && !_applyingChorus) _broadcastChorus();
+    });
     // Android Auto / media-browser: expose a browsable library + handle taps.
     if (!kIsWeb && Platform.isAndroid) {
       final browse = AutoBrowse(api);
@@ -116,8 +144,8 @@ class PlayerModel extends ChangeNotifier {
     api
         .postActivity(
           trackId: current?.id,
-          positionMs: _player.position.inMilliseconds,
-          playing: _player.playing,
+          positionMs: position.inMilliseconds,
+          playing: playing,
         )
         .catchError((_) {});
   }
@@ -125,22 +153,47 @@ class PlayerModel extends ChangeNotifier {
   bool get listeningAlong => listenHostId != null;
 
   AudioPlayer get raw => _player;
-  List<Track> get queue => _queue;
-  int get index => _index;
-  Track? get current => (_index >= 0 && _index < _queue.length) ? _queue[_index] : null;
-  bool get playing => _player.playing;
-  Duration get position => _player.position;
+
+  // Public playback view. For a silent chorus member these reflect the SHARED
+  // (host) state so the UI shows the right song + a moving progress bar.
+  List<Track> get queue => isChorusMember ? chorus!.queue : _queue;
+  int get index => isChorusMember ? chorus!.index : _index;
+  Track? get current {
+    if (isChorusMember) {
+      final q = chorus!.queue;
+      final i = chorus!.index;
+      return (i >= 0 && i < q.length) ? q[i] : null;
+    }
+    return (_index >= 0 && _index < _queue.length) ? _queue[_index] : null;
+  }
+
+  bool get playing => isChorusMember ? chorus!.playing : _player.playing;
+  Duration get position =>
+      isChorusMember ? Duration(milliseconds: _memberPositionMs()) : _player.position;
   // Fall back to the track's known metadata length until the audio source loads
-  // its own duration. Otherwise a restored (paused, not-yet-loaded) session shows
-  // duration 0:00, so the progress bar reads 0 while the position is non-zero and
-  // then jumps on play.
+  // its own duration (so a restored, not-yet-loaded session doesn't read 0:00).
   Duration get duration {
+    if (isChorusMember) {
+      final t = current;
+      return t != null ? Duration(milliseconds: (t.duration * 1000).round()) : Duration.zero;
+    }
     final d = _player.duration;
     if (d != null && d > Duration.zero) return d;
     final t = current;
     return t != null ? Duration(milliseconds: (t.duration * 1000).round()) : Duration.zero;
   }
+
   Lyrics? get lyrics => _lyrics;
+
+  /// A silent member's extrapolated position (their device has no audio engine).
+  int _memberPositionMs() {
+    if (chorus == null) return 0;
+    var ms = _memberPosBaseMs;
+    if (chorus!.playing) ms += DateTime.now().millisecondsSinceEpoch - _memberPosBaseAt;
+    final durMs = ((current?.duration ?? 0) * 1000).round();
+    if (durMs > 0 && ms > durMs) ms = durMs;
+    return ms < 0 ? 0 : ms;
+  }
 
   AudioSource _sourceFor(Track t) {
     final local = downloads.localPath(t.id);
@@ -159,14 +212,24 @@ class PlayerModel extends ChangeNotifier {
 
   Future<void> playQueue(List<Track> tracks, {int start = 0}) async {
     if (tracks.isEmpty) return;
+    // A silent chorus member: changing the song is a remote command to the host.
+    if (isChorusMember) {
+      _sendCommand(
+        queue: tracks.map((t) => t.id).toList(),
+        index: start,
+        positionMs: 0,
+        playing: true,
+      );
+      return;
+    }
     // Manually choosing music exits any listen-along session.
     if (listenHostId != null) {
-      _listenTimer?.cancel();
-      _listenTimer = null;
+      _listenLooping = false;
       listenHostId = null;
       listenHostName = null;
     }
     _restoreAfterCurrent = false;
+    _chorusAutoStop = false; // a fresh play re-enables auto-start
     _queue = List.of(tracks);
     _index = start;
     _scrobbled = false;
@@ -177,7 +240,11 @@ class PlayerModel extends ChangeNotifier {
       await _player.setAudioSource(_source!, initialIndex: start);
       await _player.play();
       _saveSession();
-      _broadcastChorus();
+      if (isChorusHost) {
+        _broadcastChorus();
+      } else {
+        _maybeAutoStartChorus();
+      }
     } catch (e) {
       debugPrint('play error: $e');
     }
@@ -185,6 +252,10 @@ class PlayerModel extends ChangeNotifier {
 
   /// Append a track to the end of the queue (starts playback if idle).
   Future<void> addToQueue(Track t) async {
+    if (isChorusMember) {
+      _sendCommand(queue: [...chorus!.queueIds, t.id], index: chorus!.index);
+      return;
+    }
     if (_source == null || _queue.isEmpty) return playQueue([t]);
     _queue.add(t);
     await _source!.add(_sourceFor(t));
@@ -194,6 +265,13 @@ class PlayerModel extends ChangeNotifier {
 
   /// Insert a track right after the current one.
   Future<void> playNext(Track t) async {
+    if (isChorusMember) {
+      final ids = [...chorus!.queueIds];
+      final at = (chorus!.index + 1).clamp(0, ids.length);
+      ids.insert(at, t.id);
+      _sendCommand(queue: ids, index: chorus!.index);
+      return;
+    }
     if (_source == null || _queue.isEmpty) return playQueue([t]);
     final at = (_index + 1).clamp(0, _queue.length);
     _queue.insert(at, t);
@@ -204,6 +282,12 @@ class PlayerModel extends ChangeNotifier {
 
   /// Remove an upcoming track from the queue (not the current one).
   Future<void> removeFromQueue(int index) async {
+    if (isChorusMember) {
+      if (index <= chorus!.index || index >= chorus!.queueIds.length) return;
+      final ids = [...chorus!.queueIds]..removeAt(index);
+      _sendCommand(queue: ids, index: chorus!.index);
+      return;
+    }
     if (_source == null || index <= _index || index >= _queue.length) return;
     _queue.removeAt(index);
     await _source!.removeAt(index);
@@ -213,6 +297,11 @@ class PlayerModel extends ChangeNotifier {
 
   /// Jump to a specific track in the queue.
   Future<void> playAt(int index) async {
+    if (isChorusMember) {
+      if (index < 0 || index >= chorus!.queueIds.length) return;
+      _sendCommand(index: index, positionMs: 0, playing: true);
+      return;
+    }
     if (index < 0 || index >= _queue.length) return;
     await _player.seek(Duration.zero, index: index);
     await _player.play();
@@ -221,42 +310,51 @@ class PlayerModel extends ChangeNotifier {
 
   // ---- Listen along ----
   Future<void> startListenAlong(String hostId, String hostName) async {
+    // Listen-along is a personal follow — if we were hosting a chorus, end it.
+    if (isChorusHost) await leaveChorusSession();
     _savedQueue = List.of(_queue);
     _savedIndex = _index;
     listenHostId = hostId;
     listenHostName = hostName;
     _restoreAfterCurrent = false;
+    _listenVersion = 0;
     await _player.setLoopMode(LoopMode.off);
     notifyListeners();
-    await _syncToHost();
-    _listenTimer?.cancel();
-    _listenTimer = Timer.periodic(const Duration(seconds: 3), (_) => _syncToHost());
+    _listenLooping = true;
+    _listenLoop();
   }
 
-  Future<void> _syncToHost() async {
-    final hostId = listenHostId;
-    if (hostId == null) return;
-    HostActivity a;
-    try {
-      a = await api.userActivity(hostId);
-    } catch (_) {
-      return;
+  /// Long-poll the host's activity and keep our playback in lock-step.
+  Future<void> _listenLoop() async {
+    while (_listenLooping && listenHostId != null) {
+      final hostId = listenHostId!;
+      HostActivity a;
+      try {
+        a = await api.userActivityPoll(hostId, _listenVersion);
+      } catch (_) {
+        await Future.delayed(const Duration(seconds: 1));
+        continue;
+      }
+      if (!_listenLooping || listenHostId != hostId) break;
+      _listenVersion = a.version;
+      await _applyHostActivity(a);
     }
-    if (listenHostId != hostId) return;
-    // Host went offline — leave the session, finish the current song, then
-    // return to our own queue (same as a manual Stop).
+  }
+
+  Future<void> _applyHostActivity(HostActivity a) async {
+    if (listenHostId == null) return;
     if (!a.online) {
       stopListenAlong();
       return;
     }
     if (a.track == null) return;
-    final drift = (a.playing && a.updatedAt != null)
-        ? DateTime.now().millisecondsSinceEpoch - a.updatedAt!
+    // Extrapolate to "now" using server clocks (skew-free), then to local now.
+    final advance = (a.playing && a.serverNow > 0 && a.updatedAt != null)
+        ? a.serverNow - a.updatedAt!
         : 0;
-    var targetMs = a.positionMs + (a.playing ? drift : 0);
+    var targetMs = a.positionMs + (advance > 0 ? advance : 0);
     if (targetMs < 0) targetMs = 0;
     if (current?.id != a.track!.id) {
-      // Host moved to a new track — follow it.
       _queue = [a.track!];
       _index = 0;
       _scrobbled = false;
@@ -265,13 +363,16 @@ class PlayerModel extends ChangeNotifier {
       try {
         _source = ConcatenatingAudioSource(children: [_sourceFor(a.track!)]);
         await _player.setAudioSource(_source!, initialPosition: Duration(milliseconds: targetMs));
-        await _player.play();
+        if (a.playing) {
+          await _player.play();
+        } else {
+          await _player.pause();
+        }
       } catch (e) {
         debugPrint('listen-along load error: $e');
       }
     } else {
-      // Same track — keep position + play state in sync.
-      if ((_player.position.inMilliseconds - targetMs).abs() > 2500) {
+      if ((_player.position.inMilliseconds - targetMs).abs() > 2000) {
         await _player.seek(Duration(milliseconds: targetMs));
       }
       if (a.playing && !_player.playing) await _player.play();
@@ -280,8 +381,7 @@ class PlayerModel extends ChangeNotifier {
   }
 
   void stopListenAlong() {
-    _listenTimer?.cancel();
-    _listenTimer = null;
+    _listenLooping = false;
     listenHostId = null;
     listenHostName = null;
     // Finish the current song, then return to the user's own queue.
@@ -289,19 +389,164 @@ class PlayerModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ---- Chorus (collaborative synced listening) ----
-  void _ensureChorusPolling() {
-    _chorusTimer ??= Timer.periodic(const Duration(seconds: 2), (_) => _chorusSync());
+  // ---- Chorus ----
+  void _maybeAutoStartChorus() {
+    if (chorus != null || _chorusAutoStop || _queue.isEmpty) return;
+    startChorus('open'); // auto-host an open chorus whenever playback starts
   }
 
-  void _stopChorusPolling() {
-    _chorusTimer?.cancel();
-    _chorusTimer = null;
+  void _startChorusLoop() {
+    if (_chorusLooping) return;
+    _chorusLooping = true;
+    _chorusLoop();
   }
 
-  /// Push our local playback (queue/index/position/playing) to the shared chorus.
+  void _stopChorusLoop() {
+    _chorusLooping = false;
+  }
+
+  /// Long-poll the shared chorus; reconcile as host (apply commands + broadcast)
+  /// or as a silent member (mirror the state).
+  Future<void> _chorusLoop() async {
+    while (_chorusLooping) {
+      ChorusState? c;
+      try {
+        c = await api.chorusPoll(_chorusVersion);
+      } catch (_) {
+        await Future.delayed(const Duration(seconds: 1));
+        continue;
+      }
+      if (!_chorusLooping) break;
+      if (c == null) {
+        _onChorusEnded();
+        break;
+      }
+      _chorusVersion = c.version;
+      await _applyChorusUpdate(c);
+    }
+  }
+
+  void _onChorusEnded() {
+    final wasMember = isChorusMember;
+    chorus = null;
+    _chorusLooping = false;
+    _stopMemberTicker();
+    if (wasMember) _player.pause();
+    notifyListeners();
+  }
+
+  Future<void> _applyChorusUpdate(ChorusState c) async {
+    final wasMember = isChorusMember;
+    chorus = c;
+    if (c.isHost) {
+      _stopMemberTicker();
+      if (c.commands.isNotEmpty) await _applyHostCommands(c.commands, c);
+      notifyListeners();
+    } else if (c.isPending) {
+      // Awaiting approval — keep our own music; just reflect the pending state.
+      _stopMemberTicker();
+      notifyListeners();
+    } else {
+      // Approved member — silent remote mirroring the host.
+      if (!wasMember) await _player.pause();
+      _setMemberBase(c);
+      _ensureMemberTicker();
+      // Load lyrics for the shared current track when it changes.
+      final t = current;
+      if (t != null && t.id != _lyricsForId) _loadLyrics();
+      notifyListeners();
+    }
+  }
+
+  void _setMemberBase(ChorusState c) {
+    final advance = (c.playing && c.serverNow > 0) ? (c.serverNow - c.updatedAt) : 0;
+    _memberPosBaseMs = c.positionMs + (advance > 0 ? advance : 0);
+    _memberPosBaseAt = DateTime.now().millisecondsSinceEpoch;
+  }
+
+  void _ensureMemberTicker() {
+    _memberTicker ??= Timer.periodic(const Duration(milliseconds: 300), (_) {
+      if (isChorusMember && chorus!.playing) notifyListeners();
+    });
+  }
+
+  void _stopMemberTicker() {
+    _memberTicker?.cancel();
+    _memberTicker = null;
+  }
+
+  /// Host: apply queued member commands to the real player, then broadcast truth.
+  Future<void> _applyHostCommands(List<ChorusPatch> cmds, ChorusState c) async {
+    // Merge: last defined value per field wins across the batch.
+    List<String>? tQueue;
+    int? tIndex;
+    int? tPos;
+    bool? tPlaying;
+    for (final p in cmds) {
+      if (p.queue != null) tQueue = p.queue;
+      if (p.index != null) tIndex = p.index;
+      if (p.positionMs != null) tPos = p.positionMs;
+      if (p.playing != null) tPlaying = p.playing;
+    }
+    _applyingChorus = true;
+    try {
+      final localIds = _queue.map((t) => t.id).toList();
+      if (tQueue != null && !_idsEqual(tQueue, localIds)) {
+        final resolved = await _resolveTracks(tQueue, c);
+        if (resolved.isNotEmpty) {
+          _queue = resolved;
+          _index = (tIndex ?? 0).clamp(0, _queue.length - 1);
+          _scrobbled = false;
+          _loadLyrics();
+          _source = ConcatenatingAudioSource(children: _queue.map(_sourceFor).toList());
+          await _player.setAudioSource(_source!,
+              initialIndex: _index, initialPosition: Duration(milliseconds: tPos ?? 0));
+        }
+      } else {
+        if (tIndex != null && tIndex != _index && tIndex >= 0 && tIndex < _queue.length) {
+          await _player.seek(Duration(milliseconds: tPos ?? 0), index: tIndex);
+        } else if (tPos != null) {
+          await _player.seek(Duration(milliseconds: tPos));
+        }
+      }
+      if (tPlaying != null) {
+        if (tPlaying && !_player.playing) await _player.play();
+        if (!tPlaying && _player.playing) await _player.pause();
+        _lastHostPlaying = tPlaying;
+      }
+    } catch (e) {
+      debugPrint('chorus apply command error: $e');
+    } finally {
+      _applyingChorus = false;
+    }
+    _broadcastChorus();
+  }
+
+  /// Resolve track ids to Track objects: from the current queue or the hydrated
+  /// chorus queue first, then fetch any still-missing ids from the server.
+  Future<List<Track>> _resolveTracks(List<String> ids, ChorusState c) async {
+    final pool = <String, Track>{};
+    for (final t in _queue) {
+      pool[t.id] = t;
+    }
+    for (final t in c.queue) {
+      pool[t.id] = t;
+    }
+    final missing = ids.where((id) => !pool.containsKey(id)).toSet().toList();
+    if (missing.isNotEmpty) {
+      try {
+        final fetched = await api.tracksByIds(missing);
+        for (final t in fetched) {
+          pool[t.id] = t;
+        }
+      } catch (_) {}
+    }
+    return ids.map((id) => pool[id]).whereType<Track>().toList();
+  }
+
+  /// Host: publish our real playback as the chorus's source of truth.
   void _broadcastChorus() {
-    if (chorus == null || _applyingChorus) return;
+    if (!isChorusHost || _applyingChorus) return;
     api
         .postChorusState(
           _queue.map((t) => t.id).toList(),
@@ -309,6 +554,14 @@ class PlayerModel extends ChangeNotifier {
           _player.position.inMilliseconds,
           _player.playing,
         )
+        .catchError((_) {});
+  }
+
+  /// Member: ask the host to change playback.
+  void _sendCommand({List<String>? queue, int? index, int? positionMs, bool? playing}) {
+    if (!isChorusMember) return;
+    api
+        .sendChorusCommand(queue: queue, index: index, positionMs: positionMs, playing: playing)
         .catchError((_) {});
   }
 
@@ -323,130 +576,72 @@ class PlayerModel extends ChangeNotifier {
   /// Start hosting a chorus from the current queue.
   Future<void> startChorus(String mode) async {
     if (_queue.isEmpty) return;
+    _chorusAutoStop = false;
     try {
-      chorus = await api.startChorus(
+      final c = await api.startChorus(
         mode,
         _queue.map((t) => t.id).toList(),
         _index,
         _player.position.inMilliseconds,
         _player.playing,
       );
+      chorus = c;
+      _chorusVersion = c.version;
+      _lastHostPlaying = _player.playing;
       notifyListeners();
-      _ensureChorusPolling();
+      _startChorusLoop();
     } catch (e) {
       debugPrint('startChorus error: $e');
     }
   }
 
   Future<void> setChorusMode(String mode) async {
+    // The mode change bumps the server version; the long-poll picks it up.
     await api.setChorusMode(mode).catchError((_) {});
-    if (chorus != null) {
-      // optimistic; the next poll confirms
-      await _chorusSync();
-    }
   }
 
-  /// Begin following a chorus after joining/requesting (kicks off polling).
+  /// Begin following a chorus after joining/requesting (kicks off the long-poll).
   void joinedChorus() {
-    _ensureChorusPolling();
-    _chorusSync();
+    _chorusVersion = 0; // force an immediate hydrate on the first poll
+    _startChorusLoop();
   }
 
-  /// Force an immediate chorus poll (e.g. after approving/removing a member).
-  Future<void> refreshChorus() => _chorusSync();
+  /// Host actions (approve/deny/remove) bump the server version on their own, so
+  /// the long-poll refreshes automatically — nothing to force here.
+  Future<void> refreshChorus() async {}
 
   Future<void> leaveChorusSession() async {
+    final wasMember = isChorusMember;
+    _chorusAutoStop = true;
     await api.leaveChorus().catchError((_) {});
     chorus = null;
-    _stopChorusPolling();
+    _stopChorusLoop();
+    _stopMemberTicker();
+    if (wasMember) await _player.pause();
     notifyListeners();
-  }
-
-  /// Poll the shared chorus state and reconcile local playback with it.
-  Future<void> _chorusSync() async {
-    ChorusState? c;
-    try {
-      c = await api.chorus();
-    } catch (_) {
-      return; // transient — keep current state
-    }
-    if (c == null) {
-      if (chorus != null) {
-        chorus = null;
-        _stopChorusPolling();
-        notifyListeners();
-      }
-      return;
-    }
-    chorus = c;
-    notifyListeners();
-    if (c.queueIds.isEmpty) return;
-
-    final localIds = _queue.map((t) => t.id).toList();
-    final sigMatch = _idsEqual(localIds, c.queueIds) && _index == c.index;
-    final sharedTrackId =
-        (c.index >= 0 && c.index < c.queueIds.length) ? c.queueIds[c.index] : null;
-    final drift = c.playing ? (DateTime.now().millisecondsSinceEpoch - c.updatedAt) : 0;
-    var targetMs = c.positionMs + (drift > 0 ? drift : 0);
-    if (targetMs < 0) targetMs = 0;
-
-    if (!sigMatch) {
-      // If we're the host and the shared state still reflects our own last update,
-      // our local state is newer (e.g. the track just auto-advanced) — push it
-      // instead of reverting to the stale shared index.
-      if (c.isHost && c.controllerId == c.hostId) {
-        _broadcastChorus();
-        return;
-      }
-      // Adopt the shared queue/index. Keep the current track's position when it's
-      // unchanged; otherwise jump to the shared (extrapolated) position.
-      final sameTrack = current?.id == sharedTrackId;
-      final pos = sameTrack ? _player.position : Duration(milliseconds: targetMs);
-      _applyingChorus = true;
-      try {
-        _queue = List.of(c.queue);
-        _index = c.index;
-        _scrobbled = false;
-        _loadLyrics();
-        _source = ConcatenatingAudioSource(children: c.queue.map(_sourceFor).toList());
-        await _player.setAudioSource(_source!, initialIndex: c.index, initialPosition: pos);
-        if (c.playing) {
-          await _player.play();
-        } else {
-          await _player.pause();
-        }
-      } catch (e) {
-        debugPrint('chorus adopt error: $e');
-      } finally {
-        _applyingChorus = false;
-      }
-      notifyListeners();
-      return;
-    }
-
-    // Content matches the shared state.
-    if (c.isHost) {
-      _broadcastChorus(); // host drives the shared timeline
-    } else {
-      if ((_player.position.inMilliseconds - targetMs).abs() > 3000) {
-        await _player.seek(Duration(milliseconds: targetMs));
-      }
-      if (c.playing && !_player.playing) await _player.play();
-      if (!c.playing && _player.playing) await _player.pause();
-    }
   }
 
   Future<void> toggle() async {
+    if (isChorusMember) {
+      _sendCommand(playing: !chorus!.playing, positionMs: _memberPositionMs());
+      return;
+    }
     if (_player.playing) {
       await _player.pause();
     } else {
       await _player.play();
     }
-    _broadcastChorus();
+    // Broadcast handled by the playerStateStream transition listener.
   }
 
   // Manual next/previous wrap around the ends so a playlist always loops.
   Future<void> next() async {
+    if (isChorusMember) {
+      final n = chorus!.queueIds.length;
+      if (n == 0) return;
+      _sendCommand(index: (chorus!.index + 1) % n, positionMs: 0, playing: true);
+      return;
+    }
     if (_player.hasNext) {
       await _player.seekToNext();
     } else {
@@ -456,6 +651,16 @@ class PlayerModel extends ChangeNotifier {
   }
 
   Future<void> previous() async {
+    if (isChorusMember) {
+      final n = chorus!.queueIds.length;
+      if (n == 0) return;
+      if (_memberPositionMs() > 3000) {
+        _sendCommand(positionMs: 0);
+      } else {
+        _sendCommand(index: (chorus!.index - 1 + n) % n, positionMs: 0, playing: true);
+      }
+      return;
+    }
     if (_player.position.inSeconds > 3) {
       await _player.seek(Duration.zero);
     } else if (_player.hasPrevious) {
@@ -468,13 +673,22 @@ class PlayerModel extends ChangeNotifier {
   }
 
   Future<void> seek(Duration d) async {
+    if (isChorusMember) {
+      _sendCommand(positionMs: d.inMilliseconds);
+      _memberPosBaseMs = d.inMilliseconds; // optimistic local UI
+      _memberPosBaseAt = DateTime.now().millisecondsSinceEpoch;
+      notifyListeners();
+      return;
+    }
     await _player.seek(d);
     _broadcastChorus();
   }
+
   Future<void> setVolume(double v) async {
     await _player.setVolume(v);
     notifyListeners(); // update the slider immediately, even while paused
   }
+
   double get volume => _player.volume;
 
   // ---- Repeat (off / all / one) + shuffle ----
@@ -500,7 +714,11 @@ class PlayerModel extends ChangeNotifier {
     _lyrics = null;
     notifyListeners();
     final t = current;
-    if (t == null) return;
+    if (t == null) {
+      _lyricsForId = null;
+      return;
+    }
+    _lyricsForId = t.id;
     try {
       final l = await api.lyrics(t.id);
       if (current?.id == t.id) {
@@ -512,6 +730,7 @@ class PlayerModel extends ChangeNotifier {
 
   // ---- Stall recovery (cutout mitigation) ----
   void _checkStall() {
+    if (isChorusMember) return; // members have no local audio to watch
     final t = current;
     if (t == null || _recovering) return;
     final st = _player.processingState;
@@ -596,8 +815,10 @@ class PlayerModel extends ChangeNotifier {
     _watchdog?.cancel();
     _saveTimer?.cancel();
     _heartbeat?.cancel();
-    _listenTimer?.cancel();
-    _chorusTimer?.cancel();
+    _chorusTick?.cancel();
+    _memberTicker?.cancel();
+    _listenLooping = false;
+    _chorusLooping = false;
     _player.dispose();
     super.dispose();
   }

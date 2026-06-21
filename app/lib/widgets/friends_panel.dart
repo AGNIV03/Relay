@@ -86,14 +86,18 @@ class _FriendTile extends StatelessWidget {
     final subtitle =
         f.track != null ? '${f.track!.title} • ${f.track!.artistName}' : 'No recent activity';
 
-    // Trailing actions: Join Chorus (if the friend is hosting one and we're not
-    // already in a chorus), and Listen Along.
+    // Trailing actions: Join Chorus (when the friend is hosting and we aren't
+    // already a member of someone's chorus), and Listen Along. With auto-start
+    // most users are always hosting their own chorus, so we gate on *member*
+    // status, not "in a chorus" — joining/following ends our own auto-chorus.
     final actions = <Widget>[];
-    if (f.chorusMode != null && !player.inChorus) {
+    final canJoin =
+        f.chorusMode != null && player.chorus?.hostId != f.id && !player.isChorusMember;
+    if (canJoin) {
       final ask = f.chorusMode == 'ask';
       actions.add(IconButton(
         tooltip: ask ? 'Ask to join Chorus' : 'Join Chorus',
-        icon: Icon(ask ? LucideIcons.users : LucideIcons.users, color: kAccent),
+        icon: Icon(ask ? LucideIcons.userPlus : LucideIcons.radio, color: kAccent),
         onPressed: () => _joinChorus(context, f, ask),
       ));
     }
@@ -103,7 +107,7 @@ class _FriendTile extends StatelessWidget {
         icon: const Icon(LucideIcons.x, color: kAccent),
         onPressed: player.stopListenAlong,
       ));
-    } else if (f.online && f.track != null && !player.inChorus) {
+    } else if (f.online && f.track != null && !player.isChorusMember) {
       actions.add(IconButton(
         tooltip: 'Listen along',
         icon: const Icon(LucideIcons.headphones, color: kText),
@@ -172,9 +176,28 @@ class _ChorusBarState extends State<ChorusBar> {
   Widget build(BuildContext context) {
     final player = context.watch<PlayerModel>();
     final c = player.chorus;
+    if (c != null && c.isPending) return _pending(context, player, c);
     if (c != null) return _active(context, player, c);
     if (player.current == null) return const SizedBox.shrink();
     return _startBar(context, player);
+  }
+
+  Widget _pending(BuildContext context, PlayerModel player, ChorusState c) {
+    return Container(
+      decoration: const BoxDecoration(border: Border(top: BorderSide(color: kBorder))),
+      padding: const EdgeInsets.fromLTRB(14, 8, 8, 8),
+      child: Row(children: [
+        const Icon(LucideIcons.userPlus, size: 16, color: kAccent),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text('Requested to join ${c.hostName}’s Chorus',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13, color: kMuted)),
+        ),
+        TextButton(onPressed: player.leaveChorusSession, child: const Text('Cancel')),
+      ]),
+    );
   }
 
   Widget _startBar(BuildContext context, PlayerModel player) {

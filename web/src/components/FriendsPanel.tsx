@@ -97,8 +97,10 @@ function FriendRow({ f, onOpen }: { f: Friend; onOpen: () => void }) {
           </div>
         </div>
       </button>
-      {/* Join Chorus (friend is hosting, and we're not already in one) */}
-      {f.chorusMode && !p.chorus && (
+      {/* Join Chorus (friend is hosting, and we aren't already a member of one).
+          With auto-start most users always host their own, so we gate on member
+          status — joining/following ends our own auto-chorus. */}
+      {f.chorusMode && p.chorus?.hostId !== f.id && !p.isChorusMember && (
         <button
           onClick={async () => {
             const status = await p.joinChorus(f.id);
@@ -119,10 +121,11 @@ function FriendRow({ f, onOpen }: { f: Friend; onOpen: () => void }) {
           <X size={16} />
         </button>
       ) : (
-        // Listen-along only for an online friend; hidden once they go offline / in a chorus.
+        // Listen-along for an online friend; hidden once they go offline / when
+        // we're a silent chorus member.
         f.online &&
         f.track &&
-        !p.chorus && (
+        !p.isChorusMember && (
           <button
             onClick={() => p.startListenAlong(f.id, f.username)}
             title="Listen along"
@@ -142,6 +145,23 @@ function ChorusSection() {
   const p = usePlayer();
   const [open, setOpen] = useState(true);
   const c = p.chorus;
+
+  if (c && c.isPending) {
+    return (
+      <div className="flex items-center gap-2 border-t border-[var(--border)] px-4 py-3 text-sm">
+        <UserPlus size={15} className="text-[var(--accent)]" />
+        <span className="flex-1 truncate text-[var(--muted)]">
+          Requested to join {c.hostName}&apos;s Chorus
+        </span>
+        <button
+          onClick={() => p.leaveChorus()}
+          className="text-xs font-medium text-[var(--muted)] hover:text-white"
+        >
+          Cancel
+        </button>
+      </div>
+    );
+  }
 
   if (c) {
     return (

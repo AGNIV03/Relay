@@ -169,6 +169,14 @@ class Api {
     return (j['tracks'] as List).map((e) => Track.fromJson(e)).toList();
   }
 
+  /// Hydrate specific tracks by id, preserving order (Chorus host resolving a
+  /// member-proposed queue).
+  Future<List<Track>> tracksByIds(List<String> ids) async {
+    if (ids.isEmpty) return [];
+    final j = await _get('/api/library/tracks/by-ids?ids=${ids.join(',')}');
+    return (j['tracks'] as List).map((e) => Track.fromJson(e)).toList();
+  }
+
   /// Permanently delete a track (file + DB). Admin or the uploader only.
   Future<void> deleteTrack(String trackId) => _send('DELETE', '/api/library/tracks/$trackId');
 
@@ -340,12 +348,56 @@ class Api {
   Future<HostActivity> userActivity(String userId) async =>
       HostActivity.fromJson(await _get('/api/social/activity/$userId'));
 
+  /// Long-poll a host's activity: resolves as soon as their playback changes past
+  /// [since] (or after the server's ~25s hold). Used by listen-along for tight sync.
+  Future<HostActivity> userActivityPoll(String userId, int since) async {
+    final res = await http
+        .get(_uri('/api/social/activity/$userId/poll?since=$since'), headers: _headers)
+        .timeout(const Duration(seconds: 35));
+    if (res.statusCode >= 400) throw ApiException(_errorMessage(res));
+    return HostActivity.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+  }
+
   // ---- Chorus (collaborative synced listening) ----
   /// The chorus the current user is in, or null.
   Future<ChorusState?> chorus() async {
     final j = await _get('/api/chorus');
     return j == null ? null : ChorusState.fromJson(j as Map<String, dynamic>);
   }
+
+  /// Long-poll the chorus: resolves as soon as it changes past [since] (or after
+  /// the server's ~25s hold). Host polls also receive queued member commands.
+  /// Returns null if no longer in a chorus.
+  Future<ChorusState?> chorusPoll(int since) async {
+    final res = await http
+        .get(_uri('/api/chorus/poll?since=$since'), headers: _headers)
+        .timeout(const Duration(seconds: 35));
+    if (res.statusCode == 401 && await _tryRefresh()) {
+      final r2 = await http
+          .get(_uri('/api/chorus/poll?since=$since'), headers: _headers)
+          .timeout(const Duration(seconds: 35));
+      if (r2.statusCode >= 400) throw ApiException(_errorMessage(r2));
+      final b2 = r2.body.isEmpty ? null : jsonDecode(r2.body);
+      return b2 == null ? null : ChorusState.fromJson(b2 as Map<String, dynamic>);
+    }
+    if (res.statusCode >= 400) throw ApiException(_errorMessage(res));
+    final b = res.body.isEmpty ? null : jsonDecode(res.body);
+    return b == null ? null : ChorusState.fromJson(b as Map<String, dynamic>);
+  }
+
+  /// A member asks the host to change playback (song / queue / play-pause / seek).
+  Future<void> sendChorusCommand({
+    List<String>? queue,
+    int? index,
+    int? positionMs,
+    bool? playing,
+  }) =>
+      _send('POST', '/api/chorus/command', body: {
+        if (queue != null) 'queue': queue,
+        if (index != null) 'index': index,
+        if (positionMs != null) 'positionMs': positionMs,
+        if (playing != null) 'playing': playing,
+      });
 
   Future<ChorusState> startChorus(
     String mode,

@@ -255,6 +255,7 @@ class ChorusState {
   final String hostName;
   final String mode; // 'open' | 'ask'
   final bool isHost;
+  final bool isPending; // I requested to join (ask mode), awaiting approval
   final List<UserRef> members;
   final List<UserRef> pending;
   final List<Track> queue;
@@ -265,12 +266,17 @@ class ChorusState {
   final int updatedAt;
   final String controllerId;
   final String controllerName;
+  final int version; // long-poll cursor
+  final int serverNow; // server clock at hydrate, for skew-free extrapolation
+  /// Pending member intents for the host to apply (host polls only).
+  final List<ChorusPatch> commands;
 
   ChorusState({
     required this.hostId,
     required this.hostName,
     required this.mode,
     required this.isHost,
+    this.isPending = false,
     required this.members,
     required this.pending,
     required this.queue,
@@ -281,6 +287,9 @@ class ChorusState {
     required this.updatedAt,
     required this.controllerId,
     required this.controllerName,
+    this.version = 0,
+    this.serverNow = 0,
+    this.commands = const [],
   });
 
   factory ChorusState.fromJson(Map<String, dynamic> j) => ChorusState(
@@ -288,6 +297,7 @@ class ChorusState {
         hostName: j['hostName'] as String? ?? '?',
         mode: j['mode'] as String? ?? 'open',
         isHost: j['isHost'] as bool? ?? false,
+        isPending: j['isPending'] as bool? ?? false,
         members: (j['members'] as List?)?.map((e) => UserRef.fromJson(e)).toList() ?? const [],
         pending: (j['pending'] as List?)?.map((e) => UserRef.fromJson(e)).toList() ?? const [],
         queue: (j['queue'] as List?)?.map((e) => Track.fromJson(e)).toList() ?? const [],
@@ -298,6 +308,24 @@ class ChorusState {
         updatedAt: (j['updatedAt'] as int?) ?? 0,
         controllerId: j['controllerId'] as String? ?? '',
         controllerName: j['controllerName'] as String? ?? '?',
+        version: (j['version'] as num?)?.toInt() ?? 0,
+        serverNow: (j['serverNow'] as num?)?.toInt() ?? 0,
+        commands: (j['commands'] as List?)?.map((e) => ChorusPatch.fromJson(e)).toList() ?? const [],
+      );
+}
+
+/// A partial playback intent (a member command, or merged host target).
+class ChorusPatch {
+  final List<String>? queue;
+  final int? index;
+  final int? positionMs;
+  final bool? playing;
+  ChorusPatch({this.queue, this.index, this.positionMs, this.playing});
+  factory ChorusPatch.fromJson(Map<String, dynamic> j) => ChorusPatch(
+        queue: (j['queue'] as List?)?.cast<String>(),
+        index: (j['index'] as num?)?.toInt(),
+        positionMs: (j['positionMs'] as num?)?.toInt(),
+        playing: j['playing'] as bool?,
       );
 }
 
@@ -308,6 +336,8 @@ class HostActivity {
   final bool playing;
   final int? updatedAt;
   final bool online;
+  final int version; // long-poll cursor
+  final int serverNow; // server clock at response, for skew-free extrapolation
   HostActivity({
     this.trackId,
     this.track,
@@ -315,6 +345,8 @@ class HostActivity {
     this.playing = false,
     this.updatedAt,
     this.online = false,
+    this.version = 0,
+    this.serverNow = 0,
   });
   factory HostActivity.fromJson(Map<String, dynamic> j) => HostActivity(
         trackId: j['trackId'] as String?,
@@ -323,6 +355,8 @@ class HostActivity {
         playing: j['playing'] as bool? ?? false,
         updatedAt: (j['updatedAt'] as num?)?.toInt(),
         online: j['online'] as bool? ?? false,
+        version: (j['version'] as num?)?.toInt() ?? 0,
+        serverNow: (j['serverNow'] as num?)?.toInt() ?? 0,
       );
 }
 

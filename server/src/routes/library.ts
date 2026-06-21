@@ -149,6 +149,24 @@ router.get("/tracks", async (req, res) => {
   res.json({ tracks, total, limit, offset });
 });
 
+/** GET /api/library/tracks/by-ids?ids=a,b,c — hydrate specific tracks, preserving
+ *  the requested order. Used by a Chorus host to resolve member-proposed queues. */
+router.get("/tracks/by-ids", async (req, res) => {
+  const ids = String(req.query.ids ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 1000);
+  if (ids.length === 0) return res.json({ tracks: [] });
+  const found = await prisma.track.findMany({
+    where: { id: { in: ids } },
+    include: { artist: true, album: true, uploader: { select: { username: true } } },
+  });
+  const byId = new Map(found.map((t) => [t.id, t]));
+  const tracks = ids.map((id) => byId.get(id)).filter(Boolean);
+  res.json({ tracks });
+});
+
 /** POST /api/library/scrobble { trackId } — record a play (drives stats + recently/most played) */
 router.post("/scrobble", async (req, res) => {
   const parsed = z.object({ trackId: z.string() }).safeParse(req.body);

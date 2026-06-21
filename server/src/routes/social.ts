@@ -2,11 +2,35 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
-import { setActivity, getActivity, isOnline } from "../lib/presence.js";
+import { setActivity, getActivity, isOnline, subscribeActivity } from "../lib/presence.js";
 import { hostMode } from "../lib/chorus.js";
 
 const router = Router();
 router.use(requireAuth);
+
+const LONG_POLL_MS = 25_000;
+
+/** Build the listen-along payload for a host: their live track + position. Carries
+ *  `serverNow` so followers can correct for clock skew when extrapolating. */
+async function hostActivity(userId: string) {
+  const a = getActivity(userId);
+  const track = a?.trackId
+    ? await prisma.track.findUnique({
+        where: { id: a.trackId },
+        include: { artist: true, album: true },
+      })
+    : null;
+  return {
+    trackId: a?.trackId ?? null,
+    track,
+    positionMs: a?.positionMs ?? 0,
+    playing: a?.playing ?? false,
+    updatedAt: a?.updatedAt ?? null,
+    online: isOnline(a),
+    version: a?.version ?? 0,
+    serverNow: Date.now(),
+  };
+}
 
 /** POST /api/social/activity — heartbeat with the user's current playback state */
 router.post("/activity", (req, res) => {
@@ -109,22 +133,39 @@ router.get("/users/:id", async (req, res) => {
   });
 });
 
-/** GET /api/social/activity/:userId — a user's live state, for "listen along" polling */
+/** GET /api/social/activity/:userId — a user's live state, for "listen along". */
 router.get("/activity/:userId", async (req, res) => {
-  const a = getActivity(req.params.userId);
-  const track = a?.trackId
-    ? await prisma.track.findUnique({
-        where: { id: a.trackId },
-        include: { artist: true, album: true },
-      })
-    : null;
-  res.json({
-    trackId: a?.trackId ?? null,
-    track,
-    positionMs: a?.positionMs ?? 0,
-    playing: a?.playing ?? false,
-    updatedAt: a?.updatedAt ?? null,
-    online: isOnline(a),
+  res.json(await hostActivity(req.params.userId));
+});
+
+/** GET /api/social/activity/:userId/poll?since=<version> — long-poll: returns as
+ *  soon as the host's playback changes past `since` (or after ~25s). Lets listen-
+ *  along followers track pauses/seeks near-instantly instead of every few seconds. */
+router.get("/activity/:userId/poll", async (req, res) => {
+  const hostId = req.params.userId;
+  const since = Number(req.query.since ?? 0) || 0;
+  const a = getActivity(hostId);
+  if (!a || a.version > since) return res.json(await hostActivity(hostId));
+
+  let settled = false;
+  const finish = async () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    unsub();
+    try {
+      res.json(await hostActivity(hostId));
+    } catch {
+      if (!res.headersSent) res.json(await hostActivity(hostId).catch(() => null));
+    }
+  };
+  const unsub = subscribeActivity(hostId, () => void finish());
+  const timer = setTimeout(() => void finish(), LONG_POLL_MS);
+  req.on("close", () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    unsub();
   });
 });
 

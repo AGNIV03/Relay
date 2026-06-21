@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { api, streamUrl, coverUrl, tokens } from "@/lib/api";
-import type { Track, Lyrics, HostActivity, ChorusState } from "@/lib/types";
+import type { Track, Lyrics, HostActivity, ChorusState, ChorusPatch } from "@/lib/types";
 
 export type RepeatMode = "off" | "all" | "one";
 
@@ -51,8 +51,10 @@ interface PlayerState {
   startListenAlong: (userId: string, name: string) => void;
   /** Stop following; finish the current song, then return to the saved queue. */
   stopListenAlong: () => void;
-  // ---- Chorus (collaborative synced listening) ----
+  // ---- Chorus (collaborative listening; audio only on the host's device) ----
   chorus: ChorusState | null;
+  /** True when we're a silent, approved member acting as a remote control. */
+  isChorusMember: boolean;
   startChorus: (mode: "open" | "ask") => void;
   setChorusMode: (mode: "open" | "ask") => void;
   joinChorus: (hostId: string) => Promise<string>;
@@ -92,11 +94,22 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [chorus, setChorus] = useState<ChorusState | null>(null);
   const chorusRef = useRef<ChorusState | null>(null);
   const pendingSeekRef = useRef<number | null>(null); // seconds to seek to after the next load
+  // Chorus long-poll engine.
+  const chorusVersionRef = useRef(0);
+  const chorusLoopRef = useRef(false);
+  const chorusAbortRef = useRef<AbortController | null>(null);
+  const chorusAutoStopRef = useRef(false); // user stopped — skip auto-start until next play
+  // Silent member's extrapolated position.
+  const [memberPos, setMemberPos] = useState(0);
+  const memberBaseMsRef = useRef(0);
+  const memberBaseAtRef = useRef(0);
   useEffect(() => {
     chorusRef.current = chorus;
   }, [chorus]);
 
-  const current = queue[index] ?? null;
+  const localCurrent = queue[index] ?? null;
+  const isChorusHost = !!chorus && chorus.isHost;
+  const isChorusMember = !!chorus && !chorus.isHost && !chorus.isPending;
 
   // Refs the (once-registered) audio event handlers read from.
   const queueRef = useRef<Track[]>([]);
@@ -119,14 +132,31 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     repeatRef.current = repeat;
   }, [repeat]);
   useEffect(() => {
-    currentIdRef.current = current?.id ?? null;
-  }, [current?.id]);
+    currentIdRef.current = localCurrent?.id ?? null;
+  }, [localCurrent?.id]);
   useEffect(() => {
     playingRef.current = playing;
   }, [playing]);
   useEffect(() => {
     listenHostRef.current = listenHost?.id ?? null;
   }, [listenHost]);
+
+  // True when we're a silent, approved chorus member (reads the ref for callbacks).
+  const memberNow = useCallback(() => {
+    const c = chorusRef.current;
+    return !!c && !c.isHost && !c.isPending;
+  }, []);
+
+  // A silent member's extrapolated position in ms (no local audio to read).
+  const memberPositionMs = useCallback(() => {
+    const c = chorusRef.current;
+    if (!c) return 0;
+    let ms = memberBaseMsRef.current;
+    if (c.playing) ms += Date.now() - memberBaseAtRef.current;
+    const dur = (c.queue[c.index]?.duration ?? 0) * 1000;
+    if (dur > 0 && ms > dur) ms = dur;
+    return ms < 0 ? 0 : ms;
+  }, []);
 
   // Advance helper shared by manual-next and natural-end.
   const advance = useCallback((dir: 1 | -1, loop: boolean): number | null => {
@@ -159,7 +189,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     };
     const onMeta = () => {
       setDuration(audio.duration || 0);
-      // Apply a pending chorus seek once the new track's metadata is ready.
+      // Apply a pending seek (chorus command / adopt) once metadata is ready.
       if (pendingSeekRef.current != null) {
         audio.currentTime = pendingSeekRef.current;
         pendingSeekRef.current = null;
@@ -210,55 +240,279 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Load + play whenever the current track changes.
+  // Load + play whenever the LOCAL current track changes. A silent chorus member
+  // has no local audio — skip entirely.
   useEffect(() => {
     const audio = audioRef.current;
-    if (!audio || !current) return;
-    audio.src = streamUrl(current.id);
+    if (!audio || !localCurrent) return;
+    if (memberNow()) return; // members don't drive local audio
+    audio.src = streamUrl(localCurrent.id);
     audio.play().catch(() => setPlaying(false));
     setPosition(0);
     setLyrics(null);
     api
-      .get<Lyrics>(`/api/library/tracks/${current.id}/lyrics`)
+      .get<Lyrics>(`/api/library/tracks/${localCurrent.id}/lyrics`)
       .then(setLyrics)
       .catch(() => setLyrics(null));
     if ("mediaSession" in navigator) {
       navigator.mediaSession.metadata = new MediaMetadata({
-        title: current.title,
-        artist: current.artist?.name ?? "",
-        album: current.album?.title ?? "",
-        artwork: [{ src: coverUrl(current.id), sizes: "512x512", type: "image/jpeg" }],
+        title: localCurrent.title,
+        artist: localCurrent.artist?.name ?? "",
+        album: localCurrent.album?.title ?? "",
+        artwork: [{ src: coverUrl(localCurrent.id), sizes: "512x512", type: "image/jpeg" }],
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current?.id]);
+  }, [localCurrent?.id]);
 
+  // For a member, load lyrics for the SHARED current track when it changes.
+  const memberTrackId = isChorusMember ? chorus!.queue[chorus!.index]?.id ?? null : null;
+  useEffect(() => {
+    if (!memberTrackId) return;
+    setLyrics(null);
+    api
+      .get<Lyrics>(`/api/library/tracks/${memberTrackId}/lyrics`)
+      .then(setLyrics)
+      .catch(() => setLyrics(null));
+  }, [memberTrackId]);
+
+  // ---- Chorus sync engine ---------------------------------------------------
+  const broadcastChorus = useCallback(() => {
+    const c = chorusRef.current;
+    if (!c || !c.isHost) return; // only the host publishes truth
+    api
+      .post("/api/chorus/state", {
+        queue: queueRef.current.map((t) => t.id),
+        index: indexRef.current,
+        positionMs: Math.round((audioRef.current?.currentTime ?? 0) * 1000),
+        playing: playingRef.current,
+      })
+      .catch(() => {});
+  }, []);
+
+  const sendCommand = useCallback((patch: ChorusPatch) => {
+    api.post("/api/chorus/command", patch).catch(() => {});
+  }, []);
+
+  const resolveTracks = useCallback(async (ids: string[], c: ChorusState): Promise<Track[]> => {
+    const pool = new Map<string, Track>();
+    for (const t of queueRef.current) pool.set(t.id, t);
+    for (const t of c.queue) pool.set(t.id, t);
+    const missing = ids.filter((id) => !pool.has(id));
+    if (missing.length) {
+      try {
+        const r = await api.get<{ tracks: Track[] }>(
+          `/api/library/tracks/by-ids?ids=${missing.join(",")}`,
+        );
+        for (const t of r.tracks) pool.set(t.id, t);
+      } catch {
+        /* ignore */
+      }
+    }
+    return ids.map((id) => pool.get(id)).filter((t): t is Track => !!t);
+  }, []);
+
+  // Host: apply queued member commands to the real player, then broadcast truth.
+  const applyHostCommands = useCallback(
+    async (cmds: ChorusPatch[], c: ChorusState) => {
+      let tQueue: string[] | undefined;
+      let tIndex: number | undefined;
+      let tPos: number | undefined;
+      let tPlaying: boolean | undefined;
+      for (const p of cmds) {
+        if (p.queue) tQueue = p.queue;
+        if (p.index != null) tIndex = p.index;
+        if (p.positionMs != null) tPos = p.positionMs;
+        if (p.playing != null) tPlaying = p.playing;
+      }
+      const audio = audioRef.current;
+      const localIds = queueRef.current.map((t) => t.id);
+      if (tQueue && tQueue.join(",") !== localIds.join(",")) {
+        const resolved = await resolveTracks(tQueue, c);
+        if (resolved.length) {
+          orderRef.current = Array.from({ length: resolved.length }, (_, i) => i);
+          scrobbled.current.clear();
+          pendingSeekRef.current = (tPos ?? 0) / 1000;
+          setQueue(resolved);
+          setIndex(Math.min(Math.max(tIndex ?? 0, 0), resolved.length - 1));
+          if (tPlaying === false) setTimeout(() => audio?.pause(), 100);
+        }
+      } else if (audio) {
+        if (tIndex != null && tIndex !== indexRef.current && tIndex >= 0 && tIndex < queueRef.current.length) {
+          pendingSeekRef.current = (tPos ?? 0) / 1000;
+          setIndex(tIndex);
+        } else if (tPos != null) {
+          audio.currentTime = tPos / 1000;
+        }
+        if (tPlaying != null) {
+          if (tPlaying && audio.paused) audio.play().catch(() => {});
+          if (!tPlaying && !audio.paused) audio.pause();
+        }
+      }
+      // Broadcast the resulting truth (after refs/audio settle).
+      setTimeout(() => broadcastChorus(), 150);
+    },
+    [broadcastChorus, resolveTracks],
+  );
+
+  const onChorusEnded = useCallback(() => {
+    const c = chorusRef.current;
+    const wasMember = !!c && !c.isHost && !c.isPending;
+    chorusLoopRef.current = false;
+    chorusRef.current = null;
+    setChorus(null);
+    if (wasMember) audioRef.current?.pause();
+  }, []);
+
+  const applyChorusUpdate = useCallback(
+    async (c: ChorusState) => {
+      const prev = chorusRef.current;
+      const wasMember = !!prev && !prev.isHost && !prev.isPending;
+      chorusRef.current = c;
+      setChorus(c);
+      if (c.isHost) {
+        if (c.commands && c.commands.length) await applyHostCommands(c.commands, c);
+      } else if (c.isPending) {
+        // Awaiting approval — keep our own music playing.
+      } else {
+        // Approved member — silence local audio and mirror the host.
+        const audio = audioRef.current;
+        if (!wasMember && audio && !audio.paused) audio.pause();
+        const adv = c.playing && c.serverNow ? c.serverNow - c.updatedAt : 0;
+        memberBaseMsRef.current = c.positionMs + (adv > 0 ? adv : 0);
+        memberBaseAtRef.current = Date.now();
+        setMemberPos(memberBaseMsRef.current);
+      }
+    },
+    [applyHostCommands],
+  );
+
+  const startChorusLoop = useCallback(() => {
+    if (chorusLoopRef.current) return;
+    chorusLoopRef.current = true;
+    (async () => {
+      while (chorusLoopRef.current) {
+        let c: ChorusState | null;
+        const ctrl = new AbortController();
+        chorusAbortRef.current = ctrl;
+        try {
+          c = await api.getSignal<ChorusState | null>(
+            `/api/chorus/poll?since=${chorusVersionRef.current}`,
+            ctrl.signal,
+          );
+        } catch {
+          if (!chorusLoopRef.current) break;
+          await new Promise((r) => setTimeout(r, 1000));
+          continue;
+        }
+        if (!chorusLoopRef.current) break;
+        if (!c) {
+          onChorusEnded();
+          break;
+        }
+        chorusVersionRef.current = c.version;
+        await applyChorusUpdate(c);
+      }
+    })();
+  }, [applyChorusUpdate, onChorusEnded]);
+
+  const stopChorusLoop = useCallback(() => {
+    chorusLoopRef.current = false;
+    chorusAbortRef.current?.abort();
+  }, []);
+
+  // Host: low-frequency truth re-broadcast so members never drift (on top of the
+  // instant broadcasts from control events).
+  useEffect(() => {
+    if (!isChorusHost) return;
+    const id = setInterval(() => broadcastChorus(), 5000);
+    return () => clearInterval(id);
+  }, [isChorusHost, broadcastChorus]);
+
+  // Member: animate the progress bar from the extrapolated position.
+  useEffect(() => {
+    if (!isChorusMember) return;
+    const tick = () => setMemberPos(memberPositionMs());
+    tick();
+    const id = setInterval(tick, 300);
+    return () => clearInterval(id);
+  }, [isChorusMember, memberPositionMs]);
+
+  // Host: broadcast content / play-state changes (covers natural advance + OS keys).
+  useEffect(() => {
+    if (!chorusRef.current?.isHost) return;
+    broadcastChorus();
+  }, [queue, index, playing, broadcastChorus]);
+
+  // ---- Playback controls ----------------------------------------------------
   const playQueue = useCallback(
     (tracks: Track[], start = 0) => {
       if (!tracks.length) return;
+      if (memberNow()) {
+        sendCommand({ queue: tracks.map((t) => t.id), index: start, positionMs: 0, playing: true });
+        return;
+      }
+      chorusAutoStopRef.current = false;
       scrobbled.current.clear();
       orderRef.current = shuffle
         ? shuffledOrder(tracks.length, start)
         : Array.from({ length: tracks.length }, (_, i) => i);
       setQueue(tracks);
       setIndex(start);
+      // Auto-start a chorus whenever fresh playback begins (host), unless already in one.
+      if (!chorusRef.current) {
+        api
+          .post<ChorusState>("/api/chorus/start", {
+            mode: "open",
+            queue: tracks.map((t) => t.id),
+            index: start,
+            positionMs: 0,
+            playing: true,
+          })
+          .then((c) => {
+            chorusVersionRef.current = c.version;
+            chorusRef.current = c;
+            setChorus(c);
+            startChorusLoop();
+          })
+          .catch(() => {});
+      }
     },
-    [shuffle],
+    [shuffle, memberNow, sendCommand, startChorusLoop],
   );
 
   const toggle = useCallback(() => {
+    if (memberNow()) {
+      const c = chorusRef.current!;
+      sendCommand({ playing: !c.playing, positionMs: memberPositionMs() });
+      return;
+    }
     const audio = audioRef.current;
-    if (!audio || !current) return;
+    if (!audio || !localCurrent) return;
     if (audio.paused) audio.play().catch(() => {});
     else audio.pause();
-  }, [current]);
+  }, [localCurrent, memberNow, sendCommand, memberPositionMs]);
 
-  // Manual next/prev always loop around the ends (playlist looping).
   const next = useCallback(() => {
+    if (memberNow()) {
+      const c = chorusRef.current!;
+      const n = c.queueIds.length;
+      if (n) sendCommand({ index: (c.index + 1) % n, positionMs: 0, playing: true });
+      return;
+    }
     const target = advance(1, true);
     if (target !== null) setIndex(target);
-  }, [advance]);
+  }, [advance, memberNow, sendCommand]);
+
   const prev = useCallback(() => {
+    if (memberNow()) {
+      const c = chorusRef.current!;
+      const n = c.queueIds.length;
+      if (!n) return;
+      if (memberPositionMs() > 3000) sendCommand({ positionMs: 0 });
+      else sendCommand({ index: (c.index - 1 + n) % n, positionMs: 0, playing: true });
+      return;
+    }
     const audio = audioRef.current;
     if (audio && audio.currentTime > 3) {
       audio.currentTime = 0;
@@ -266,11 +520,22 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
     const target = advance(-1, true);
     if (target !== null) setIndex(target);
-  }, [advance]);
+  }, [advance, memberNow, sendCommand, memberPositionMs]);
 
-  const seek = useCallback((sec: number) => {
-    if (audioRef.current) audioRef.current.currentTime = sec;
-  }, []);
+  const seek = useCallback(
+    (sec: number) => {
+      if (memberNow()) {
+        sendCommand({ positionMs: Math.round(sec * 1000) });
+        memberBaseMsRef.current = Math.round(sec * 1000); // optimistic
+        memberBaseAtRef.current = Date.now();
+        setMemberPos(memberBaseMsRef.current);
+        return;
+      }
+      if (audioRef.current) audioRef.current.currentTime = sec;
+      broadcastChorus(); // host: seek isn't a queue/index/playing change
+    },
+    [memberNow, sendCommand, broadcastChorus],
+  );
 
   const setVolume = useCallback((v: number) => {
     setVol(v);
@@ -296,84 +561,140 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const coverFor = useCallback((t: Track) => coverUrl(t.id), []);
 
   // --- Queue editing ---------------------------------------------------------
-  const addToQueue = useCallback((t: Track) => {
-    setQueue((q) => {
-      if (!q.length) {
-        orderRef.current = [0];
-        scrobbled.current.clear();
-        setIndex(0);
-        return [t];
+  const addToQueue = useCallback(
+    (t: Track) => {
+      if (memberNow()) {
+        const c = chorusRef.current!;
+        sendCommand({ queue: [...c.queueIds, t.id], index: c.index });
+        return;
       }
-      orderRef.current = [...orderRef.current, q.length];
-      return [...q, t];
-    });
-  }, []);
+      setQueue((q) => {
+        if (!q.length) {
+          orderRef.current = [0];
+          scrobbled.current.clear();
+          setIndex(0);
+          return [t];
+        }
+        orderRef.current = [...orderRef.current, q.length];
+        return [...q, t];
+      });
+    },
+    [memberNow, sendCommand],
+  );
 
-  const playNext = useCallback((t: Track) => {
-    setQueue((q) => {
-      if (!q.length) {
-        orderRef.current = [0];
-        scrobbled.current.clear();
-        setIndex(0);
-        return [t];
+  const playNext = useCallback(
+    (t: Track) => {
+      if (memberNow()) {
+        const c = chorusRef.current!;
+        const ids = [...c.queueIds];
+        const at = Math.min(Math.max(c.index + 1, 0), ids.length);
+        ids.splice(at, 0, t.id);
+        sendCommand({ queue: ids, index: c.index });
+        return;
       }
-      const newIdx = q.length;
-      const order = orderRef.current;
-      const pos = order.indexOf(indexRef.current);
-      const insertAt = pos < 0 ? order.length : pos + 1;
-      orderRef.current = [...order.slice(0, insertAt), newIdx, ...order.slice(insertAt)];
-      return [...q, t];
-    });
-  }, []);
+      setQueue((q) => {
+        if (!q.length) {
+          orderRef.current = [0];
+          scrobbled.current.clear();
+          setIndex(0);
+          return [t];
+        }
+        const newIdx = q.length;
+        const order = orderRef.current;
+        const pos = order.indexOf(indexRef.current);
+        const insertAt = pos < 0 ? order.length : pos + 1;
+        orderRef.current = [...order.slice(0, insertAt), newIdx, ...order.slice(insertAt)];
+        return [...q, t];
+      });
+    },
+    [memberNow, sendCommand],
+  );
 
-  const removeFromQueue = useCallback((i: number) => {
-    setQueue((q) => {
-      if (i < 0 || i >= q.length) return q;
-      if (i === indexRef.current) return q; // don't yank the playing track
-      const nq = q.filter((_, k) => k !== i);
-      // Rebuild order: drop position i, shift higher indices down by one.
-      orderRef.current = orderRef.current
-        .filter((idx) => idx !== i)
-        .map((idx) => (idx > i ? idx - 1 : idx));
-      if (indexRef.current > i) setIndex((n) => n - 1);
-      return nq;
-    });
-  }, []);
+  const removeFromQueue = useCallback(
+    (i: number) => {
+      if (memberNow()) {
+        const c = chorusRef.current!;
+        if (i <= c.index || i >= c.queueIds.length) return;
+        const ids = [...c.queueIds];
+        ids.splice(i, 1);
+        sendCommand({ queue: ids, index: c.index });
+        return;
+      }
+      setQueue((q) => {
+        if (i < 0 || i >= q.length) return q;
+        if (i === indexRef.current) return q; // don't yank the playing track
+        const nq = q.filter((_, k) => k !== i);
+        orderRef.current = orderRef.current
+          .filter((idx) => idx !== i)
+          .map((idx) => (idx > i ? idx - 1 : idx));
+        if (indexRef.current > i) setIndex((n) => n - 1);
+        return nq;
+      });
+    },
+    [memberNow, sendCommand],
+  );
 
-  const playAt = useCallback((i: number) => {
-    if (i >= 0 && i < queueRef.current.length) setIndex(i);
-  }, []);
+  const playAt = useCallback(
+    (i: number) => {
+      if (memberNow()) {
+        const c = chorusRef.current!;
+        if (i >= 0 && i < c.queueIds.length) sendCommand({ index: i, positionMs: 0, playing: true });
+        return;
+      }
+      if (i >= 0 && i < queueRef.current.length) setIndex(i);
+    },
+    [memberNow, sendCommand],
+  );
 
   // --- Presence heartbeat ----------------------------------------------------
-  // Post what we're playing every 12s, and immediately on track/play changes.
+  // Post what we're playing every 12s, and immediately on track/play changes. A
+  // member advertises the shared (chorus) track.
   useEffect(() => {
     const post = () => {
       if (!tokens.access) return; // not signed in yet
-      const t = queueRef.current[indexRef.current];
+      const member = memberNow();
+      const c = chorusRef.current;
+      const t = member && c ? c.queue[c.index] ?? null : queueRef.current[indexRef.current];
       api
         .post("/api/social/activity", {
           trackId: t?.id ?? null,
-          positionMs: Math.round((audioRef.current?.currentTime ?? 0) * 1000),
-          playing: playingRef.current,
+          positionMs: member
+            ? memberPositionMs()
+            : Math.round((audioRef.current?.currentTime ?? 0) * 1000),
+          playing: member && c ? c.playing : playingRef.current,
         })
         .catch(() => {});
     };
     post();
     const id = setInterval(post, 12_000);
     return () => clearInterval(id);
-  }, [current?.id, playing]);
+  }, [localCurrent?.id, playing, chorus, memberNow, memberPositionMs]);
 
   // --- Listen along ----------------------------------------------------------
-  const startListenAlong = useCallback((userId: string, name: string) => {
-    // Save the current session so we can return to it later.
-    savedSessionRef.current = {
-      queue: queueRef.current,
-      index: indexRef.current,
-      order: orderRef.current,
-    };
-    restoreAfterCurrentRef.current = false;
-    setListenHost({ id: userId, name });
-  }, []);
+  const leaveChorus = useCallback(async () => {
+    chorusAutoStopRef.current = true;
+    const wasMember = memberNow();
+    stopChorusLoop();
+    await api.post("/api/chorus/leave").catch(() => {});
+    chorusRef.current = null;
+    setChorus(null);
+    if (wasMember) audioRef.current?.pause();
+  }, [memberNow, stopChorusLoop]);
+
+  const startListenAlong = useCallback(
+    (userId: string, name: string) => {
+      // Listen-along is a personal follow — end our own hosted chorus first.
+      if (chorusRef.current?.isHost) leaveChorus();
+      savedSessionRef.current = {
+        queue: queueRef.current,
+        index: indexRef.current,
+        order: orderRef.current,
+      };
+      restoreAfterCurrentRef.current = false;
+      setListenHost({ id: userId, name });
+    },
+    [leaveChorus],
+  );
 
   const stopListenAlong = useCallback(() => {
     setListenHost(null);
@@ -383,20 +704,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // Poll the host every 3s while following: match their track + position + seeks.
+  // Long-poll the host while following: match their track + position + seeks/pauses
+  // near-instantly (server holds the request until the host's state changes).
   useEffect(() => {
     if (!listenHost) return;
-    let cancelled = false;
-    const sync = async () => {
-      let act: HostActivity;
-      try {
-        act = await api.get<HostActivity>(`/api/social/activity/${listenHost.id}`);
-      } catch {
-        return;
-      }
-      if (cancelled || listenHostRef.current !== listenHost.id) return;
-      // Host went offline — leave the session, finish the current song, then
-      // return to our own queue (same as a manual Stop).
+    let active = true;
+    let version = 0;
+    const ctrl = new AbortController();
+    const applyHostActivity = (act: HostActivity) => {
       if (!act.online) {
         stopListenAlong();
         return;
@@ -404,19 +719,17 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       if (!act.track || !act.trackId) return;
       const audio = audioRef.current;
       if (!audio) return;
-      // Extrapolate the host's position if they're still playing.
+      // Extrapolate using server clocks (skew-free) to "now".
       let targetMs = act.positionMs;
-      if (act.playing && act.updatedAt) {
-        targetMs += Date.now() - new Date(act.updatedAt).getTime();
+      if (act.playing && act.serverNow && act.updatedAt) {
+        targetMs += act.serverNow - new Date(act.updatedAt as number).getTime();
       }
-      const targetSec = targetMs / 1000;
+      const targetSec = Math.max(0, targetMs / 1000);
       if (currentIdRef.current !== act.trackId) {
-        // Host changed track — follow them onto it.
         scrobbled.current.clear();
         orderRef.current = [0];
         setQueue([act.track]);
         setIndex(0);
-        // Position is applied once metadata loads.
         const onReady = () => {
           audio.currentTime = Math.max(0, targetSec);
           if (act.playing) audio.play().catch(() => {});
@@ -424,189 +737,86 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         };
         audio.addEventListener("loadedmetadata", onReady);
       } else {
-        // Same track — correct drift / follow seeks.
-        if (Math.abs(audio.currentTime - targetSec) > 2.5) {
-          audio.currentTime = Math.max(0, targetSec);
+        if (Math.abs(audio.currentTime - targetSec) > 2) {
+          audio.currentTime = targetSec;
         }
         if (act.playing && audio.paused) audio.play().catch(() => {});
         if (!act.playing && !audio.paused) audio.pause();
       }
     };
-    sync();
-    const id = setInterval(sync, 3_000);
+    (async () => {
+      while (active && listenHostRef.current === listenHost.id) {
+        let act: HostActivity;
+        try {
+          act = await api.getSignal<HostActivity>(
+            `/api/social/activity/${listenHost.id}/poll?since=${version}`,
+            ctrl.signal,
+          );
+        } catch {
+          if (!active) break;
+          await new Promise((r) => setTimeout(r, 1000));
+          continue;
+        }
+        if (!active || listenHostRef.current !== listenHost.id) break;
+        version = act.version ?? 0;
+        applyHostActivity(act);
+      }
+    })();
     return () => {
-      cancelled = true;
-      clearInterval(id);
+      active = false;
+      ctrl.abort();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listenHost]);
 
-  // ---- Chorus (collaborative synced listening) ----
-  const lastAppliedSig = useRef("");
-  const chorusSig = (ids: string[], idx: number, isPlaying: boolean) =>
-    `${ids.join(",")}#${idx}#${isPlaying}`;
-
-  // Reconcile local playback with the shared chorus state.
-  const chorusSync = useCallback(async () => {
-    let c: ChorusState | null;
-    try {
-      c = await api.get<ChorusState | null>("/api/chorus");
-    } catch {
-      return;
-    }
-    if (!c) {
-      if (chorusRef.current) setChorus(null);
-      return;
-    }
-    setChorus(c);
-    if (!c.queueIds.length) return;
-    lastAppliedSig.current = chorusSig(c.queueIds, c.index, c.playing); // suppress echo
-    const audio = audioRef.current;
-    if (!audio) return;
-
-    const sharedTrackId =
-      c.index >= 0 && c.index < c.queueIds.length ? c.queueIds[c.index] : null;
-    const sigMatch =
-      queueRef.current.map((t) => t.id).join(",") === c.queueIds.join(",") &&
-      indexRef.current === c.index;
-    let targetMs = c.positionMs;
-    if (c.playing) targetMs += Date.now() - c.updatedAt;
-    const targetSec = Math.max(0, targetMs / 1000);
-
-    if (!sigMatch) {
-      // If we're the host and the shared state still reflects our own last update,
-      // our local state is newer (e.g. the track just auto-advanced) — push it
-      // instead of reverting to the stale shared index.
-      if (c.isHost && c.controllerId === c.hostId) {
-        api
-          .post("/api/chorus/state", {
-            queue: queueRef.current.map((t) => t.id),
-            index: indexRef.current,
-            positionMs: Math.round(audio.currentTime * 1000),
-            playing: playingRef.current,
-          })
-          .catch(() => {});
-        return;
-      }
-      orderRef.current = Array.from({ length: c.queue.length }, (_, i) => i);
-      const sameTrack = currentIdRef.current === sharedTrackId;
-      scrobbled.current.clear();
-      setQueue(c.queue);
-      setIndex(c.index);
-      if (sameTrack) {
-        if (Math.abs(audio.currentTime - targetSec) > 3) audio.currentTime = targetSec;
-        if (c.playing) audio.play().catch(() => {});
-        else audio.pause();
-      } else {
-        // New track: the load effect will play from 0; seek once it's ready.
-        pendingSeekRef.current = targetSec;
-        if (!c.playing) setTimeout(() => audio.pause(), 80);
-      }
-      return;
-    }
-
-    if (c.isHost) {
-      // Host drives the shared timeline.
-      api
-        .post("/api/chorus/state", {
-          queue: queueRef.current.map((t) => t.id),
-          index: indexRef.current,
-          positionMs: Math.round(audio.currentTime * 1000),
-          playing: playingRef.current,
-        })
-        .catch(() => {});
-    } else {
-      if (Math.abs(audio.currentTime - targetSec) > 3) audio.currentTime = targetSec;
-      if (c.playing && audio.paused) audio.play().catch(() => {});
-      if (!c.playing && !audio.paused) audio.pause();
-    }
-  }, []);
-
-  // Poll while in a chorus.
-  useEffect(() => {
-    if (!chorus) return;
-    chorusSync();
-    const id = setInterval(chorusSync, 2000);
-    return () => clearInterval(id);
-  }, [chorus?.hostId, chorusSync]);
-
-  // Broadcast local content/play changes to the chorus (skipping echoes of state
-  // we just adopted from the server).
-  useEffect(() => {
-    if (!chorusRef.current) return;
-    const ids = queue.map((t) => t.id);
-    const sig = chorusSig(ids, index, playing);
-    if (sig === lastAppliedSig.current) return;
-    lastAppliedSig.current = sig;
-    api
-      .post("/api/chorus/state", {
-        queue: ids,
-        index,
-        positionMs: Math.round((audioRef.current?.currentTime ?? 0) * 1000),
-        playing,
-      })
-      .catch(() => {});
-  }, [queue, index, playing]);
-
-  const startChorus = useCallback(async (mode: "open" | "ask") => {
-    try {
-      const ids = queueRef.current.map((t) => t.id);
-      const c = await api.post<ChorusState>("/api/chorus/start", {
-        mode,
-        queue: ids,
-        index: indexRef.current,
-        positionMs: Math.round((audioRef.current?.currentTime ?? 0) * 1000),
-        playing: playingRef.current,
-      });
-      lastAppliedSig.current = chorusSig(c.queueIds, c.index, c.playing);
-      setChorus(c);
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
-  const setChorusMode = useCallback(
+  // ---- Chorus lifecycle actions ----
+  const startChorus = useCallback(
     async (mode: "open" | "ask") => {
-      await api.post("/api/chorus/mode", { mode }).catch(() => {});
-      chorusSync();
+      try {
+        const ids = queueRef.current.map((t) => t.id);
+        const c = await api.post<ChorusState>("/api/chorus/start", {
+          mode,
+          queue: ids,
+          index: indexRef.current,
+          positionMs: Math.round((audioRef.current?.currentTime ?? 0) * 1000),
+          playing: playingRef.current,
+        });
+        chorusAutoStopRef.current = false;
+        chorusVersionRef.current = c.version;
+        chorusRef.current = c;
+        setChorus(c);
+        startChorusLoop();
+      } catch {
+        /* ignore */
+      }
     },
-    [chorusSync],
+    [startChorusLoop],
   );
+
+  const setChorusMode = useCallback(async (mode: "open" | "ask") => {
+    // The mode change bumps the server version; the long-poll picks it up.
+    await api.post("/api/chorus/mode", { mode }).catch(() => {});
+  }, []);
 
   const joinChorus = useCallback(
     async (hostId: string): Promise<string> => {
       const r = await api.post<{ status: string }>("/api/chorus/join", { hostId });
-      await chorusSync();
+      chorusVersionRef.current = 0; // force an immediate hydrate
+      startChorusLoop();
       return r.status;
     },
-    [chorusSync],
+    [startChorusLoop],
   );
 
-  const leaveChorus = useCallback(async () => {
-    await api.post("/api/chorus/leave").catch(() => {});
-    setChorus(null);
+  const approveChorus = useCallback(async (userId: string) => {
+    await api.post("/api/chorus/approve", { userId }).catch(() => {});
   }, []);
-
-  const approveChorus = useCallback(
-    async (userId: string) => {
-      await api.post("/api/chorus/approve", { userId }).catch(() => {});
-      chorusSync();
-    },
-    [chorusSync],
-  );
-  const denyChorus = useCallback(
-    async (userId: string) => {
-      await api.post("/api/chorus/deny", { userId }).catch(() => {});
-      chorusSync();
-    },
-    [chorusSync],
-  );
-  const removeFromChorus = useCallback(
-    async (userId: string) => {
-      await api.post("/api/chorus/remove", { userId }).catch(() => {});
-      chorusSync();
-    },
-    [chorusSync],
-  );
+  const denyChorus = useCallback(async (userId: string) => {
+    await api.post("/api/chorus/deny", { userId }).catch(() => {});
+  }, []);
+  const removeFromChorus = useCallback(async (userId: string) => {
+    await api.post("/api/chorus/remove", { userId }).catch(() => {});
+  }, []);
 
   // Browser media-key / lock-screen controls.
   useEffect(() => {
@@ -617,15 +827,23 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     navigator.mediaSession.setActionHandler("pause", () => toggle());
   }, [next, prev, toggle]);
 
+  // Public playback view: a silent member reflects the SHARED (host) state.
+  const exposedCurrent = isChorusMember ? chorus!.queue[chorus!.index] ?? null : localCurrent;
+  const exposedQueue = isChorusMember ? chorus!.queue : queue;
+  const exposedIndex = isChorusMember ? chorus!.index : index;
+  const exposedPlaying = isChorusMember ? chorus!.playing : playing;
+  const exposedPosition = isChorusMember ? memberPos / 1000 : position;
+  const exposedDuration = isChorusMember ? exposedCurrent?.duration ?? 0 : duration;
+
   return (
     <PlayerContext.Provider
       value={{
-        queue,
-        index,
-        current,
-        playing,
-        position,
-        duration,
+        queue: exposedQueue,
+        index: exposedIndex,
+        current: exposedCurrent,
+        playing: exposedPlaying,
+        position: exposedPosition,
+        duration: exposedDuration,
         volume,
         repeat,
         shuffle,
@@ -649,6 +867,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         startListenAlong,
         stopListenAlong,
         chorus,
+        isChorusMember,
         startChorus,
         setChorusMode,
         joinChorus,
