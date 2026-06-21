@@ -165,6 +165,12 @@ class Api {
   Future<Lyrics> lyrics(String trackId) async =>
       Lyrics.fromJson(await _get('/api/library/tracks/$trackId/lyrics'));
 
+  /// English machine-translation of a track's lyrics (null if already English).
+  Future<({String? lang, String? translated})> lyricsTranslation(String trackId) async {
+    final j = await _get('/api/library/tracks/$trackId/lyrics/translation');
+    return (lang: j['lang'] as String?, translated: j['translated'] as String?);
+  }
+
   // ---- Uploads ----
   /// Upload local audio files (multipart). Server restricts to MP3/FLAC and
   /// validates contents. Returns {added, failed, addedNames, failedNames}.

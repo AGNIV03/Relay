@@ -51,3 +51,6 @@ desktop.ini
 coverage/
 *.tsbuildinfo
 .eslintcache
+
+# JVM heap dumps from Gradle OOMs
+*.hprof

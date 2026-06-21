@@ -64,6 +64,11 @@ model Track {
   lyricsSynced  String?
   lyricsChecked Boolean @default(false) // true once we've attempted a lookup
 
+  // Machine translation of the lyrics to English (for non-English songs).
+  lyricsTranslated   String?
+  lyricsLang         String? // detected source language (e.g. "ja", "fr", "en")
+  lyricsTransChecked Boolean @default(false)
+
   albumId  String?
   album    Album?  @relation(fields: [albumId], references: [id], onDelete: SetNull)
   artistId String

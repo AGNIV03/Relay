@@ -1,12 +1,19 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePlayer } from "@/context/PlayerContext";
+import { api } from "@/lib/api";
 
 interface Line {
   t: number; // seconds
   text: string;
 }
+
+const LANG_NAMES: Record<string, string> = {
+  ja: "Japanese", fr: "French", es: "Spanish", de: "German", it: "Italian",
+  ko: "Korean", zh: "Chinese", pt: "Portuguese", ru: "Russian", hi: "Hindi",
+  ar: "Arabic", nl: "Dutch", sv: "Swedish", pl: "Polish", tr: "Turkish",
+};
 
 /** Parse LRC ("[mm:ss.xx] text") into timed lines. */
 function parseLrc(lrc: string): Line[] {
@@ -30,6 +37,11 @@ export function LyricsView({ onClose }: { onClose: () => void }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLParagraphElement>(null);
 
+  const [showTrans, setShowTrans] = useState(false);
+  const [trans, setTrans] = useState<string | null>(null);
+  const [lang, setLang] = useState<string | null>(null);
+  const [loadingTrans, setLoadingTrans] = useState(false);
+
   const lines = useMemo(() => (lyrics?.synced ? parseLrc(lyrics.synced) : []), [lyrics?.synced]);
   const activeIdx = useMemo(() => {
     if (!lines.length) return -1;
@@ -42,8 +54,38 @@ export function LyricsView({ onClose }: { onClose: () => void }) {
   }, [lines, position]);
 
   useEffect(() => {
-    activeRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [activeIdx]);
+    if (!showTrans) activeRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [activeIdx, showTrans]);
+
+  // Reset translation when the track changes.
+  useEffect(() => {
+    setShowTrans(false);
+    setTrans(null);
+    setLang(null);
+  }, [current?.id]);
+
+  async function toggleTranslate() {
+    if (showTrans) {
+      setShowTrans(false);
+      return;
+    }
+    setShowTrans(true);
+    if (!current || trans !== null || loadingTrans) return;
+    setLoadingTrans(true);
+    try {
+      const r = await api.get<{ lang: string | null; translated: string | null }>(
+        `/api/library/tracks/${current.id}/lyrics/translation`,
+      );
+      setTrans(r.translated ?? "");
+      setLang(r.lang);
+    } catch {
+      setTrans("");
+    } finally {
+      setLoadingTrans(false);
+    }
+  }
+
+  const hasLyrics = lines.length > 0 || !!lyrics?.plain;
 
   return (
     <div className="absolute inset-0 z-30 flex flex-col bg-[var(--bg)]/97 backdrop-blur-xl">
@@ -52,16 +94,45 @@ export function LyricsView({ onClose }: { onClose: () => void }) {
           <div className="truncate text-lg font-bold">{current?.title}</div>
           <div className="truncate text-sm text-[var(--muted)]">{current?.artist?.name}</div>
         </div>
-        <button
-          onClick={onClose}
-          className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--muted)] hover:text-white"
-        >
-          Close
-        </button>
+        <div className="flex items-center gap-2">
+          {hasLyrics && (
+            <button
+              onClick={toggleTranslate}
+              className={`rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm ${
+                showTrans ? "text-[var(--accent)]" : "text-[var(--muted)] hover:text-white"
+              }`}
+            >
+              {showTrans ? "Original" : "Translate"}
+            </button>
+          )}
+          <button
+            onClick={onClose}
+            className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--muted)] hover:text-white"
+          >
+            Close
+          </button>
+        </div>
       </div>
 
       <div ref={containerRef} className="flex-1 overflow-y-auto px-6 py-10">
-        {lines.length > 0 ? (
+        {showTrans ? (
+          loadingTrans ? (
+            <div className="flex h-full items-center justify-center text-[var(--muted)]">Translating…</div>
+          ) : trans ? (
+            <div className="mx-auto max-w-2xl text-center">
+              {lang && (
+                <div className="mb-6 text-sm text-[var(--muted)]">
+                  Translated from {LANG_NAMES[lang] ?? lang}
+                </div>
+              )}
+              <pre className="whitespace-pre-wrap text-lg leading-relaxed text-[var(--text)]">{trans}</pre>
+            </div>
+          ) : (
+            <div className="flex h-full items-center justify-center text-center text-[var(--muted)]">
+              No translation available (the lyrics may already be in English).
+            </div>
+          )
+        ) : lines.length > 0 ? (
           <div className="mx-auto max-w-2xl space-y-4 text-center">
             {lines.map((ln, i) => (
               <p

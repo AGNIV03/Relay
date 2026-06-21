@@ -44,10 +44,15 @@ class _DesktopShellState extends State<DesktopShell> {
     });
   }
 
-  /// Open a detail page inside the active tab's content area (sidebar + player
-  /// bar stay visible).
+  /// Open a detail page (playlist / liked) from the sidebar. Always shows it in
+  /// the Playlists tab and REPLACES any page already open there, so opening one
+  /// playlist after another doesn't stack — Back returns to the Playlists grid.
   void _openInTab(Widget page) {
-    _navKeys[_index].currentState?.push(MaterialPageRoute(builder: (_) => page));
+    const playlistsTab = 3;
+    if (_index != playlistsTab) setState(() => _index = playlistsTab);
+    final nav = _navKeys[playlistsTab].currentState;
+    nav?.popUntil((r) => r.isFirst);
+    nav?.push(MaterialPageRoute(builder: (_) => page));
   }
 
   /// Toggle the lyrics page in the active tab: open it if closed, close it if
@@ -174,6 +179,13 @@ class _SidebarState extends State<_Sidebar> {
                   ListTile(
                     dense: true,
                     visualDensity: VisualDensity.compact,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+                    horizontalTitleGap: 10,
+                    leading: Cover(
+                      url: context.read<Api>().playlistCoverUrl(pl.id),
+                      size: 36,
+                      radius: 6,
+                    ),
                     title: Text(pl.name,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,

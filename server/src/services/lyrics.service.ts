@@ -26,28 +26,44 @@ export async function fetchLyrics(
   try {
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), 8000);
-    let res = await fetch(`https://lrclib.net/api/get?${params}`, {
+
+    // 1. Exact signature match.
+    let exactPlain: string | null = null;
+    const res = await fetch(`https://lrclib.net/api/get?${params}`, {
       headers: { "User-Agent": UA },
       signal: controller.signal,
     });
-    // Fall back to fuzzy search if the exact signature match misses.
-    if (res.status === 404) {
-      const sp = new URLSearchParams({ q: `${artist} ${title}` });
-      res = await fetch(`https://lrclib.net/api/search?${sp}`, {
-        headers: { "User-Agent": UA },
-        signal: controller.signal,
-      });
+    if (res.ok) {
+      const data = (await res.json()) as { plainLyrics?: string; syncedLyrics?: string };
+      if (data.syncedLyrics) {
+        clearTimeout(t);
+        return { plain: data.plainLyrics ?? null, synced: data.syncedLyrics, checked: true };
+      }
+      exactPlain = data.plainLyrics ?? null;
+    } else if (res.status !== 404) {
       clearTimeout(t);
-      if (!res.ok) return { plain: null, synced: null, checked: res.status === 404 };
-      const list = (await res.json()) as Array<{ plainLyrics?: string; syncedLyrics?: string }>;
-      const hit = list.find((x) => x.syncedLyrics) ?? list[0];
-      if (!hit) return { plain: null, synced: null, checked: true };
-      return { plain: hit.plainLyrics ?? null, synced: hit.syncedLyrics ?? null, checked: true };
+      return { plain: null, synced: null, checked: false }; // transient — retry later
     }
+
+    // 2. No synced from the exact match — search for a version that HAS synced
+    //    lyrics (many tracks only expose synced under a slightly different match).
+    const sp = new URLSearchParams({ q: `${artist} ${title}` });
+    const sres = await fetch(`https://lrclib.net/api/search?${sp}`, {
+      headers: { "User-Agent": UA },
+      signal: controller.signal,
+    });
     clearTimeout(t);
-    if (!res.ok) return { plain: null, synced: null, checked: false }; // transient — retry later
-    const data = (await res.json()) as { plainLyrics?: string; syncedLyrics?: string };
-    return { plain: data.plainLyrics ?? null, synced: data.syncedLyrics ?? null, checked: true };
+    if (!sres.ok) {
+      // Keep any plain we already found.
+      return { plain: exactPlain, synced: null, checked: true };
+    }
+    const list = (await sres.json()) as Array<{ plainLyrics?: string; syncedLyrics?: string }>;
+    const synced = list.find((x) => x.syncedLyrics);
+    if (synced) {
+      return { plain: synced.plainLyrics ?? exactPlain, synced: synced.syncedLyrics!, checked: true };
+    }
+    const plain = exactPlain ?? list.find((x) => x.plainLyrics)?.plainLyrics ?? null;
+    return { plain, synced: null, checked: true };
   } catch {
     return { plain: null, synced: null, checked: false }; // network error — retry later
   }

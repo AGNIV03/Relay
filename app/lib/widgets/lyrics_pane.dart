@@ -1,9 +1,19 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../api.dart';
+import '../app_icons.dart';
+import '../models.dart';
 import '../player.dart';
 import '../theme.dart';
 
-/// Scrolling, time-synced lyrics view for the current track. Tapping a line
-/// seeks to it. Falls back to plain lyrics, then a "not found" message.
+const _langNames = {
+  'ja': 'Japanese', 'fr': 'French', 'es': 'Spanish', 'de': 'German', 'it': 'Italian',
+  'ko': 'Korean', 'zh': 'Chinese', 'pt': 'Portuguese', 'ru': 'Russian', 'hi': 'Hindi',
+  'ar': 'Arabic', 'nl': 'Dutch', 'sv': 'Swedish', 'pl': 'Polish', 'tr': 'Turkish',
+};
+
+/// Scrolling, time-synced lyrics for the current track (tap a line to seek),
+/// with a Translate toggle that shows an English machine translation.
 class LyricsPane extends StatefulWidget {
   final PlayerModel player;
   const LyricsPane({super.key, required this.player});
@@ -14,6 +24,18 @@ class LyricsPane extends StatefulWidget {
 class _LyricsPaneState extends State<LyricsPane> {
   final _scroll = ScrollController();
   int _active = -1;
+  String? _lastTrackId;
+
+  bool _showTrans = false;
+  bool _loadingTrans = false;
+  String? _trans;
+  String? _lang;
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
 
   List<({double t, String text})> _parse(String lrc) {
     final out = <({double t, String text})>[];
@@ -33,15 +55,99 @@ class _LyricsPaneState extends State<LyricsPane> {
     return out;
   }
 
-  @override
-  void dispose() {
-    _scroll.dispose();
-    super.dispose();
+  Future<void> _loadTranslation(String trackId) async {
+    if (_loadingTrans) return;
+    setState(() => _loadingTrans = true);
+    ({String? lang, String? translated})? r;
+    try {
+      r = await context.read<Api>().lyricsTranslation(trackId);
+    } catch (_) {}
+    if (!mounted) return;
+    setState(() {
+      _trans = r?.translated;
+      _lang = r?.lang;
+      _loadingTrans = false;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final lyrics = widget.player.lyrics;
+    final trackId = widget.player.current?.id;
+
+    // Reset the translation view when the track changes.
+    if (trackId != _lastTrackId) {
+      _lastTrackId = trackId;
+      if (_showTrans || _trans != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          setState(() {
+            _showTrans = false;
+            _trans = null;
+            _lang = null;
+          });
+        });
+      }
+    }
+
+    final hasLyrics = lyrics != null && (lyrics.synced != null || lyrics.plain != null);
+
+    return Column(
+      children: [
+        if (hasLyrics)
+          Align(
+            alignment: Alignment.centerRight,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(0, 6, 10, 0),
+              child: TextButton.icon(
+                onPressed: trackId == null
+                    ? null
+                    : () {
+                        setState(() => _showTrans = !_showTrans);
+                        if (_showTrans) _loadTranslation(trackId);
+                      },
+                icon: Icon(LucideIcons.translate,
+                    size: 16, color: _showTrans ? kAccent : kMuted),
+                label: Text(_showTrans ? 'Original' : 'Translate',
+                    style: TextStyle(color: _showTrans ? kAccent : kMuted, fontSize: 13)),
+              ),
+            ),
+          ),
+        Expanded(child: _showTrans ? _translated() : _original(lyrics)),
+      ],
+    );
+  }
+
+  Widget _translated() {
+    if (_loadingTrans) {
+      return const Center(child: Text("Translating…", style: TextStyle(color: kMuted)));
+    }
+    if (_trans != null && _trans!.trim().isNotEmpty) {
+      return SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(children: [
+          if (_lang != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 14),
+              child: Text("Translated from ${_langNames[_lang] ?? _lang}",
+                  style: const TextStyle(color: kMuted, fontSize: 12)),
+            ),
+          Text(_trans!,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 16, height: 1.6)),
+        ]),
+      );
+    }
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(24),
+        child: Text("No translation available\n(the lyrics may already be in English)",
+            textAlign: TextAlign.center, style: TextStyle(color: kMuted)),
+      ),
+    );
+  }
+
+  Widget _original(Lyrics? lyrics) {
     if (lyrics == null) {
       return const Center(child: Text("Loading lyrics…", style: TextStyle(color: kMuted)));
     }
