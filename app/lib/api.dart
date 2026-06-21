@@ -149,6 +149,19 @@ class Api {
     return (j['tracks'] as List).map((e) => Track.fromJson(e)).toList();
   }
 
+  /// Permanently delete a track (file + DB). Admin or the uploader only.
+  Future<void> deleteTrack(String trackId) => _send('DELETE', '/api/library/tracks/$trackId');
+
+  // ---- Library scan (admin) ----
+  /// Trigger a server-side rescan of the music folder (picks up new/removed files).
+  Future<void> triggerScan() => _send('POST', '/api/admin/scan');
+
+  /// Whether a scan is currently running.
+  Future<bool> scanRunning() async {
+    final j = await _get('/api/admin/scan');
+    return (j is Map && j['scanning'] == true);
+  }
+
   // ---- Playback history / personal stats ----
   Future<void> scrobble(String trackId) =>
       _send('POST', '/api/library/scrobble', body: {'trackId': trackId});

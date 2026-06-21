@@ -300,6 +300,54 @@ router.get("/tracks/:id/lyrics/translation", async (req, res) => {
   res.json({ lang: track?.lyricsLang ?? null, translated: track?.lyricsTranslated ?? null });
 });
 
+/** DELETE /api/library/tracks/:id — permanently delete a track: removes the DB
+ *  record (cascades likes / playlist entries / play history) AND the underlying
+ *  audio file from storage. Allowed for an ADMIN or the user who uploaded it. */
+router.delete("/tracks/:id", async (req, res) => {
+  const track = await prisma.track.findUnique({ where: { id: req.params.id } });
+  if (!track) return res.status(404).json({ error: "Not found" });
+  const isAdmin = req.user!.role === "ADMIN";
+  if (!isAdmin && track.uploaderId !== req.user!.id) {
+    return res.status(403).json({ error: "You can only delete songs you uploaded" });
+  }
+
+  const { albumId, artistId, path: filePath } = track;
+
+  // Remove the DB row first (FK cascades clear favorites/playlist entries/history).
+  await prisma.track.delete({ where: { id: track.id } });
+
+  // Delete the actual file from disk so storage is reclaimed.
+  try {
+    if (filePath) fs.rmSync(filePath, { force: true });
+  } catch (e) {
+    console.error(`[delete] could not remove file ${filePath}:`, (e as Error).message);
+  }
+
+  // Clean up an album left with no tracks (plus its cover-art file).
+  if (albumId) {
+    const remaining = await prisma.track.count({ where: { albumId } });
+    if (remaining === 0) {
+      const album = await prisma.album.findUnique({ where: { id: albumId } });
+      if (album?.coverPath) {
+        try {
+          fs.rmSync(album.coverPath, { force: true });
+        } catch {
+          /* ignore */
+        }
+      }
+      await prisma.album.delete({ where: { id: albumId } }).catch(() => {});
+    }
+  }
+  // Clean up an artist left with no tracks and no albums.
+  const tracksLeft = await prisma.track.count({ where: { artistId } });
+  const albumsLeft = await prisma.album.count({ where: { artistId } });
+  if (tracksLeft === 0 && albumsLeft === 0) {
+    await prisma.artist.delete({ where: { id: artistId } }).catch(() => {});
+  }
+
+  res.status(204).end();
+});
+
 // ---- Likes / "Liked Songs" ------------------------------------------------
 
 /** GET /api/library/liked — the user's liked tracks (newest first), playlist-shaped */

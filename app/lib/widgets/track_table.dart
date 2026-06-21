@@ -13,7 +13,8 @@ import 'track_tile.dart' show TrackMenu;
 /// Uploaded by, Added, like, menu, duration. Tapping a row plays the list.
 class TrackTable extends StatelessWidget {
   final List<Track> tracks;
-  const TrackTable({super.key, required this.tracks});
+  final VoidCallback? onChanged; // called after a destructive change (e.g. delete)
+  const TrackTable({super.key, required this.tracks, this.onChanged});
 
   static String _fmtDuration(double seconds) {
     final s = seconds.round();
@@ -66,7 +67,7 @@ class TrackTable extends StatelessWidget {
           child: ListView.builder(
             padding: const EdgeInsets.only(top: 4),
             itemCount: tracks.length,
-            itemBuilder: (_, i) => _TrackRow(tracks: tracks, index: i),
+            itemBuilder: (_, i) => _TrackRow(tracks: tracks, index: i, onChanged: onChanged),
           ),
         ),
       ],
@@ -84,7 +85,8 @@ const _hdr = TextStyle(
 class _TrackRow extends StatefulWidget {
   final List<Track> tracks;
   final int index;
-  const _TrackRow({required this.tracks, required this.index});
+  final VoidCallback? onChanged;
+  const _TrackRow({required this.tracks, required this.index, this.onChanged});
   @override
   State<_TrackRow> createState() => _TrackRowState();
 }
@@ -170,7 +172,7 @@ class _TrackRowState extends State<_TrackRow> {
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
                     LikeButton(trackId: t.id, size: 18),
-                    TrackMenu(track: t),
+                    TrackMenu(track: t, onChanged: widget.onChanged),
                   ],
                 ),
               ),

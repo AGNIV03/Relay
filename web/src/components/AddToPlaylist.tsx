@@ -1,18 +1,47 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { MoreHorizontal, ListEnd, ListPlus } from "lucide-react";
+import { MoreHorizontal, ListEnd, ListPlus, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { usePlayer } from "@/context/PlayerContext";
+import { useAuth } from "@/context/AuthContext";
 import type { Playlist, Track } from "@/lib/types";
 
-/** Per-track menu: queue actions (when a full `track` is given) + add-to-playlist. */
-export function AddToPlaylist({ trackId, track }: { trackId: string; track?: Track }) {
+/** Per-track menu: queue actions (when a full `track` is given) + add-to-playlist,
+ *  plus Delete for an admin or the track's uploader. */
+export function AddToPlaylist({
+  trackId,
+  track,
+  onDeleted,
+}: {
+  trackId: string;
+  track?: Track;
+  onDeleted?: () => void;
+}) {
   const player = usePlayer();
+  const { user } = useAuth();
   const [open, setOpen] = useState(false);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [added, setAdded] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+
+  const canDelete =
+    user?.role === "ADMIN" || (!!track?.uploader && track.uploader.username === user?.username);
+
+  async function del() {
+    if (!confirm(`Delete "${track?.title ?? "this song"}" permanently? This removes the file from the server.`))
+      return;
+    setDeleting(true);
+    try {
+      await api.del(`/api/library/tracks/${trackId}`);
+      setOpen(false);
+      if (onDeleted) onDeleted();
+      else window.location.reload();
+    } catch {
+      setDeleting(false);
+    }
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -77,6 +106,18 @@ export function AddToPlaylist({ trackId, track }: { trackId: string; track?: Tra
               {added === pl.id ? "✓ Added" : pl.name}
             </button>
           ))}
+          {canDelete && (
+            <>
+              <div className="my-1 border-t border-[var(--border)]" />
+              <button
+                onClick={del}
+                disabled={deleting}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-red-400 hover:bg-[var(--panel)] disabled:opacity-50"
+              >
+                <Trash2 size={14} /> {deleting ? "Deleting…" : "Delete song"}
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>

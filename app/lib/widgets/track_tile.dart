@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../app_icons.dart';
 import 'package:provider/provider.dart';
 import '../api.dart';
+import '../app_state.dart';
 import '../downloads.dart';
 import '../models.dart';
 import '../player.dart';
@@ -15,6 +16,7 @@ class TrackTile extends StatelessWidget {
   final int index;
   final bool showCover;
   final bool showUploader;
+  final VoidCallback? onChanged; // called after a destructive change (e.g. delete)
 
   const TrackTile({
     super.key,
@@ -22,6 +24,7 @@ class TrackTile extends StatelessWidget {
     required this.index,
     this.showCover = true,
     this.showUploader = false,
+    this.onChanged,
   });
 
   @override
@@ -64,7 +67,7 @@ class TrackTile extends StatelessWidget {
             const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
           else if (downloads.isDownloaded(track.id))
             const Icon(LucideIcons.checkCircle, size: 17, color: kAccent),
-          TrackMenu(track: track),
+          TrackMenu(track: track, onChanged: onChanged),
         ],
       ),
       onTap: () => player.playQueue(tracks, start: index),
@@ -76,11 +79,15 @@ class TrackTile extends StatelessWidget {
 /// Shared by the mobile list tile and the desktop table.
 class TrackMenu extends StatelessWidget {
   final Track track;
-  const TrackMenu({super.key, required this.track});
+  final VoidCallback? onChanged;
+  const TrackMenu({super.key, required this.track, this.onChanged});
 
   @override
   Widget build(BuildContext context) {
     final downloads = context.watch<DownloadManager>();
+    final user = context.watch<AppState>().user;
+    final canDelete =
+        (user?.isAdmin ?? false) || (track.uploaderName != null && track.uploaderName == user?.username);
     return PopupMenuButton<String>(
       icon: const Icon(LucideIcons.moreVertical, size: 18, color: kMuted),
       color: kPanel2,
@@ -100,6 +107,9 @@ class TrackMenu extends StatelessWidget {
             break;
           case 'playlist':
             if (context.mounted) await _addToPlaylist(context, track);
+            break;
+          case 'delete':
+            if (context.mounted) await _delete(context);
             break;
         }
       },
@@ -146,8 +156,56 @@ class TrackMenu extends StatelessWidget {
                     Text("Download"),
                   ]),
                 ),
+        if (canDelete) ...[
+          const PopupMenuDivider(),
+          const PopupMenuItem(
+            value: 'delete',
+            child: Row(children: [
+              Icon(LucideIcons.trash2, size: 16, color: Color(0xFFEF4444)),
+              SizedBox(width: 10),
+              Text("Delete song", style: TextStyle(color: Color(0xFFEF4444))),
+            ]),
+          ),
+        ],
       ],
     );
+  }
+
+  /// Confirm + permanently delete the track (file + DB), then notify the parent.
+  Future<void> _delete(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: kPanel,
+        title: const Text('Delete song?'),
+        content: Text(
+          '"${track.title}" will be permanently removed from the server, '
+          'including the file. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete', style: TextStyle(color: Color(0xFFEF4444))),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    try {
+      await context.read<Api>().deleteTrack(track.id);
+      onChanged?.call();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Deleted "${track.title}"'), duration: const Duration(seconds: 2)),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Delete failed: $e')));
+      }
+    }
   }
 
   Future<void> _addToPlaylist(BuildContext context, Track track) async {

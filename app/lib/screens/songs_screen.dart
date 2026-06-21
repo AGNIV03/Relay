@@ -26,6 +26,7 @@ class _SongsScreenState extends State<SongsScreen> {
   List<Track> _tracks = [];
   bool _loading = true;
   bool _uploading = false;
+  bool _refreshing = false;
 
   @override
   void initState() {
@@ -52,6 +53,26 @@ class _SongsScreenState extends State<SongsScreen> {
   void _onSearch(String q) {
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 300), () => _load(q));
+  }
+
+  /// Refresh the library. Admins trigger a full server rescan (picks up files
+  /// added/removed on disk) then reload; everyone else just reloads the list.
+  Future<void> _refresh() async {
+    final api = context.read<Api>();
+    final isAdmin = context.read<AppState>().user?.isAdmin ?? false;
+    setState(() => _refreshing = true);
+    try {
+      if (isAdmin) {
+        await api.triggerScan().catchError((_) {});
+        for (var i = 0; i < 60; i++) {
+          await Future.delayed(const Duration(seconds: 1));
+          if (!await api.scanRunning().catchError((_) => false)) break;
+        }
+      }
+      await _load(_controller.text);
+    } finally {
+      if (mounted) setState(() => _refreshing = false);
+    }
   }
 
   Future<void> _upload() async {
@@ -125,6 +146,15 @@ class _SongsScreenState extends State<SongsScreen> {
                     : const Icon(LucideIcons.upload, size: 18),
                 label: Text(_uploading ? 'Uploading…' : 'Upload'),
               ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: _refreshing ? null : _refresh,
+                icon: _refreshing
+                    ? const SizedBox(
+                        width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(LucideIcons.refreshCw, size: 18),
+                label: Text(_refreshing ? 'Refreshing…' : 'Refresh'),
+              ),
             ],
           ),
         ),
@@ -135,11 +165,15 @@ class _SongsScreenState extends State<SongsScreen> {
                   ? const Center(child: Text("No songs", style: TextStyle(color: kMuted)))
                   : _isDesktop
                       // Desktop/web: columnar table (Album / Uploaded by / Added).
-                      ? TrackTable(tracks: _tracks)
+                      ? TrackTable(tracks: _tracks, onChanged: () => _load(_controller.text))
                       // Mobile: compact list, no "uploaded by".
                       : ListView.builder(
                           itemCount: _tracks.length,
-                          itemBuilder: (_, i) => TrackTile(tracks: _tracks, index: i),
+                          itemBuilder: (_, i) => TrackTile(
+                            tracks: _tracks,
+                            index: i,
+                            onChanged: () => _load(_controller.text),
+                          ),
                         ),
         ),
       ],
