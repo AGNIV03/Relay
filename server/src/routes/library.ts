@@ -1,4 +1,4 @@
-import { Router } from "express";
+import express, { Router } from "express";
 import { z } from "zod";
 import multer from "multer";
 import path from "node:path";
@@ -398,15 +398,12 @@ router.delete("/like/:trackId", async (req, res) => {
 
 // ---- Uploads (any signed-in user) -----------------------------------------
 
-/** POST /api/library/upload (multipart "files") — add audio; uploader auto-likes it */
-router.post("/upload", upload.array("files", 50), async (req, res) => {
-  const files = (req.files as Express.Multer.File[]) ?? [];
-  if (files.length === 0) return res.status(400).json({ error: "No audio files uploaded" });
-  const uploaderId = req.user!.id;
-  const added: string[] = [];
-  const failed: string[] = [];
-  const duplicates: string[] = [];
-  // Auto-like a track for the uploader (idempotent).
+type UploadStatus = "added" | "duplicate" | "failed";
+
+/** Validate + ingest one already-saved upload file; auto-likes it for the
+ *  uploader. Deletes the file on rejection or duplicate. Shared by the multipart
+ *  and chunked upload paths. */
+async function processUploadedFile(filePath: string, uploaderId: string): Promise<UploadStatus> {
   const like = (trackId: string) =>
     prisma.favorite
       .upsert({
@@ -415,46 +412,121 @@ router.post("/upload", upload.array("files", 50), async (req, res) => {
         update: {},
       })
       .catch(() => {});
-  for (const f of files) {
-    try {
-      // Reject anything whose contents aren't actually MP3/FLAC (e.g. a renamed
-      // executable). Delete it so junk never lands in the music library.
-      if (!looksLikeAudio(f.path)) {
-        fs.rmSync(f.path, { force: true });
-        failed.push(f.originalname);
-        continue;
-      }
-      const r = await ingestFile(f.path, uploaderId, true /* dedupe */);
-      if (r?.duplicate) {
-        // Same song already in the library — drop the upload, but still add the
-        // existing track to the uploader's Liked Songs.
-        fs.rmSync(f.path, { force: true });
-        await like(r.trackId);
-        duplicates.push(f.originalname);
-        continue;
-      }
-      if (r) {
-        await like(r.trackId); // uploads are auto-liked
-        if (r.created) {
-          added.push(f.originalname);
-          await fetchAndStoreLyrics(r.trackId).catch(() => {});
-        }
-      }
-    } catch (e) {
-      // Parsing failed (corrupt / not real audio) — drop the file.
-      fs.rmSync(f.path, { force: true });
-      failed.push(f.originalname);
-      console.error(`[upload] ingest failed for ${f.originalname}:`, (e as Error).message);
+  try {
+    // Reject anything that isn't genuinely MP3/FLAC (e.g. a renamed executable).
+    if (!looksLikeAudio(filePath)) {
+      fs.rmSync(filePath, { force: true });
+      return "failed";
     }
+    const r = await ingestFile(filePath, uploaderId, true /* dedupe */);
+    if (!r) return "failed";
+    await like(r.trackId); // uploads are auto-liked
+    if (r.duplicate) {
+      fs.rmSync(filePath, { force: true }); // same song already present
+      return "duplicate";
+    }
+    if (r.created) {
+      await fetchAndStoreLyrics(r.trackId).catch(() => {});
+      return "added";
+    }
+    return "duplicate"; // unchanged file already at this path
+  } catch (e) {
+    fs.rmSync(filePath, { force: true });
+    console.error(`[upload] ingest failed for ${filePath}:`, (e as Error).message);
+    return "failed";
   }
-  res.status(201).json({
+}
+
+function tally(statuses: { name: string; status: UploadStatus }[]) {
+  const pick = (s: UploadStatus) => statuses.filter((x) => x.status === s).map((x) => x.name);
+  const added = pick("added");
+  const failed = pick("failed");
+  const duplicates = pick("duplicate");
+  return {
     added: added.length,
     failed: failed.length,
     duplicates: duplicates.length,
     addedNames: added,
     failedNames: failed,
     duplicateNames: duplicates,
-  });
+  };
+}
+
+/** A fresh, collision-free absolute path under the uploads directory. */
+function uniqueUploadPath(originalName: string): string {
+  const dir = path.join(env.musicPath, "uploads");
+  fs.mkdirSync(dir, { recursive: true });
+  const base = path.basename(originalName).replace(/[\\/:*?"<>|]/g, "_");
+  let name = base;
+  let i = 1;
+  while (fs.existsSync(path.join(dir, name))) {
+    const ext = path.extname(base);
+    name = `${path.basename(base, ext)} (${i++})${ext}`;
+  }
+  return path.join(dir, name);
+}
+
+/** POST /api/library/upload (multipart "files") — add audio; uploader auto-likes it */
+router.post("/upload", upload.array("files", 50), async (req, res) => {
+  const files = (req.files as Express.Multer.File[]) ?? [];
+  if (files.length === 0) return res.status(400).json({ error: "No audio files uploaded" });
+  const uploaderId = req.user!.id;
+  const results: { name: string; status: UploadStatus }[] = [];
+  for (const f of files) {
+    results.push({ name: f.originalname, status: await processUploadedFile(f.path, uploaderId) });
+  }
+  res.status(201).json(tally(results));
+});
+
+// ---- Chunked upload (for files larger than the CDN's request-body cap) -----
+// Cloudflare caps a single request body at ~100MB, so large songs are uploaded
+// in chunks (each well under the cap) and reassembled here.
+const _chunkId = /^[A-Za-z0-9_-]{1,80}$/;
+const chunkTmpDir = () => path.join(env.musicPath, "tmp");
+
+/** POST /api/library/upload/chunk?uploadId=&index= — append one raw chunk. */
+router.post(
+  "/upload/chunk",
+  express.raw({ type: () => true, limit: 120 * 1024 * 1024 }),
+  (req, res) => {
+    const uploadId = String(req.query.uploadId ?? "");
+    const index = Number(req.query.index);
+    if (!_chunkId.test(uploadId) || !Number.isInteger(index) || index < 0) {
+      return res.status(400).json({ error: "Invalid chunk" });
+    }
+    const body = req.body as Buffer;
+    if (!Buffer.isBuffer(body) || body.length === 0) {
+      return res.status(400).json({ error: "Empty chunk" });
+    }
+    const dir = chunkTmpDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const tmp = path.join(dir, `${uploadId}.part`);
+    // The first chunk truncates; the rest append (client uploads in order).
+    if (index === 0) fs.writeFileSync(tmp, body);
+    else fs.appendFileSync(tmp, body);
+    res.status(204).end();
+  },
+);
+
+/** POST /api/library/upload/finalize { uploadId, filename } — assemble + ingest. */
+router.post("/upload/finalize", async (req, res) => {
+  const parsed = z
+    .object({ uploadId: z.string(), filename: z.string().min(1) })
+    .safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid input" });
+  const { uploadId, filename } = parsed.data;
+  const tmp = path.join(chunkTmpDir(), `${uploadId}.part`);
+  if (!_chunkId.test(uploadId) || !fs.existsSync(tmp)) {
+    return res.status(400).json({ error: "No upload data" });
+  }
+  if (!UPLOAD_EXT.has(path.extname(filename).toLowerCase())) {
+    fs.rmSync(tmp, { force: true });
+    return res.status(400).json({ error: "Only MP3 and FLAC files are allowed" });
+  }
+  const dest = uniqueUploadPath(filename);
+  fs.renameSync(tmp, dest);
+  const status = await processUploadedFile(dest, req.user!.id);
+  res.status(201).json(tally([{ name: path.basename(filename), status }]));
 });
 
 export default router;

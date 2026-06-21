@@ -24,7 +24,17 @@ export function AddToPlaylist({
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [added, setAdded] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [openUp, setOpenUp] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+
+  // Open upward when there isn't room below (e.g. the last rows above the player bar).
+  function toggle(e: React.MouseEvent<HTMLButtonElement>) {
+    if (!open) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      setOpenUp(window.innerHeight - rect.bottom < 320);
+    }
+    setOpen((o) => !o);
+  }
 
   const canDelete =
     user?.role === "ADMIN" || (!!track?.uploader && track.uploader.username === user?.username);
@@ -62,14 +72,18 @@ export function AddToPlaylist({
   return (
     <div className="relative inline-block" ref={ref}>
       <button
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggle}
         className="text-[var(--muted)] opacity-70 transition hover:text-white hover:opacity-100"
         title="More"
       >
         <MoreHorizontal size={16} />
       </button>
       {open && (
-        <div className="absolute right-0 z-20 mt-1 w-48 rounded-lg border border-[var(--border)] bg-[var(--panel-2)] py-1 text-left text-sm shadow-xl">
+        <div
+          className={`absolute right-0 z-30 max-h-[60vh] w-48 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--panel-2)] py-1 text-left text-sm shadow-xl ${
+            openUp ? "bottom-full mb-1" : "top-full mt-1"
+          }`}
+        >
           {track && (
             <>
               <button

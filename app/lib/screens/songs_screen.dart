@@ -83,15 +83,32 @@ class _SongsScreenState extends State<SongsScreen> {
       allowedExtensions: ['mp3', 'flac'],
       allowMultiple: true,
     );
-    final paths = result?.files.map((f) => f.path).whereType<String>().toList() ?? [];
-    if (paths.isEmpty) return;
+    final files = result?.files.where((f) => f.path != null).toList() ?? [];
+    if (files.isEmpty) return;
+    // Small files batch in one multipart request; large files (over the CDN's
+    // request-body cap) upload individually in chunks.
+    final small = files.where((f) => f.size < Api.chunkThreshold).map((f) => f.path!).toList();
+    final large = files.where((f) => f.size >= Api.chunkThreshold).toList();
     setState(() => _uploading = true);
     try {
-      final r = await api.uploadTracks(paths);
+      var added = 0, failed = 0, dupes = 0;
+      if (small.isNotEmpty) {
+        final r = await api.uploadTracks(small);
+        added += (r['added'] ?? 0) as int;
+        failed += (r['failed'] ?? 0) as int;
+        dupes += (r['duplicates'] ?? 0) as int;
+      }
+      for (final f in large) {
+        try {
+          final r = await api.uploadTrackChunked(f.path!);
+          added += (r['added'] ?? 0) as int;
+          failed += (r['failed'] ?? 0) as int;
+          dupes += (r['duplicates'] ?? 0) as int;
+        } catch (_) {
+          failed += 1;
+        }
+      }
       if (!mounted) return;
-      final added = r['added'] ?? 0;
-      final failed = r['failed'] ?? 0;
-      final dupes = r['duplicates'] ?? 0;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text('Uploaded $added song${added == 1 ? '' : 's'}'
             '${dupes > 0 ? ', $dupes already in library' : ''}'

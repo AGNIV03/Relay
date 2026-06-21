@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'models.dart';
@@ -206,6 +207,52 @@ class Api {
     }
     if (res.statusCode >= 400) throw ApiException(_errorMessage(res));
     return jsonDecode(res.body) as Map<String, dynamic>;
+  }
+
+  /// Size at/above which a file is uploaded in chunks (Cloudflare caps a single
+  /// request body at ~100MB).
+  static const chunkThreshold = 90 * 1024 * 1024;
+
+  /// Upload one large file in 64MB chunks (each under the CDN cap), then finalize.
+  Future<Map<String, dynamic>> uploadTrackChunked(String filePath, {bool retry = true}) async {
+    const chunkSize = 64 * 1024 * 1024;
+    final file = File(filePath);
+    final size = await file.length();
+    final total = size <= 0 ? 1 : (size / chunkSize).ceil();
+    final uploadId =
+        '${DateTime.now().millisecondsSinceEpoch.toRadixString(36)}${filePath.hashCode.toUnsigned(31).toRadixString(36)}';
+    final raf = await file.open();
+    try {
+      for (var i = 0; i < total; i++) {
+        final bytes = await raf.read(chunkSize);
+        if (bytes.isEmpty) break;
+        final res = await http.post(
+          _uri('/api/library/upload/chunk?uploadId=$uploadId&index=$i'),
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            if (_access != null) 'Authorization': 'Bearer $_access',
+          },
+          body: bytes,
+        );
+        if (res.statusCode == 401 && retry && await _tryRefresh()) {
+          await raf.close();
+          return uploadTrackChunked(filePath, retry: false);
+        }
+        if (res.statusCode >= 400) throw ApiException(_errorMessage(res));
+      }
+    } finally {
+      await raf.close();
+    }
+    final fin = await http.post(
+      _uri('/api/library/upload/finalize'),
+      headers: {
+        'Content-Type': 'application/json',
+        if (_access != null) 'Authorization': 'Bearer $_access',
+      },
+      body: jsonEncode({'uploadId': uploadId, 'filename': file.uri.pathSegments.last}),
+    );
+    if (fin.statusCode >= 400) throw ApiException(_errorMessage(fin));
+    return jsonDecode(fin.body) as Map<String, dynamic>;
   }
 
   // ---- Likes / Liked Songs ----

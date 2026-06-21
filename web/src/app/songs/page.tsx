@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Search, Upload, RefreshCw, Play, Music, X } from "lucide-react";
-import { api, coverUrl, uploadFiles } from "@/lib/api";
+import { api, coverUrl, uploadFiles, uploadFileChunked, CHUNK_THRESHOLD } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { usePlayer } from "@/context/PlayerContext";
 import { useLiked } from "@/context/LikedContext";
@@ -76,11 +76,34 @@ export default function SongsPage() {
     if (!files || files.length === 0) return;
     setUploadPct(0);
     try {
-      const r = await uploadFiles(Array.from(files), setUploadPct);
+      const all = Array.from(files);
+      // Small files go in one batched multipart request; large files (over the
+      // CDN's request-body cap) upload individually in chunks.
+      const small = all.filter((f) => f.size < CHUNK_THRESHOLD);
+      const large = all.filter((f) => f.size >= CHUNK_THRESHOLD);
+      let added = 0,
+        duplicates = 0,
+        failed = 0;
+      if (small.length) {
+        const r = await uploadFiles(small, setUploadPct);
+        added += r.added;
+        duplicates += r.duplicates ?? 0;
+        failed += r.failed;
+      }
+      for (const f of large) {
+        try {
+          const r = await uploadFileChunked(f, setUploadPct);
+          added += r.added;
+          duplicates += r.duplicates ?? 0;
+          failed += r.failed;
+        } catch {
+          failed += 1;
+        }
+      }
       showToast(
-        `Uploaded ${r.added} song${r.added === 1 ? "" : "s"}` +
-          (r.duplicates ? `, ${r.duplicates} already in library` : "") +
-          (r.failed ? `, ${r.failed} rejected` : ""),
+        `Uploaded ${added} song${added === 1 ? "" : "s"}` +
+          (duplicates ? `, ${duplicates} already in library` : "") +
+          (failed ? `, ${failed} rejected` : ""),
       );
       liked.refresh(); // uploads are auto-liked — refresh hearts
       await load("");

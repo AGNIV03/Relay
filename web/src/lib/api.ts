@@ -118,6 +118,56 @@ export function uploadFiles(
   });
 }
 
+/** Files at/above this size are uploaded in chunks (Cloudflare caps a single
+ *  request body at ~100MB). */
+export const CHUNK_THRESHOLD = 90 * 1024 * 1024;
+const CHUNK_SIZE = 64 * 1024 * 1024;
+
+interface UploadResult {
+  added: number;
+  failed: number;
+  duplicates?: number;
+  addedNames: string[];
+  failedNames: string[];
+}
+
+/** Upload one large file in chunks (each well under the CDN cap), then finalize. */
+export async function uploadFileChunked(
+  file: File,
+  onProgress?: (pct: number) => void,
+): Promise<UploadResult> {
+  const uploadId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const total = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+  const auth = (): HeadersInit => (tokens.access ? { Authorization: `Bearer ${tokens.access}` } : {});
+
+  for (let i = 0; i < total; i++) {
+    const start = i * CHUNK_SIZE;
+    const blob = file.slice(start, Math.min(start + CHUNK_SIZE, file.size));
+    const res = await fetch(
+      `${API_URL}/api/library/upload/chunk?uploadId=${uploadId}&index=${i}`,
+      { method: "POST", headers: auth(), body: blob },
+    );
+    if (!res.ok) throw new Error(`Upload failed (chunk ${i + 1}/${total})`);
+    onProgress?.(Math.round(((i + 1) / total) * 100));
+  }
+
+  const res = await fetch(`${API_URL}/api/library/upload/finalize`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...auth() },
+    body: JSON.stringify({ uploadId, filename: file.name }),
+  });
+  if (!res.ok) {
+    let msg = "Upload failed";
+    try {
+      msg = (await res.json()).error ?? msg;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
 /** Build an authenticated media URL for <audio>/<img> (token in query). */
 export function streamUrl(trackId: string, opts?: { format?: string; bitrate?: number }) {
   const params = new URLSearchParams({ token: tokens.access ?? "" });
