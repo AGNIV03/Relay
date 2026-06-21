@@ -6,6 +6,8 @@ import { useAuth } from "@/context/AuthContext";
 import { Sidebar } from "./Sidebar";
 import { PlayerBar } from "./PlayerBar";
 import { LyricsView } from "./LyricsView";
+import { QueueView } from "./QueueView";
+import { FriendsPanel, ListenAlongBar } from "./FriendsPanel";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -13,6 +15,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const isLogin = pathname === "/login";
   const [showLyrics, setShowLyrics] = useState(false);
+  const [showQueue, setShowQueue] = useState(false);
+  const [showFriends, setShowFriends] = useState(true);
 
   useEffect(() => {
     if (!loading && !user && !isLogin) router.replace("/login");
@@ -32,8 +36,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <Sidebar />
         <main className="min-h-0 flex-1 overflow-y-auto px-6 py-6 md:px-10">{children}</main>
         {showLyrics && <LyricsView onClose={() => setShowLyrics(false)} />}
+        {showQueue && <QueueView onClose={() => setShowQueue(false)} />}
+        {showFriends && <FriendsPanel onClose={() => setShowFriends(false)} />}
       </div>
-      <PlayerBar onToggleLyrics={() => setShowLyrics((s) => !s)} lyricsOpen={showLyrics} />
+      <ListenAlongBar />
+      <PlayerBar
+        onToggleLyrics={() => setShowLyrics((s) => !s)}
+        lyricsOpen={showLyrics}
+        onToggleQueue={() => setShowQueue((s) => !s)}
+        queueOpen={showQueue}
+        onToggleFriends={() => setShowFriends((s) => !s)}
+        friendsOpen={showFriends}
+      />
     </div>
   );
 }

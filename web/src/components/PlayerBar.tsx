@@ -12,6 +12,8 @@ import {
   Shuffle,
   Repeat,
   Repeat1,
+  ListMusic,
+  Users,
 } from "lucide-react";
 import { usePlayer } from "@/context/PlayerContext";
 import { fmtTime } from "@/lib/format";
@@ -21,9 +23,17 @@ import { SquigglyProgress } from "./SquigglyProgress";
 export function PlayerBar({
   onToggleLyrics,
   lyricsOpen,
+  onToggleQueue,
+  queueOpen,
+  onToggleFriends,
+  friendsOpen,
 }: {
   onToggleLyrics: () => void;
   lyricsOpen: boolean;
+  onToggleQueue: () => void;
+  queueOpen: boolean;
+  onToggleFriends: () => void;
+  friendsOpen: boolean;
 }) {
   const p = usePlayer();
   const [imgError, setImgError] = useState(false);
@@ -111,7 +121,7 @@ export function PlayerBar({
         </div>
       </div>
 
-      {/* Lyrics toggle + volume */}
+      {/* Lyrics / queue / friends toggles + volume */}
       <div className="flex w-1/4 items-center justify-end gap-3">
         <button
           onClick={onToggleLyrics}
@@ -121,6 +131,24 @@ export function PlayerBar({
           }`}
         >
           <Mic2 size={18} />
+        </button>
+        <button
+          onClick={onToggleQueue}
+          title="Queue"
+          className={`rounded-md p-1.5 transition hover:text-white ${
+            queueOpen ? "text-[var(--accent)]" : "text-[var(--muted)]"
+          }`}
+        >
+          <ListMusic size={18} />
+        </button>
+        <button
+          onClick={onToggleFriends}
+          title="Friend activity"
+          className={`rounded-md p-1.5 transition hover:text-white ${
+            friendsOpen ? "text-[var(--accent)]" : "text-[var(--muted)]"
+          }`}
+        >
+          <Users size={18} />
         </button>
         <Volume2 size={18} className="text-[var(--muted)]" />
         <input

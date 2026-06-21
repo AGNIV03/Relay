@@ -162,6 +162,53 @@ class Playlist {
       );
 }
 
+class Friend {
+  final String id;
+  final String username;
+  final bool online;
+  final bool playing;
+  final Track? track;
+  Friend({
+    required this.id,
+    required this.username,
+    required this.online,
+    required this.playing,
+    this.track,
+  });
+  factory Friend.fromJson(Map<String, dynamic> j) => Friend(
+        id: j['id'] as String,
+        username: j['username'] as String? ?? '?',
+        online: j['online'] as bool? ?? false,
+        playing: j['playing'] as bool? ?? false,
+        track: j['track'] != null ? Track.fromJson(j['track']) : null,
+      );
+}
+
+class HostActivity {
+  final String? trackId;
+  final Track? track;
+  final int positionMs;
+  final bool playing;
+  final int? updatedAt;
+  final bool online;
+  HostActivity({
+    this.trackId,
+    this.track,
+    this.positionMs = 0,
+    this.playing = false,
+    this.updatedAt,
+    this.online = false,
+  });
+  factory HostActivity.fromJson(Map<String, dynamic> j) => HostActivity(
+        trackId: j['trackId'] as String?,
+        track: j['track'] != null ? Track.fromJson(j['track']) : null,
+        positionMs: (j['positionMs'] as num?)?.toInt() ?? 0,
+        playing: j['playing'] as bool? ?? false,
+        updatedAt: (j['updatedAt'] as num?)?.toInt(),
+        online: j['online'] as bool? ?? false,
+      );
+}
+
 class AppUser {
   final String id;
   final String username;

@@ -58,10 +58,17 @@ router.get("/friends", async (req, res) => {
 });
 
 /** GET /api/social/activity/:userId — a user's live state, for "listen along" polling */
-router.get("/activity/:userId", (req, res) => {
+router.get("/activity/:userId", async (req, res) => {
   const a = getActivity(req.params.userId);
+  const track = a?.trackId
+    ? await prisma.track.findUnique({
+        where: { id: a.trackId },
+        include: { artist: true, album: true },
+      })
+    : null;
   res.json({
     trackId: a?.trackId ?? null,
+    track,
     positionMs: a?.positionMs ?? 0,
     playing: a?.playing ?? false,
     updatedAt: a?.updatedAt ?? null,

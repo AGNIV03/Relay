@@ -250,7 +250,7 @@ export default function SongsPage() {
                     <td className="px-3 py-2">
                       <div className="flex items-center justify-center gap-3">
                         <LikeButton trackId={t.id} />
-                        <AddToPlaylist trackId={t.id} />
+                        <AddToPlaylist trackId={t.id} track={t} />
                       </div>
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums text-[var(--muted)]">

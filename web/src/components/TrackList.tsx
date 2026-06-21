@@ -64,7 +64,7 @@ export function TrackList({
                   </td>
                 )}
                 <td className="px-3 py-2 text-center">
-                  <AddToPlaylist trackId={t.id} />
+                  <AddToPlaylist trackId={t.id} track={t} />
                 </td>
                 <td className="px-3 py-2 text-right tabular-nums text-[var(--muted)]">
                   {fmtTime(t.duration)}

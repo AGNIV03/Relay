@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { api, streamUrl, coverUrl } from "@/lib/api";
-import type { Track, Lyrics } from "@/lib/types";
+import type { Track, Lyrics, HostActivity } from "@/lib/types";
 
 export type RepeatMode = "off" | "all" | "one";
 
@@ -35,6 +35,22 @@ interface PlayerState {
   toggleRepeat: () => void;
   toggleShuffle: () => void;
   coverFor: (t: Track) => string;
+  /** Append a track to the end of the queue. */
+  addToQueue: (t: Track) => void;
+  /** Insert a track to play right after the current one. */
+  playNext: (t: Track) => void;
+  /** Remove the track at queue position `i`. */
+  removeFromQueue: (i: number) => void;
+  /** Jump to queue position `i`. */
+  playAt: (i: number) => void;
+  /** Whether a listen-along session is active. */
+  listeningAlong: boolean;
+  listenHostName: string | null;
+  listenHostId: string | null;
+  /** Start following another user's playback. */
+  startListenAlong: (userId: string, name: string) => void;
+  /** Stop following; finish the current song, then return to the saved queue. */
+  stopListenAlong: () => void;
 }
 
 const PlayerContext = createContext<PlayerState | null>(null);
@@ -63,6 +79,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [shuffle, setShuffle] = useState(false);
   const [lyrics, setLyrics] = useState<Lyrics | null>(null);
   const scrobbled = useRef<Set<string>>(new Set());
+  const [listenHost, setListenHost] = useState<{ id: string; name: string } | null>(null);
 
   const current = queue[index] ?? null;
 
@@ -71,6 +88,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const indexRef = useRef(0);
   const repeatRef = useRef<RepeatMode>("off");
   const orderRef = useRef<number[]>([]); // playback order: positions -> queue index
+  // Listen-along: saved session to restore on stop, + "finish current then restore" flag.
+  const savedSessionRef = useRef<{ queue: Track[]; index: number; order: number[] } | null>(null);
+  const restoreAfterCurrentRef = useRef(false);
+  const listenHostRef = useRef<string | null>(null);
+  const currentIdRef = useRef<string | null>(null);
+  const playingRef = useRef(false);
   useEffect(() => {
     queueRef.current = queue;
   }, [queue]);
@@ -80,6 +103,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     repeatRef.current = repeat;
   }, [repeat]);
+  useEffect(() => {
+    currentIdRef.current = current?.id ?? null;
+  }, [current?.id]);
+  useEffect(() => {
+    playingRef.current = playing;
+  }, [playing]);
+  useEffect(() => {
+    listenHostRef.current = listenHost?.id ?? null;
+  }, [listenHost]);
 
   // Advance helper shared by manual-next and natural-end.
   const advance = useCallback((dir: 1 | -1, loop: boolean): number | null => {
@@ -112,6 +144,24 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     };
     const onMeta = () => setDuration(audio.duration || 0);
     const onEnd = () => {
+      // A stopped listen-along session lets the current song finish, then
+      // restores the queue the user had before they started following.
+      if (restoreAfterCurrentRef.current) {
+        restoreAfterCurrentRef.current = false;
+        const saved = savedSessionRef.current;
+        savedSessionRef.current = null;
+        if (saved && saved.queue.length) {
+          orderRef.current = saved.order;
+          const pos = saved.order.indexOf(saved.index);
+          const np = pos >= 0 && pos + 1 < saved.order.length ? saved.order[pos + 1] : saved.order[0];
+          scrobbled.current.clear();
+          setQueue(saved.queue);
+          setIndex(np);
+        } else {
+          setPlaying(false);
+        }
+        return;
+      }
       if (repeatRef.current === "one") {
         audio.currentTime = 0;
         audio.play().catch(() => {});
@@ -223,6 +273,144 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const coverFor = useCallback((t: Track) => coverUrl(t.id), []);
 
+  // --- Queue editing ---------------------------------------------------------
+  const addToQueue = useCallback((t: Track) => {
+    setQueue((q) => {
+      if (!q.length) {
+        orderRef.current = [0];
+        scrobbled.current.clear();
+        setIndex(0);
+        return [t];
+      }
+      orderRef.current = [...orderRef.current, q.length];
+      return [...q, t];
+    });
+  }, []);
+
+  const playNext = useCallback((t: Track) => {
+    setQueue((q) => {
+      if (!q.length) {
+        orderRef.current = [0];
+        scrobbled.current.clear();
+        setIndex(0);
+        return [t];
+      }
+      const newIdx = q.length;
+      const order = orderRef.current;
+      const pos = order.indexOf(indexRef.current);
+      const insertAt = pos < 0 ? order.length : pos + 1;
+      orderRef.current = [...order.slice(0, insertAt), newIdx, ...order.slice(insertAt)];
+      return [...q, t];
+    });
+  }, []);
+
+  const removeFromQueue = useCallback((i: number) => {
+    setQueue((q) => {
+      if (i < 0 || i >= q.length) return q;
+      if (i === indexRef.current) return q; // don't yank the playing track
+      const nq = q.filter((_, k) => k !== i);
+      // Rebuild order: drop position i, shift higher indices down by one.
+      orderRef.current = orderRef.current
+        .filter((idx) => idx !== i)
+        .map((idx) => (idx > i ? idx - 1 : idx));
+      if (indexRef.current > i) setIndex((n) => n - 1);
+      return nq;
+    });
+  }, []);
+
+  const playAt = useCallback((i: number) => {
+    if (i >= 0 && i < queueRef.current.length) setIndex(i);
+  }, []);
+
+  // --- Presence heartbeat ----------------------------------------------------
+  // Post what we're playing every 12s, and immediately on track/play changes.
+  useEffect(() => {
+    const post = () => {
+      const t = queueRef.current[indexRef.current];
+      api
+        .post("/api/social/activity", {
+          trackId: t?.id ?? null,
+          positionMs: Math.round((audioRef.current?.currentTime ?? 0) * 1000),
+          playing: playingRef.current,
+        })
+        .catch(() => {});
+    };
+    post();
+    const id = setInterval(post, 12_000);
+    return () => clearInterval(id);
+  }, [current?.id, playing]);
+
+  // --- Listen along ----------------------------------------------------------
+  const startListenAlong = useCallback((userId: string, name: string) => {
+    // Save the current session so we can return to it later.
+    savedSessionRef.current = {
+      queue: queueRef.current,
+      index: indexRef.current,
+      order: orderRef.current,
+    };
+    restoreAfterCurrentRef.current = false;
+    setListenHost({ id: userId, name });
+  }, []);
+
+  const stopListenAlong = useCallback(() => {
+    setListenHost(null);
+    // Let the current song finish, then restore the saved queue (handled in onEnd).
+    if (savedSessionRef.current && queueRef.current.length) {
+      restoreAfterCurrentRef.current = true;
+    }
+  }, []);
+
+  // Poll the host every 3s while following: match their track + position + seeks.
+  useEffect(() => {
+    if (!listenHost) return;
+    let cancelled = false;
+    const sync = async () => {
+      let act: HostActivity;
+      try {
+        act = await api.get<HostActivity>(`/api/social/activity/${listenHost.id}`);
+      } catch {
+        return;
+      }
+      if (cancelled || listenHostRef.current !== listenHost.id) return;
+      if (!act.track || !act.trackId) return;
+      const audio = audioRef.current;
+      if (!audio) return;
+      // Extrapolate the host's position if they're still playing.
+      let targetMs = act.positionMs;
+      if (act.playing && act.updatedAt) {
+        targetMs += Date.now() - new Date(act.updatedAt).getTime();
+      }
+      const targetSec = targetMs / 1000;
+      if (currentIdRef.current !== act.trackId) {
+        // Host changed track — follow them onto it.
+        scrobbled.current.clear();
+        orderRef.current = [0];
+        setQueue([act.track]);
+        setIndex(0);
+        // Position is applied once metadata loads.
+        const onReady = () => {
+          audio.currentTime = Math.max(0, targetSec);
+          if (act.playing) audio.play().catch(() => {});
+          audio.removeEventListener("loadedmetadata", onReady);
+        };
+        audio.addEventListener("loadedmetadata", onReady);
+      } else {
+        // Same track — correct drift / follow seeks.
+        if (Math.abs(audio.currentTime - targetSec) > 2.5) {
+          audio.currentTime = Math.max(0, targetSec);
+        }
+        if (act.playing && audio.paused) audio.play().catch(() => {});
+        if (!act.playing && !audio.paused) audio.pause();
+      }
+    };
+    sync();
+    const id = setInterval(sync, 3_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [listenHost]);
+
   // Browser media-key / lock-screen controls.
   useEffect(() => {
     if (!("mediaSession" in navigator)) return;
@@ -254,6 +442,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         toggleRepeat,
         toggleShuffle,
         coverFor,
+        addToQueue,
+        playNext,
+        removeFromQueue,
+        playAt,
+        listeningAlong: listenHost !== null,
+        listenHostName: listenHost?.name ?? null,
+        listenHostId: listenHost?.id ?? null,
+        startListenAlong,
+        stopListenAlong,
       }}
     >
       {children}

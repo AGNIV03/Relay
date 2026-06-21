@@ -229,6 +229,17 @@ class Api {
     if (res.statusCode >= 400) throw ApiException(_errorMessage(res));
   }
 
+  // ---- Social / friends ----
+  Future<void> postActivity({String? trackId, required int positionMs, required bool playing}) =>
+      _send('POST', '/api/social/activity',
+          body: {'trackId': trackId, 'positionMs': positionMs, 'playing': playing});
+
+  Future<List<Friend>> friends() async =>
+      (await _get('/api/social/friends') as List).map((e) => Friend.fromJson(e)).toList();
+
+  Future<HostActivity> userActivity(String userId) async =>
+      HostActivity.fromJson(await _get('/api/social/activity/$userId'));
+
   // ---- Media URLs (token in query so the audio engine can authenticate) ----
   String streamUrl(String trackId) => '$baseUrl/api/stream/$trackId?token=$_access';
   String albumCoverUrl(String albumId) =>

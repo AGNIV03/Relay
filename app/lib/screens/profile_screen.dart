@@ -3,9 +3,9 @@ import 'package:provider/provider.dart';
 import '../app_icons.dart';
 import '../app_state.dart';
 import '../theme.dart';
+import '../widgets/friends_panel.dart';
 
-/// Mobile Profile tab. Shows the signed-in user and the sign-out action.
-/// (More to come later.)
+/// Mobile Profile tab: the signed-in user, sign-out, and friend activity.
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
 
@@ -13,13 +13,14 @@ class ProfileScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final user = context.watch<AppState>().user;
     final initial = (user?.username.isNotEmpty ?? false) ? user!.username[0].toUpperCase() : '?';
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 28, 16, 24),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        const SizedBox(height: 24),
         Center(
           child: Container(
-            width: 96,
-            height: 96,
+            width: 88,
+            height: 88,
             decoration: const BoxDecoration(
               gradient: LinearGradient(colors: [kAccent, kAccent2]),
               shape: BoxShape.circle,
@@ -27,18 +28,17 @@ class ProfileScreen extends StatelessWidget {
             child: Center(
               child: Text(initial,
                   style: const TextStyle(
-                      fontSize: 40, fontWeight: FontWeight.bold, color: kAccentInk)),
+                      fontSize: 36, fontWeight: FontWeight.bold, color: kAccentInk)),
             ),
           ),
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 14),
         Center(
           child: Text(user?.username ?? '',
-              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+              style: const TextStyle(fontSize: 21, fontWeight: FontWeight.bold)),
         ),
-        const SizedBox(height: 2),
         Center(child: Text(user?.role ?? '', style: const TextStyle(color: kMuted, fontSize: 13))),
-        const SizedBox(height: 28),
+        const SizedBox(height: 20),
         const Divider(height: 1),
         ListTile(
           leading: const Icon(LucideIcons.logOut, size: 20),
@@ -46,6 +46,12 @@ class ProfileScreen extends StatelessWidget {
           onTap: () => context.read<AppState>().logout(),
         ),
         const Divider(height: 1),
+        const Padding(
+          padding: EdgeInsets.fromLTRB(16, 16, 16, 4),
+          child: Text('Friend activity',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        ),
+        const Expanded(child: FriendsList()),
       ],
     );
   }

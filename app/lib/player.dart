@@ -23,9 +23,18 @@ class PlayerModel extends ChangeNotifier {
   Lyrics? _lyrics;
   Timer? _watchdog;
   Timer? _saveTimer;
+  Timer? _heartbeat;
   Duration _lastPos = Duration.zero;
   int _frozenTicks = 0;
   bool _recovering = false;
+
+  // ---- Listen along ----
+  String? listenHostId;
+  String? listenHostName;
+  Timer? _listenTimer;
+  List<Track> _savedQueue = [];
+  int _savedIndex = 0;
+  bool _restoreAfterCurrent = false;
 
   static const _kSession = 'last_session';
 
@@ -35,12 +44,22 @@ class PlayerModel extends ChangeNotifier {
         _index = i;
         _scrobbled = false;
         _loadLyrics();
+        _postActivity();
         notifyListeners();
       }
     });
     _player.playerStateStream.listen((_) {
       _saveSession();
+      _postActivity();
       notifyListeners();
+    });
+    // When a listen-along session is stopped, finish the current song then return
+    // to the user's own queue.
+    _player.processingStateStream.listen((st) {
+      if (st == ProcessingState.completed && _restoreAfterCurrent) {
+        _restoreAfterCurrent = false;
+        if (_savedQueue.isNotEmpty) playQueue(_savedQueue, start: _savedIndex);
+      }
     });
     _player.positionStream.listen((pos) {
       if (!_scrobbled && pos.inSeconds >= 5 && current != null) {
@@ -59,7 +78,21 @@ class PlayerModel extends ChangeNotifier {
     _watchdog = Timer.periodic(const Duration(seconds: 4), (_) => _checkStall());
     // Persist position periodically so "resume where you left off" is accurate.
     _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) => _saveSession());
+    // Broadcast presence (for the friends panel) periodically.
+    _heartbeat = Timer.periodic(const Duration(seconds: 12), (_) => _postActivity());
   }
+
+  void _postActivity() {
+    api
+        .postActivity(
+          trackId: current?.id,
+          positionMs: _player.position.inMilliseconds,
+          playing: _player.playing,
+        )
+        .catchError((_) {});
+  }
+
+  bool get listeningAlong => listenHostId != null;
 
   AudioPlayer get raw => _player;
   List<Track> get queue => _queue;
@@ -87,6 +120,14 @@ class PlayerModel extends ChangeNotifier {
 
   Future<void> playQueue(List<Track> tracks, {int start = 0}) async {
     if (tracks.isEmpty) return;
+    // Manually choosing music exits any listen-along session.
+    if (listenHostId != null) {
+      _listenTimer?.cancel();
+      _listenTimer = null;
+      listenHostId = null;
+      listenHostName = null;
+    }
+    _restoreAfterCurrent = false;
     _queue = List.of(tracks);
     _index = start;
     _scrobbled = false;
@@ -132,6 +173,69 @@ class PlayerModel extends ChangeNotifier {
     if (index < 0 || index >= _queue.length) return;
     await _player.seek(Duration.zero, index: index);
     await _player.play();
+  }
+
+  // ---- Listen along ----
+  Future<void> startListenAlong(String hostId, String hostName) async {
+    _savedQueue = List.of(_queue);
+    _savedIndex = _index;
+    listenHostId = hostId;
+    listenHostName = hostName;
+    _restoreAfterCurrent = false;
+    await _player.setLoopMode(LoopMode.off);
+    notifyListeners();
+    await _syncToHost();
+    _listenTimer?.cancel();
+    _listenTimer = Timer.periodic(const Duration(seconds: 3), (_) => _syncToHost());
+  }
+
+  Future<void> _syncToHost() async {
+    final hostId = listenHostId;
+    if (hostId == null) return;
+    HostActivity a;
+    try {
+      a = await api.userActivity(hostId);
+    } catch (_) {
+      return;
+    }
+    if (listenHostId != hostId || a.track == null) return;
+    final drift = (a.playing && a.updatedAt != null)
+        ? DateTime.now().millisecondsSinceEpoch - a.updatedAt!
+        : 0;
+    var targetMs = a.positionMs + (a.playing ? drift : 0);
+    if (targetMs < 0) targetMs = 0;
+    if (current?.id != a.track!.id) {
+      // Host moved to a new track — follow it.
+      _queue = [a.track!];
+      _index = 0;
+      _scrobbled = false;
+      _loadLyrics();
+      notifyListeners();
+      try {
+        _source = ConcatenatingAudioSource(children: [_sourceFor(a.track!)]);
+        await _player.setAudioSource(_source!, initialPosition: Duration(milliseconds: targetMs));
+        await _player.play();
+      } catch (e) {
+        debugPrint('listen-along load error: $e');
+      }
+    } else {
+      // Same track — keep position + play state in sync.
+      if ((_player.position.inMilliseconds - targetMs).abs() > 2500) {
+        await _player.seek(Duration(milliseconds: targetMs));
+      }
+      if (a.playing && !_player.playing) await _player.play();
+      if (!a.playing && _player.playing) await _player.pause();
+    }
+  }
+
+  void stopListenAlong() {
+    _listenTimer?.cancel();
+    _listenTimer = null;
+    listenHostId = null;
+    listenHostName = null;
+    // Finish the current song, then return to the user's own queue.
+    _restoreAfterCurrent = _savedQueue.isNotEmpty;
+    notifyListeners();
   }
 
   Future<void> toggle() async {
@@ -287,6 +391,8 @@ class PlayerModel extends ChangeNotifier {
   void dispose() {
     _watchdog?.cancel();
     _saveTimer?.cancel();
+    _heartbeat?.cancel();
+    _listenTimer?.cancel();
     _player.dispose();
     super.dispose();
   }

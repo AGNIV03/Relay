@@ -8,6 +8,7 @@ import '../models.dart';
 import '../player.dart';
 import '../theme.dart';
 import '../widgets/cover.dart';
+import '../widgets/friends_panel.dart';
 import '../widgets/like_button.dart';
 import '../widgets/squiggly_progress.dart';
 import '../widgets/tab_navigator.dart';
@@ -31,6 +32,7 @@ class DesktopShell extends StatefulWidget {
 
 class _DesktopShellState extends State<DesktopShell> {
   int _index = 0;
+  bool _showFriends = false;
   final List<GlobalKey<NavigatorState>> _navKeys =
       List.generate(4, (_) => GlobalKey<NavigatorState>());
   // The open lyrics route per tab, so the lyrics button toggles instead of
@@ -101,11 +103,45 @@ class _DesktopShellState extends State<DesktopShell> {
               ],
             ),
           ),
+          if (_showFriends)
+            Container(
+              width: 300,
+              decoration: const BoxDecoration(
+                color: kPanel,
+                border: Border(left: BorderSide(color: kBorder)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 8, 8),
+                    child: Row(children: [
+                      const Expanded(
+                        child: Text('Friend activity',
+                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                      ),
+                      IconButton(
+                        icon: const Icon(LucideIcons.x, size: 18),
+                        onPressed: () => setState(() => _showFriends = false),
+                      ),
+                    ]),
+                  ),
+                  const Expanded(child: FriendsList()),
+                ],
+              ),
+            ),
         ],
       ),
-      bottomNavigationBar: _DesktopPlayerBar(
-        onOpenLyrics: _toggleLyrics,
-        onOpenQueue: () => _openOnActiveTab(const QueueScreen()),
+      bottomNavigationBar: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const ListenAlongBar(),
+          _DesktopPlayerBar(
+            onOpenLyrics: _toggleLyrics,
+            onOpenQueue: () => _openOnActiveTab(const QueueScreen()),
+            onToggleFriends: () => setState(() => _showFriends = !_showFriends),
+          ),
+        ],
       ),
     );
   }
@@ -252,7 +288,12 @@ class _NavItem extends StatelessWidget {
 class _DesktopPlayerBar extends StatelessWidget {
   final VoidCallback onOpenLyrics;
   final VoidCallback onOpenQueue;
-  const _DesktopPlayerBar({required this.onOpenLyrics, required this.onOpenQueue});
+  final VoidCallback onToggleFriends;
+  const _DesktopPlayerBar({
+    required this.onOpenLyrics,
+    required this.onOpenQueue,
+    required this.onToggleFriends,
+  });
 
   String _fmt(Duration d) => "${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}";
 
@@ -361,6 +402,12 @@ class _DesktopPlayerBar extends StatelessWidget {
                 Expanded(
                   flex: 3,
                   child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                    IconButton(
+                      tooltip: 'Friend activity',
+                      iconSize: 19,
+                      icon: const Icon(LucideIcons.users, color: kMuted),
+                      onPressed: onToggleFriends,
+                    ),
                     IconButton(
                       tooltip: 'Queue',
                       iconSize: 19,

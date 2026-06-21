@@ -43,6 +43,23 @@ export interface Track {
   uploader?: { username: string } | null;
 }
 
+export interface Friend {
+  id: string;
+  username: string;
+  online: boolean;
+  playing: boolean;
+  track?: Track | null;
+}
+
+export interface HostActivity {
+  trackId: string | null;
+  track?: Track | null;
+  positionMs: number;
+  playing: boolean;
+  updatedAt?: number | string | null;
+  online: boolean;
+}
+
 export interface WrappedStats {
   totalPlays: number;
   totalMinutes: number;

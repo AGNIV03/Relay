@@ -5,6 +5,7 @@ import '../app_icons.dart';
 import 'package:provider/provider.dart';
 import '../player.dart';
 import '../theme.dart';
+import '../widgets/friends_panel.dart';
 import '../widgets/mini_player.dart';
 import '../widgets/tab_navigator.dart';
 import 'desktop_shell.dart';
@@ -76,6 +77,7 @@ class _RootScreenState extends State<_MobileRoot> {
         bottomNavigationBar: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            const ListenAlongBar(),
             const MiniPlayer(),
             NavigationBar(
               height: 64,
