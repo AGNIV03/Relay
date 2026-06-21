@@ -399,7 +399,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                       // source still needs it.
                       await downloads.onRemovedFromSource(id, widget.playlistId);
                     },
-                    child: TrackTile(tracks: tracks, index: i),
+                    child: TrackTile(tracks: tracks, index: i, showDownload: true),
                   ),
                 ),
               ),

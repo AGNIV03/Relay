@@ -19,6 +19,7 @@ import 'playlists_screen.dart';
 import 'liked_songs_screen.dart';
 import 'lyrics_screen.dart';
 import 'playlist_detail_screen.dart';
+import 'profile_screen.dart';
 import 'now_playing_screen.dart';
 import 'queue_screen.dart';
 
@@ -93,6 +94,7 @@ class _DesktopShellState extends State<DesktopShell> {
             index: _index,
             onSelect: (i) => setState(() => _index = i),
             onOpen: _openInTab,
+            onOpenProfile: () => _openOnActiveTab(const _ProfilePage()),
           ),
           Expanded(
             child: IndexedStack(
@@ -151,7 +153,12 @@ class _Sidebar extends StatefulWidget {
   final int index;
   final ValueChanged<int> onSelect;
   final ValueChanged<Widget> onOpen;
-  const _Sidebar({required this.index, required this.onSelect, required this.onOpen});
+  final VoidCallback onOpenProfile;
+  const _Sidebar(
+      {required this.index,
+      required this.onSelect,
+      required this.onOpen,
+      required this.onOpenProfile});
   @override
   State<_Sidebar> createState() => _SidebarState();
 }
@@ -242,13 +249,26 @@ class _SidebarState extends State<_Sidebar> {
           ),
           const Divider(height: 1),
           ListTile(
-            leading: const Icon(LucideIcons.logOut, size: 18),
-            title: Text(context.watch<AppState>().user?.username ?? 'Sign out',
+            leading: const Icon(LucideIcons.user, size: 18),
+            title: Text(context.watch<AppState>().user?.username ?? 'Profile',
                 style: const TextStyle(fontSize: 13)),
-            onTap: () => context.read<AppState>().logout(),
+            subtitle: const Text('Profile', style: TextStyle(fontSize: 11, color: kMuted)),
+            onTap: widget.onOpenProfile,
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Desktop profile page (pushed from the sidebar corner button).
+class _ProfilePage extends StatelessWidget {
+  const _ProfilePage();
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Profile')),
+      body: const ProfileScreen(showFriends: false),
     );
   }
 }

@@ -81,6 +81,12 @@ class Api {
     return true;
   }
 
+  Future<void> changePassword(String currentPassword, String newPassword) => _send(
+        'POST',
+        '/api/auth/change-password',
+        body: {'currentPassword': currentPassword, 'newPassword': newPassword},
+      );
+
   Future<AppUser?> me() async {
     try {
       final body = await _get('/api/auth/me');

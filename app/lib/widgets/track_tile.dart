@@ -16,6 +16,7 @@ class TrackTile extends StatelessWidget {
   final int index;
   final bool showCover;
   final bool showUploader;
+  final bool showDownload; // show an inline download/remove toggle button
   final VoidCallback? onChanged; // called after a destructive change (e.g. delete)
 
   const TrackTile({
@@ -24,6 +25,7 @@ class TrackTile extends StatelessWidget {
     required this.index,
     this.showCover = true,
     this.showUploader = false,
+    this.showDownload = false,
     this.onChanged,
   });
 
@@ -63,7 +65,9 @@ class TrackTile extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           LikeButton(trackId: track.id, size: 18),
-          if (downloads.isDownloading(track.id))
+          if (showDownload && downloads.supported)
+            _downloadButton(context, track, downloads)
+          else if (downloads.isDownloading(track.id))
             const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
           else if (downloads.isDownloaded(track.id))
             const Icon(LucideIcons.checkCircle, size: 17, color: kAccent),
@@ -71,6 +75,26 @@ class TrackTile extends StatelessWidget {
         ],
       ),
       onTap: () => player.playQueue(tracks, start: index),
+    );
+  }
+
+  /// Inline download/remove toggle for a single track.
+  Widget _downloadButton(BuildContext context, Track track, DownloadManager downloads) {
+    if (downloads.isDownloading(track.id)) {
+      return const SizedBox(
+        width: 40,
+        height: 40,
+        child: Padding(padding: EdgeInsets.all(11), child: CircularProgressIndicator(strokeWidth: 2)),
+      );
+    }
+    final done = downloads.isDownloaded(track.id);
+    return IconButton(
+      iconSize: 18,
+      tooltip: done ? 'Remove download' : 'Download',
+      icon: Icon(done ? LucideIcons.checkCircle : LucideIcons.download,
+          color: done ? kAccent : kMuted),
+      onPressed: () =>
+          done ? downloads.remove(track.id) : downloads.download(track),
     );
   }
 }
