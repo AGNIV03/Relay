@@ -87,13 +87,18 @@ class PlayerModel extends ChangeNotifier {
       }
       notifyListeners();
     });
-    // When a listen-along session is stopped, finish the current song then return
-    // to the user's own queue.
     _player.processingStateStream.listen((st) {
-      if (st == ProcessingState.completed && _restoreAfterCurrent) {
+      if (st != ProcessingState.completed) return;
+      // A stopped listen-along session finishes the current song then returns to
+      // the user's own queue.
+      if (_restoreAfterCurrent) {
         _restoreAfterCurrent = false;
         if (_savedQueue.isNotEmpty) playQueue(_savedQueue, start: _savedIndex);
+        return;
       }
+      // Genuine end of the queue (repeat off): finish, stop, and clear the
+      // now-playing controls entirely instead of freezing at the last second.
+      if (!isChorusMember) _clearPlayback();
     });
     _player.positionStream.listen((pos) {
       if (!_scrobbled && pos.inSeconds >= 5 && current != null) {
@@ -378,6 +383,25 @@ class PlayerModel extends ChangeNotifier {
       if (a.playing && !_player.playing) await _player.play();
       if (!a.playing && _player.playing) await _player.pause();
     }
+  }
+
+  /// Finish/stop and wipe the now-playing controls (queue ran out, repeat off).
+  Future<void> _clearPlayback() async {
+    try {
+      await _player.stop();
+    } catch (_) {}
+    _queue = [];
+    _index = 0;
+    _source = null;
+    _scrobbled = false;
+    _lyrics = null;
+    _lyricsForId = null;
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.remove(_kSession); // don't resume a finished playlist next launch
+    } catch (_) {}
+    notifyListeners();
+    if (isChorusHost) _broadcastChorus(); // members clear their controls too
   }
 
   void stopListenAlong() {

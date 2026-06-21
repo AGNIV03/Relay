@@ -170,179 +170,146 @@ class ChorusBar extends StatefulWidget {
 }
 
 class _ChorusBarState extends State<ChorusBar> {
-  bool _open = true; // chosen mode before starting
-
   @override
   Widget build(BuildContext context) {
     final player = context.watch<PlayerModel>();
     final c = player.chorus;
-    if (c != null && c.isPending) return _pending(context, player, c);
-    if (c != null) return _active(context, player, c);
-    if (player.current == null) return const SizedBox.shrink();
-    return _startBar(context, player);
-  }
+    if (c == null && player.current == null) return const SizedBox.shrink();
 
-  Widget _pending(BuildContext context, PlayerModel player, ChorusState c) {
+    final active = c != null && !c.isPending;
+    final pending = c != null && c.isPending;
+    final isHost = c?.isHost ?? false;
+    final on = active || pending;
+
+    // The toggle next to "Chorus" turns it on/off: off ends (host) / leaves
+    // (member) / cancels (pending); on starts a new open chorus.
+    void toggle() {
+      if (c != null) {
+        player.leaveChorusSession();
+      } else {
+        player.startChorus('open');
+      }
+    }
+
+    final title = (active && !isHost) ? '${c.hostName}’s Chorus' : 'Chorus';
+
     return Container(
       decoration: const BoxDecoration(border: Border(top: BorderSide(color: kBorder))),
-      padding: const EdgeInsets.fromLTRB(14, 8, 8, 8),
-      child: Row(children: [
-        const Icon(LucideIcons.userPlus, size: 16, color: kAccent),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text('Requested to join ${c.hostName}’s Chorus',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 13, color: kMuted)),
-        ),
-        TextButton(onPressed: player.leaveChorusSession, child: const Text('Cancel')),
-      ]),
-    );
-  }
-
-  Widget _startBar(BuildContext context, PlayerModel player) {
-    return Container(
-      decoration: const BoxDecoration(border: Border(top: BorderSide(color: kBorder))),
-      padding: const EdgeInsets.fromLTRB(14, 8, 10, 10),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Row(children: [
-            Icon(LucideIcons.users, size: 16, color: kAccent),
-            SizedBox(width: 8),
-            Text('Start a Chorus', style: TextStyle(fontWeight: FontWeight.bold)),
-          ]),
-          const SizedBox(height: 2),
-          const Text('Listen together — friends join and control the music.',
-              style: TextStyle(color: kMuted, fontSize: 11)),
-          const SizedBox(height: 8),
-          Row(children: [
-            _modeToggle(),
-            const Spacer(),
-            FilledButton(
-              onPressed: () => player.startChorus(_open ? 'open' : 'ask'),
-              child: const Text('Start'),
-            ),
-          ]),
-        ],
-      ),
-    );
-  }
-
-  Widget _modeToggle() {
-    return Container(
-      decoration: BoxDecoration(
-        color: kPanel2,
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        _segment('Open', _open, () => setState(() => _open = true)),
-        _segment('Ask to join', !_open, () => setState(() => _open = false)),
-      ]),
-    );
-  }
-
-  Widget _segment(String label, bool active, VoidCallback onTap) => GestureDetector(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          decoration: BoxDecoration(
-            color: active ? kAccent : Colors.transparent,
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Text(label,
-              style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: active ? kAccentInk : kMuted)),
-        ),
-      );
-
-  Widget _active(BuildContext context, PlayerModel player, ChorusState c) {
-    final api = context.read<Api>();
-    return Container(
-      decoration: BoxDecoration(
-        color: kAccent.withValues(alpha: 0.08),
-        border: const Border(top: BorderSide(color: kBorder)),
-      ),
-      padding: const EdgeInsets.fromLTRB(14, 8, 8, 10),
+      padding: const EdgeInsets.fromLTRB(14, 4, 10, 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(children: [
-            const Icon(LucideIcons.users, size: 16, color: kAccent),
+            Icon(LucideIcons.radio, size: 16, color: on ? kAccent : kMuted),
             const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                c.isHost ? 'Your Chorus' : '${c.hostName}’s Chorus',
-                style: const TextStyle(fontWeight: FontWeight.bold, color: kAccent),
-              ),
-            ),
-            TextButton(
-              onPressed: player.leaveChorusSession,
-              child: Text(c.isHost ? 'End' : 'Leave'),
-            ),
+            Expanded(child: Text(title, style: const TextStyle(fontWeight: FontWeight.bold))),
+            Switch(value: on, onChanged: (_) => toggle()),
           ]),
-          if (c.isHost)
-            Row(children: [
-              const Text('Open to anyone', style: TextStyle(fontSize: 12, color: kMuted)),
-              const Spacer(),
-              Switch(
-                value: c.mode == 'open',
-                onChanged: (v) => player.setChorusMode(v ? 'open' : 'ask'),
+          if (pending)
+            Text('Waiting for ${c.hostName} to approve…',
+                style: const TextStyle(fontSize: 12, color: kMuted)),
+          if (c == null)
+            const Text('Listen together — friends join and control the music.',
+                style: TextStyle(fontSize: 12, color: kMuted)),
+          if (active) ...[
+            if (isHost)
+              Padding(
+                padding: const EdgeInsets.only(top: 2, bottom: 2),
+                child: Row(children: [
+                  const Expanded(
+                      child: Text('Open to anyone',
+                          style: TextStyle(fontSize: 13, color: kMuted))),
+                  Switch(
+                    value: c.mode == 'open',
+                    onChanged: (v) => player.setChorusMode(v ? 'open' : 'ask'),
+                  ),
+                ]),
               ),
-            ]),
-          // Members
-          Wrap(
-            spacing: 6,
-            runSpacing: 2,
-            children: c.members.map((m) {
-              final canRemove = c.isHost && m.id != c.hostId;
-              return Chip(
-                visualDensity: VisualDensity.compact,
-                backgroundColor: kPanel2,
-                label: Text(m.id == c.hostId ? '${m.username} (host)' : m.username,
-                    style: const TextStyle(fontSize: 12)),
-                onDeleted: canRemove
-                    ? () async {
-                        await api.removeFromChorus(m.id).catchError((_) {});
-                        await player.refreshChorus();
-                      }
-                    : null,
-                deleteIcon: canRemove ? const Icon(LucideIcons.x, size: 14) : null,
-              );
-            }).toList(),
-          ),
-          // Pending requests (host only)
-          if (c.isHost && c.pending.isNotEmpty) ...[
-            const Padding(
-              padding: EdgeInsets.only(top: 4, bottom: 2),
-              child: Text('Requests', style: TextStyle(fontSize: 11, color: kMuted)),
-            ),
-            ...c.pending.map((p) => Row(children: [
-                  Expanded(child: Text(p.username, style: const TextStyle(fontSize: 13))),
-                  IconButton(
-                    visualDensity: VisualDensity.compact,
-                    tooltip: 'Approve',
-                    icon: const Icon(LucideIcons.check, size: 18, color: kAccent),
-                    onPressed: () async {
-                      await api.approveChorus(p.id).catchError((_) {});
-                      await player.refreshChorus();
-                    },
-                  ),
-                  IconButton(
-                    visualDensity: VisualDensity.compact,
-                    tooltip: 'Deny',
-                    icon: const Icon(LucideIcons.x, size: 18, color: kMuted),
-                    onPressed: () async {
-                      await api.denyChorus(p.id).catchError((_) {});
-                      await player.refreshChorus();
-                    },
-                  ),
-                ])),
+            _label('Listeners · ${c.members.length}'),
+            ...c.members.map((m) => _listenerRow(context, player, c, m, isHost)),
+            if (isHost && c.pending.isNotEmpty) ...[
+              const SizedBox(height: 4),
+              _label('Requests · ${c.pending.length}'),
+              ...c.pending.map((r) => _requestRow(context, player, r)),
+            ],
           ],
         ],
       ),
+    );
+  }
+
+  Widget _label(String t) => Padding(
+        padding: const EdgeInsets.only(top: 8, bottom: 2),
+        child: Text(t.toUpperCase(),
+            style: const TextStyle(
+                fontSize: 11, color: kMuted, fontWeight: FontWeight.w600, letterSpacing: 0.5)),
+      );
+
+  Widget _avatar(String name) => CircleAvatar(
+        radius: 13,
+        backgroundColor: kPanel2,
+        child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?',
+            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+      );
+
+  Widget _listenerRow(
+      BuildContext context, PlayerModel player, ChorusState c, UserRef m, bool isHost) {
+    final isTheHost = m.id == c.hostId;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(children: [
+        _avatar(m.username),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(m.username,
+              maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14)),
+        ),
+        if (isTheHost)
+          const Text('HOST',
+              style: TextStyle(
+                  fontSize: 10, fontWeight: FontWeight.bold, color: kAccent, letterSpacing: 0.5))
+        else if (isHost)
+          InkWell(
+            onTap: () async {
+              await context.read<Api>().removeFromChorus(m.id).catchError((_) {});
+              await player.refreshChorus();
+            },
+            child: const Icon(LucideIcons.x, size: 16, color: kMuted),
+          ),
+      ]),
+    );
+  }
+
+  Widget _requestRow(BuildContext context, PlayerModel player, UserRef r) {
+    final api = context.read<Api>();
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(children: [
+        _avatar(r.username),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(r.username,
+              maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14)),
+        ),
+        IconButton(
+          visualDensity: VisualDensity.compact,
+          tooltip: 'Approve',
+          icon: const Icon(LucideIcons.check, size: 18, color: kAccent),
+          onPressed: () async {
+            await api.approveChorus(r.id).catchError((_) {});
+            await player.refreshChorus();
+          },
+        ),
+        IconButton(
+          visualDensity: VisualDensity.compact,
+          tooltip: 'Deny',
+          icon: const Icon(LucideIcons.x, size: 18, color: kMuted),
+          onPressed: () async {
+            await api.denyChorus(r.id).catchError((_) {});
+            await player.refreshChorus();
+          },
+        ),
+      ]),
     );
   }
 }

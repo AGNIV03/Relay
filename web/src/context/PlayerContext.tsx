@@ -221,7 +221,18 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       }
       const target = advance(1, repeatRef.current === "all");
       if (target === null) {
-        setPlaying(false); // repeat off + last track -> stop
+        // End of the queue (repeat off): finish, stop, and clear the controls
+        // entirely instead of freezing at the last second.
+        audio.pause();
+        audio.src = "";
+        scrobbled.current.clear();
+        orderRef.current = [];
+        setQueue([]);
+        setIndex(0);
+        setPlaying(false);
+        setLyrics(null);
+        // Host: broadcasting the empty queue clears members' controls too (the
+        // [queue,index,playing] effect fires on the queue change).
         return;
       }
       setIndex(target);
