@@ -7,6 +7,7 @@ import { usePlayer } from "@/context/PlayerContext";
 import { fmtTime, fmtDateAdded } from "@/lib/format";
 import type { Track } from "@/lib/types";
 import { LikeButton } from "./LikeButton";
+import { PlaylistMenu } from "./PlaylistMenu";
 
 export interface PlaylistTrackRow {
   track: Track;
@@ -21,6 +22,10 @@ export function PlaylistView({
   liked = false,
   playlistId,
   onRemove,
+  owned,
+  subtitle,
+  onChanged,
+  onDeleted,
 }: {
   name: string;
   rows: PlaylistTrackRow[];
@@ -28,6 +33,10 @@ export function PlaylistView({
   liked?: boolean; // renders the Liked Songs gradient tile + label
   playlistId?: string; // when set, the hero cover is the editable playlist collage
   onRemove?: (trackId: string) => void;
+  owned?: boolean; // playlist ownership (gates the rename/delete/collaborators menu)
+  subtitle?: string; // e.g. "Shared by Agniv" / "2 collaborators"
+  onChanged?: () => void; // reload after rename/collaborator change
+  onDeleted?: () => void; // navigate away after delete/leave
 }) {
   const player = usePlayer();
   const tracks = rows.map((r) => r.track);
@@ -153,6 +162,7 @@ export function PlaylistView({
               {name}
             </h1>
             <div className="mt-3 text-sm text-[var(--muted)]">
+              {subtitle && <span className="mr-1 font-medium text-[var(--text)]">{subtitle} ·</span>}
               {tracks.length} {tracks.length === 1 ? "song" : "songs"}
               {tracks.length > 0 && <> · {fmtTotal()}</>}
             </div>
@@ -181,6 +191,15 @@ export function PlaylistView({
         >
           <Shuffle size={22} />
         </button>
+        {playlistId && !liked && onChanged && onDeleted && (
+          <PlaylistMenu
+            playlistId={playlistId}
+            name={name}
+            owned={owned ?? true}
+            onChanged={onChanged}
+            onDeleted={onDeleted}
+          />
+        )}
       </div>
 
       {/* Track table */}

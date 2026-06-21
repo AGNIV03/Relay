@@ -5,12 +5,14 @@ import { Headphones, X, Music, Users } from "lucide-react";
 import { api } from "@/lib/api";
 import { usePlayer } from "@/context/PlayerContext";
 import type { Friend } from "@/lib/types";
+import { UserProfileDialog } from "./UserProfileDialog";
 
 /** Right-side panel: every other user, their now/last-played track, online ring,
  *  and a Listen Along toggle. Polls every 10s. */
 export function FriendsPanel({ onClose }: { onClose?: () => void }) {
   const [friends, setFriends] = useState<Friend[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [profileId, setProfileId] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -55,14 +57,17 @@ export function FriendsPanel({ onClose }: { onClose?: () => void }) {
         ) : friends.length === 0 ? (
           <div className="px-4 py-6 text-sm text-[var(--muted)]">No other users yet</div>
         ) : (
-          friends.map((f) => <FriendRow key={f.id} f={f} />)
+          friends.map((f) => <FriendRow key={f.id} f={f} onOpen={() => setProfileId(f.id)} />)
         )}
       </div>
+      {profileId && (
+        <UserProfileDialog userId={profileId} onClose={() => setProfileId(null)} />
+      )}
     </aside>
   );
 }
 
-function FriendRow({ f }: { f: Friend }) {
+function FriendRow({ f, onOpen }: { f: Friend; onOpen: () => void }) {
   const p = usePlayer();
   const isHost = p.listenHostId === f.id;
   // Show the current/last track regardless of online state (never "Offline").
@@ -71,20 +76,26 @@ function FriendRow({ f }: { f: Friend }) {
     : "No recent activity";
   return (
     <div className="flex items-center gap-3 px-4 py-2.5 hover:bg-[var(--panel-2)]">
-      <div
-        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--panel-2)] text-xs font-bold ${
-          f.online ? "ring-2 ring-[#1DB954] ring-offset-2 ring-offset-[var(--panel)]" : ""
-        }`}
+      <button
+        onClick={onOpen}
+        title={`View ${f.username}'s profile`}
+        className="flex min-w-0 flex-1 items-center gap-3 text-left"
       >
-        {f.username.charAt(0).toUpperCase() || "?"}
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-medium">{f.username}</div>
-        <div className="flex items-center gap-1 truncate text-xs text-[var(--muted)]">
-          {f.track && <Music size={11} className="shrink-0" />}
-          <span className="truncate">{subtitle}</span>
+        <div
+          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--panel-2)] text-xs font-bold ${
+            f.online ? "ring-2 ring-[#1DB954] ring-offset-2 ring-offset-[var(--panel)]" : ""
+          }`}
+        >
+          {f.username.charAt(0).toUpperCase() || "?"}
         </div>
-      </div>
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium">{f.username}</div>
+          <div className="flex items-center gap-1 truncate text-xs text-[var(--muted)]">
+            {f.track && <Music size={11} className="shrink-0" />}
+            <span className="truncate">{subtitle}</span>
+          </div>
+        </div>
+      </button>
       {isHost ? (
         <button
           onClick={() => p.stopListenAlong()}

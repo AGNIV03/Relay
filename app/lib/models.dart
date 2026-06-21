@@ -157,8 +157,19 @@ class Playlist {
   final String name;
   final int trackCount;
   final List<Track> tracks;
+  final bool owned; // false when the current user is only a collaborator
+  final String? ownerName;
+  final int collaboratorCount;
 
-  Playlist({required this.id, required this.name, this.trackCount = 0, this.tracks = const []});
+  Playlist({
+    required this.id,
+    required this.name,
+    this.trackCount = 0,
+    this.tracks = const [],
+    this.owned = true,
+    this.ownerName,
+    this.collaboratorCount = 0,
+  });
 
   factory Playlist.fromJson(Map<String, dynamic> j) => Playlist(
         id: j['id'] as String,
@@ -168,6 +179,48 @@ class Playlist {
                 ?.map((pt) => Track.fromJson(pt['track']))
                 .toList() ??
             const [],
+        owned: j['owned'] as bool? ?? true,
+        ownerName: (j['ownerName'] ?? j['owner']?['username']) as String?,
+        collaboratorCount:
+            (j['collaboratorCount'] as int?) ?? (j['collaborators'] as List?)?.length ?? 0,
+      );
+}
+
+class UserRef {
+  final String id;
+  final String username;
+  UserRef({required this.id, required this.username});
+  factory UserRef.fromJson(Map<String, dynamic> j) =>
+      UserRef(id: j['id'] as String, username: j['username'] as String? ?? '?');
+}
+
+class UserProfile {
+  final String id;
+  final String username;
+  final String role;
+  final String? createdAt;
+  final int likeCount;
+  final List<Track> favorites;
+  final List<Playlist> playlists;
+  UserProfile({
+    required this.id,
+    required this.username,
+    required this.role,
+    this.createdAt,
+    this.likeCount = 0,
+    this.favorites = const [],
+    this.playlists = const [],
+  });
+  factory UserProfile.fromJson(Map<String, dynamic> j) => UserProfile(
+        id: j['id'] as String,
+        username: j['username'] as String? ?? '?',
+        role: j['role'] as String? ?? 'USER',
+        createdAt: j['createdAt'] as String?,
+        likeCount: (j['likeCount'] as int?) ?? 0,
+        favorites:
+            (j['favorites'] as List?)?.map((e) => Track.fromJson(e)).toList() ?? const [],
+        playlists:
+            (j['playlists'] as List?)?.map((e) => Playlist.fromJson(e)).toList() ?? const [],
       );
 }
 

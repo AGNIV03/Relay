@@ -78,6 +78,11 @@ export interface Lyrics {
   lang?: string | null;
 }
 
+export interface UserRef {
+  id: string;
+  username: string;
+}
+
 export interface Playlist {
   id: string;
   name: string;
@@ -85,6 +90,21 @@ export interface Playlist {
   system?: boolean; // true for the permanent "Liked Songs" playlist
   _count?: { tracks: number };
   tracks?: { id: string; position: number; addedAt?: string; track: Track }[];
+  owned?: boolean; // false when the current user is only a collaborator
+  owner?: UserRef;
+  ownerName?: string;
+  collaborators?: UserRef[];
+  collaboratorCount?: number;
+}
+
+export interface UserProfile {
+  id: string;
+  username: string;
+  role: Role;
+  createdAt: string;
+  likeCount: number;
+  favorites: Track[];
+  playlists: { id: string; name: string; trackCount: number }[];
 }
 
 export interface Stats {

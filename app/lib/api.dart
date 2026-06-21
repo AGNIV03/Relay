@@ -216,7 +216,28 @@ class Api {
   Future<Playlist> playlist(String id) async => Playlist.fromJson(await _get('/api/playlists/$id'));
   Future<void> createPlaylist(String name) =>
       _send('POST', '/api/playlists', body: {'name': name});
+  Future<void> renamePlaylist(String id, String name) =>
+      _send('PATCH', '/api/playlists/$id', body: {'name': name});
   Future<void> deletePlaylist(String id) => _send('DELETE', '/api/playlists/$id');
+
+  // ---- Playlist collaborators ----
+  /// {owner: UserRef, collaborators: [UserRef]}
+  Future<({UserRef owner, List<UserRef> collaborators})> playlistCollaborators(String id) async {
+    final j = await _get('/api/playlists/$id/collaborators');
+    return (
+      owner: UserRef.fromJson(j['owner']),
+      collaborators: (j['collaborators'] as List).map((e) => UserRef.fromJson(e)).toList(),
+    );
+  }
+
+  Future<void> addCollaborator(String playlistId, String userId) =>
+      _send('POST', '/api/playlists/$playlistId/collaborators', body: {'userId': userId});
+  Future<void> removeCollaborator(String playlistId, String userId) =>
+      _send('DELETE', '/api/playlists/$playlistId/collaborators/$userId');
+
+  // ---- Public user profile (friend popup) ----
+  Future<UserProfile> userProfile(String userId) async =>
+      UserProfile.fromJson(await _get('/api/social/users/$userId'));
   Future<void> addToPlaylist(String playlistId, String trackId) =>
       _send('POST', '/api/playlists/$playlistId/tracks', body: {'trackId': trackId});
   Future<void> removeFromPlaylist(String playlistId, String trackId) =>

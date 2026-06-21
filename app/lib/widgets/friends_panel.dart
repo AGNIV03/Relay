@@ -6,6 +6,7 @@ import '../app_icons.dart';
 import '../models.dart';
 import '../player.dart';
 import '../theme.dart';
+import 'user_profile_dialog.dart';
 
 /// A live list of all other users: avatar (green ring when online), what they're
 /// playing, and a Listen Along button. Polls every ~10s.
@@ -117,6 +118,7 @@ class _FriendTile extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontSize: 12, color: kMuted)),
       trailing: trailing,
+      onTap: () => showUserProfileDialog(context, f.id),
     );
   }
 }

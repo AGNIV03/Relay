@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../api.dart';
 import '../app_icons.dart';
+import '../app_state.dart';
 import '../downloads.dart';
 import '../models.dart';
 import '../player.dart';
@@ -19,15 +20,24 @@ class PlaylistDetailScreen extends StatefulWidget {
 
 class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   late Future<Playlist> _future;
+  late String _name;
+  Playlist? _pl;
   int _coverVer = 0; // bumps to refresh the cover image after a change
 
   @override
   void initState() {
     super.initState();
+    _name = _name;
     _load();
   }
 
-  void _load() => _future = context.read<Api>().playlist(widget.playlistId);
+  void _load() {
+    final f = context.read<Api>().playlist(widget.playlistId);
+    _future = f;
+    f.then((p) {
+      if (mounted) setState(() => _pl = p);
+    }).catchError((_) {});
+  }
 
   void _editCover() {
     showModalBottomSheet(
@@ -115,7 +125,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         const SizedBox(width: 16),
         Expanded(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(widget.name,
+            Text(_name,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
@@ -131,10 +141,193 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     );
   }
 
+  // ---- Playlist menu (rename / collaborators / delete) --------------------
+  Future<void> _rename() async {
+    final controller = TextEditingController(text: _name);
+    final api = context.read<Api>();
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: kPanel,
+        title: const Text('Rename playlist'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: 'Playlist name'),
+          onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+              child: const Text('Save')),
+        ],
+      ),
+    );
+    if (newName == null || newName.isEmpty || newName == _name) return;
+    try {
+      await api.renamePlaylist(widget.playlistId, newName);
+      if (mounted) setState(() => _name = newName);
+    } catch (_) {}
+  }
+
+  Future<void> _confirmDelete() async {
+    final api = context.read<Api>();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: kPanel,
+        title: const Text('Delete playlist?'),
+        content: Text('"$_name" will be permanently deleted. Songs stay in the library.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Delete', style: TextStyle(color: Color(0xFFEF4444)))),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await api.deletePlaylist(widget.playlistId);
+      if (mounted) Navigator.of(context).pop();
+    } catch (_) {}
+  }
+
+  Future<void> _leave() async {
+    final api = context.read<Api>();
+    final myId = context.read<AppState>().user?.id;
+    if (myId == null) return;
+    try {
+      await api.removeCollaborator(widget.playlistId, myId);
+      if (mounted) Navigator.of(context).pop();
+    } catch (_) {}
+  }
+
+  Future<void> _manageCollaborators() async {
+    final api = context.read<Api>();
+    List<Friend> users = [];
+    Set<String> collabIds = {};
+    try {
+      users = await api.friends();
+      final info = await api.playlistCollaborators(widget.playlistId);
+      collabIds = info.collaborators.map((c) => c.id).toSet();
+    } catch (_) {}
+    if (!mounted) return;
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          backgroundColor: kPanel,
+          title: const Text('Collaborators'),
+          content: SizedBox(
+            width: 360,
+            child: users.isEmpty
+                ? const Text('No other users to add.', style: TextStyle(color: kMuted))
+                : ListView(
+                    shrinkWrap: true,
+                    children: users.map((u) {
+                      final isCollab = collabIds.contains(u.id);
+                      return ListTile(
+                        dense: true,
+                        leading: CircleAvatar(
+                          radius: 16,
+                          backgroundColor: kPanel2,
+                          child: Text(u.username.isNotEmpty ? u.username[0].toUpperCase() : '?'),
+                        ),
+                        title: Text(u.username, maxLines: 1, overflow: TextOverflow.ellipsis),
+                        trailing: TextButton.icon(
+                          icon: Icon(isCollab ? LucideIcons.check : LucideIcons.plus, size: 16),
+                          label: Text(isCollab ? 'Added' : 'Add'),
+                          style: TextButton.styleFrom(
+                              foregroundColor: isCollab ? kAccent : kMuted),
+                          onPressed: () async {
+                            try {
+                              if (isCollab) {
+                                await api.removeCollaborator(widget.playlistId, u.id);
+                                collabIds.remove(u.id);
+                              } else {
+                                await api.addCollaborator(widget.playlistId, u.id);
+                                collabIds.add(u.id);
+                              }
+                              setLocal(() {});
+                            } catch (_) {}
+                          },
+                        ),
+                      );
+                    }).toList(),
+                  ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Done')),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final owned = _pl?.owned ?? true;
     return Scaffold(
-      appBar: AppBar(title: Text(widget.name)),
+      appBar: AppBar(
+        title: Text(_name),
+        actions: [
+          PopupMenuButton<String>(
+            icon: const Icon(LucideIcons.moreVertical),
+            color: kPanel2,
+            onSelected: (v) {
+              switch (v) {
+                case 'rename':
+                  _rename();
+                  break;
+                case 'collab':
+                  _manageCollaborators();
+                  break;
+                case 'delete':
+                  _confirmDelete();
+                  break;
+                case 'leave':
+                  _leave();
+                  break;
+              }
+            },
+            itemBuilder: (_) => owned
+                ? const [
+                    PopupMenuItem(
+                        value: 'rename',
+                        child: Row(children: [
+                          Icon(LucideIcons.settings, size: 16),
+                          SizedBox(width: 10),
+                          Text('Rename')
+                        ])),
+                    PopupMenuItem(
+                        value: 'collab',
+                        child: Row(children: [
+                          Icon(LucideIcons.users, size: 16),
+                          SizedBox(width: 10),
+                          Text('Manage collaborators')
+                        ])),
+                    PopupMenuItem(
+                        value: 'delete',
+                        child: Row(children: [
+                          Icon(LucideIcons.trash2, size: 16, color: Color(0xFFEF4444)),
+                          SizedBox(width: 10),
+                          Text('Delete', style: TextStyle(color: Color(0xFFEF4444)))
+                        ])),
+                  ]
+                : const [
+                    PopupMenuItem(
+                        value: 'leave',
+                        child: Row(children: [
+                          Icon(LucideIcons.logOut, size: 16, color: Color(0xFFEF4444)),
+                          SizedBox(width: 10),
+                          Text('Leave playlist', style: TextStyle(color: Color(0xFFEF4444)))
+                        ])),
+                  ],
+          ),
+        ],
+      ),
       body: FutureBuilder<Playlist>(
         future: _future,
         builder: (context, snap) {

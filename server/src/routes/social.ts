@@ -75,6 +75,38 @@ router.get("/friends", async (req, res) => {
   res.json(friends);
 });
 
+/** GET /api/social/users/:id — a user's public profile: details, favorite songs,
+ *  and their (owned) playlists. Powers the "click a friend" profile popup. */
+router.get("/users/:id", async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.params.id },
+    select: { id: true, username: true, role: true, createdAt: true },
+  });
+  if (!user) return res.status(404).json({ error: "Not found" });
+
+  const [favorites, playlists, likeCount] = await Promise.all([
+    prisma.favorite.findMany({
+      where: { userId: user.id },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+      include: { track: { include: { artist: true, album: true } } },
+    }),
+    prisma.playlist.findMany({
+      where: { userId: user.id },
+      orderBy: { createdAt: "desc" },
+      include: { _count: { select: { tracks: true } } },
+    }),
+    prisma.favorite.count({ where: { userId: user.id } }),
+  ]);
+
+  res.json({
+    ...user,
+    likeCount,
+    favorites: favorites.map((f) => f.track),
+    playlists: playlists.map((p) => ({ id: p.id, name: p.name, trackCount: p._count.tracks })),
+  });
+});
+
 /** GET /api/social/activity/:userId — a user's live state, for "listen along" polling */
 router.get("/activity/:userId", async (req, res) => {
   const a = getActivity(req.params.userId);

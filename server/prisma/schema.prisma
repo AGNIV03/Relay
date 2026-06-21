@@ -23,6 +23,8 @@ model User {
   history   PlayHistory[]
   favorites Favorite[]
   uploads   Track[]       @relation("Uploads")
+
+  playlistCollabs PlaylistCollaborator[]
 }
 
 model Artist {
@@ -105,7 +107,7 @@ model Favorite {
 model Playlist {
   id          String          @id @default(cuid())
   name        String
-  userId      String
+  userId      String // owner
   user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   tracks      PlaylistTrack[]
   // Cover art: an auto-generated collage of the playlist's track covers, or a
@@ -114,6 +116,22 @@ model Playlist {
   coverCustom Boolean         @default(false)
   createdAt   DateTime        @default(now())
 
+  collaborators PlaylistCollaborator[]
+
+  @@index([userId])
+}
+
+// Other users granted edit/view access to a playlist (besides the owner).
+model PlaylistCollaborator {
+  id         String   @id @default(cuid())
+  playlistId String
+  playlist   Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@unique([playlistId, userId])
+  @@index([playlistId])
   @@index([userId])
 }
 
