@@ -219,7 +219,14 @@ class PlayerModel extends ChangeNotifier {
     } catch (_) {
       return;
     }
-    if (listenHostId != hostId || a.track == null) return;
+    if (listenHostId != hostId) return;
+    // Host went offline — leave the session, finish the current song, then
+    // return to our own queue (same as a manual Stop).
+    if (!a.online) {
+      stopListenAlong();
+      return;
+    }
+    if (a.track == null) return;
     final drift = (a.playing && a.updatedAt != null)
         ? DateTime.now().millisecondsSinceEpoch - a.updatedAt!
         : 0;

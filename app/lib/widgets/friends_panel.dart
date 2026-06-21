@@ -74,9 +74,27 @@ class _FriendTile extends StatelessWidget {
     final f = friend;
     final isHost = player.listenHostId == f.id;
     final initial = f.username.isNotEmpty ? f.username[0].toUpperCase() : '?';
-    final subtitle = f.track != null
-        ? '${f.track!.title} • ${f.track!.artistName}'
-        : (f.online ? 'Online' : 'Offline');
+    // Show the current/last track regardless of online state (never "Offline").
+    final subtitle =
+        f.track != null ? '${f.track!.title} • ${f.track!.artistName}' : 'No recent activity';
+
+    // Listen-along is only offered for an online friend; keep a Stop control if
+    // we're already listening with them. Offline → no button.
+    Widget? trailing;
+    if (isHost) {
+      trailing = IconButton(
+        tooltip: 'Stop listening along',
+        icon: const Icon(LucideIcons.x, color: kAccent),
+        onPressed: player.stopListenAlong,
+      );
+    } else if (f.online && f.track != null) {
+      trailing = IconButton(
+        tooltip: 'Listen along',
+        icon: const Icon(LucideIcons.headphones, color: kText),
+        onPressed: () => player.startListenAlong(f.id, f.username),
+      );
+    }
+
     return ListTile(
       leading: Container(
         padding: const EdgeInsets.all(2),
@@ -98,16 +116,7 @@ class _FriendTile extends StatelessWidget {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(fontSize: 12, color: kMuted)),
-      trailing: IconButton(
-        tooltip: isHost ? 'Stop listening along' : 'Listen along',
-        icon: Icon(isHost ? LucideIcons.x : LucideIcons.headphones,
-            color: isHost ? kAccent : (f.track != null ? kText : kMuted)),
-        onPressed: f.track == null
-            ? null
-            : () => isHost
-                ? player.stopListenAlong()
-                : player.startListenAlong(f.id, f.username),
-      ),
+      trailing: trailing,
     );
   }
 }

@@ -65,11 +65,10 @@ export function FriendsPanel({ onClose }: { onClose?: () => void }) {
 function FriendRow({ f }: { f: Friend }) {
   const p = usePlayer();
   const isHost = p.listenHostId === f.id;
+  // Show the current/last track regardless of online state (never "Offline").
   const subtitle = f.track
     ? `${f.track.title} · ${f.track.artist?.name ?? ""}`
-    : f.online
-      ? "Online"
-      : "Offline";
+    : "No recent activity";
   return (
     <div className="flex items-center gap-3 px-4 py-2.5 hover:bg-[var(--panel-2)]">
       <div
@@ -86,16 +85,27 @@ function FriendRow({ f }: { f: Friend }) {
           <span className="truncate">{subtitle}</span>
         </div>
       </div>
-      <button
-        disabled={!f.track}
-        onClick={() => (isHost ? p.stopListenAlong() : p.startListenAlong(f.id, f.username))}
-        title={isHost ? "Stop listening along" : "Listen along"}
-        className={`shrink-0 rounded-full p-1.5 transition disabled:opacity-30 ${
-          isHost ? "text-[var(--accent)]" : "text-[var(--muted)] hover:text-white"
-        }`}
-      >
-        {isHost ? <X size={16} /> : <Headphones size={16} />}
-      </button>
+      {isHost ? (
+        <button
+          onClick={() => p.stopListenAlong()}
+          title="Stop listening along"
+          className="shrink-0 rounded-full p-1.5 text-[var(--accent)] transition"
+        >
+          <X size={16} />
+        </button>
+      ) : (
+        // Listen-along only for an online friend; hidden once they go offline.
+        f.online &&
+        f.track && (
+          <button
+            onClick={() => p.startListenAlong(f.id, f.username)}
+            title="Listen along"
+            className="shrink-0 rounded-full p-1.5 text-[var(--muted)] transition hover:text-white"
+          >
+            <Headphones size={16} />
+          </button>
+        )
+      )}
     </div>
   );
 }

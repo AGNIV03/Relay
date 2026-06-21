@@ -373,6 +373,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         return;
       }
       if (cancelled || listenHostRef.current !== listenHost.id) return;
+      // Host went offline — leave the session, finish the current song, then
+      // return to our own queue (same as a manual Stop).
+      if (!act.online) {
+        stopListenAlong();
+        return;
+      }
       if (!act.track || !act.trackId) return;
       const audio = audioRef.current;
       if (!audio) return;
