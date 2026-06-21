@@ -40,6 +40,7 @@ export interface Track {
   artistId?: string;
   createdAt?: string;
   playCount?: number;
+  uploader?: { username: string } | null;
 }
 
 export interface WrappedStats {

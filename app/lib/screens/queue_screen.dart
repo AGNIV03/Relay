@@ -1,0 +1,62 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../api.dart';
+import '../app_icons.dart';
+import '../models.dart';
+import '../player.dart';
+import '../theme.dart';
+import '../widgets/cover.dart';
+
+/// The play queue: the current track plus what's coming up. Tap to jump, ✕ to remove.
+class QueueScreen extends StatelessWidget {
+  const QueueScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final player = context.watch<PlayerModel>();
+    final api = context.read<Api>();
+    final q = player.queue;
+    final idx = player.index;
+
+    Widget tile(Track t, {bool current = false, int? removeAt}) => ListTile(
+          leading: Cover(url: api.trackCoverUrl(t.id), size: 44),
+          title: Text(t.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  fontWeight: FontWeight.w600, color: current ? kAccent : null)),
+          subtitle: Text(t.artistName, maxLines: 1, overflow: TextOverflow.ellipsis),
+          trailing: removeAt == null
+              ? null
+              : IconButton(
+                  icon: const Icon(LucideIcons.x, size: 18),
+                  onPressed: () => player.removeFromQueue(removeAt),
+                ),
+          onTap: removeAt == null ? null : () => player.playAt(removeAt),
+        );
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Queue')),
+      body: q.isEmpty || idx < 0 || idx >= q.length
+          ? const Center(child: Text('Nothing in the queue', style: TextStyle(color: kMuted)))
+          : ListView(
+              children: [
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(16, 12, 16, 2),
+                  child: Text('NOW PLAYING',
+                      style: TextStyle(color: kMuted, fontSize: 11, letterSpacing: 1)),
+                ),
+                tile(q[idx], current: true),
+                if (idx + 1 < q.length) ...[
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(16, 18, 16, 2),
+                    child: Text('NEXT UP',
+                        style: TextStyle(color: kMuted, fontSize: 11, letterSpacing: 1)),
+                  ),
+                  for (int i = idx + 1; i < q.length; i++) tile(q[i], removeAt: i),
+                ],
+              ],
+            ),
+    );
+  }
+}

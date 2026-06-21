@@ -9,6 +9,7 @@ import '../widgets/cover.dart';
 import '../widgets/like_button.dart';
 import '../widgets/lyrics_pane.dart';
 import '../widgets/squiggly_progress.dart';
+import 'queue_screen.dart';
 
 class NowPlayingScreen extends StatefulWidget {
   final bool showLyrics;
@@ -29,7 +30,18 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
     final track = player.current;
 
     return Scaffold(
-      appBar: AppBar(title: const Text("Now Playing")),
+      appBar: AppBar(
+        title: const Text("Now Playing"),
+        actions: [
+          IconButton(
+            tooltip: "Queue",
+            icon: const Icon(LucideIcons.listMusic, size: 20),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const QueueScreen()),
+            ),
+          ),
+        ],
+      ),
       body: track == null
           ? const Center(child: Text("Nothing playing", style: TextStyle(color: kMuted)))
           : Column(

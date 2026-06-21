@@ -14,8 +14,15 @@ class TrackTile extends StatelessWidget {
   final List<Track> tracks;
   final int index;
   final bool showCover;
+  final bool showUploader;
 
-  const TrackTile({super.key, required this.tracks, required this.index, this.showCover = true});
+  const TrackTile({
+    super.key,
+    required this.tracks,
+    required this.index,
+    this.showCover = true,
+    this.showUploader = false,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -42,7 +49,13 @@ class TrackTile extends StatelessWidget {
         overflow: TextOverflow.ellipsis,
         style: TextStyle(fontWeight: FontWeight.w500, color: isCurrent ? kAccent : null),
       ),
-      subtitle: Text(track.artistName, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text(
+        showUploader && (track.uploaderName?.isNotEmpty ?? false)
+            ? '${track.artistName} · uploaded by ${track.uploaderName}'
+            : track.artistName,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -64,6 +77,12 @@ class TrackTile extends StatelessWidget {
       color: kPanel2,
       onSelected: (value) async {
         switch (value) {
+          case 'next':
+            await context.read<PlayerModel>().playNext(track);
+            break;
+          case 'queue':
+            await context.read<PlayerModel>().addToQueue(track);
+            break;
           case 'download':
             await downloads.download(track);
             break;
@@ -76,6 +95,22 @@ class TrackTile extends StatelessWidget {
         }
       },
       itemBuilder: (_) => [
+        const PopupMenuItem(
+          value: 'next',
+          child: Row(children: [
+            Icon(LucideIcons.skipForward, size: 16),
+            SizedBox(width: 10),
+            Text("Play next"),
+          ]),
+        ),
+        const PopupMenuItem(
+          value: 'queue',
+          child: Row(children: [
+            Icon(LucideIcons.listMusic, size: 16),
+            SizedBox(width: 10),
+            Text("Add to queue"),
+          ]),
+        ),
         const PopupMenuItem(
           value: 'playlist',
           child: Row(children: [

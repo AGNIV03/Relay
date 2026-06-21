@@ -17,6 +17,7 @@ class PlayerModel extends ChangeNotifier {
   final AudioPlayer _player = AudioPlayer();
 
   List<Track> _queue = [];
+  ConcatenatingAudioSource? _source; // kept so we can add/insert into the queue
   int _index = 0;
   bool _scrobbled = false;
   Lyrics? _lyrics;
@@ -92,15 +93,45 @@ class PlayerModel extends ChangeNotifier {
     _loadLyrics();
     notifyListeners();
     try {
-      await _player.setAudioSource(
-        ConcatenatingAudioSource(children: tracks.map(_sourceFor).toList()),
-        initialIndex: start,
-      );
+      _source = ConcatenatingAudioSource(children: tracks.map(_sourceFor).toList());
+      await _player.setAudioSource(_source!, initialIndex: start);
       await _player.play();
       _saveSession();
     } catch (e) {
       debugPrint('play error: $e');
     }
+  }
+
+  /// Append a track to the end of the queue (starts playback if idle).
+  Future<void> addToQueue(Track t) async {
+    if (_source == null || _queue.isEmpty) return playQueue([t]);
+    _queue.add(t);
+    await _source!.add(_sourceFor(t));
+    notifyListeners();
+  }
+
+  /// Insert a track right after the current one.
+  Future<void> playNext(Track t) async {
+    if (_source == null || _queue.isEmpty) return playQueue([t]);
+    final at = (_index + 1).clamp(0, _queue.length);
+    _queue.insert(at, t);
+    await _source!.insert(at, _sourceFor(t));
+    notifyListeners();
+  }
+
+  /// Remove an upcoming track from the queue (not the current one).
+  Future<void> removeFromQueue(int index) async {
+    if (_source == null || index <= _index || index >= _queue.length) return;
+    _queue.removeAt(index);
+    await _source!.removeAt(index);
+    notifyListeners();
+  }
+
+  /// Jump to a specific track in the queue.
+  Future<void> playAt(int index) async {
+    if (index < 0 || index >= _queue.length) return;
+    await _player.seek(Duration.zero, index: index);
+    await _player.play();
   }
 
   Future<void> toggle() async {
@@ -198,11 +229,8 @@ class PlayerModel extends ChangeNotifier {
     final idx = _index;
     debugPrint('player: stream stalled — recovering at $at');
     try {
-      await _player.setAudioSource(
-        ConcatenatingAudioSource(children: _queue.map(_sourceFor).toList()),
-        initialIndex: idx,
-        initialPosition: at,
-      );
+      _source = ConcatenatingAudioSource(children: _queue.map(_sourceFor).toList());
+      await _player.setAudioSource(_source!, initialIndex: idx, initialPosition: at);
       await _player.play();
     } catch (e) {
       debugPrint('recover failed: $e');
@@ -242,8 +270,9 @@ class PlayerModel extends ChangeNotifier {
       final posMs = (data['position'] as int?) ?? 0;
       _loadLyrics();
       notifyListeners();
+      _source = ConcatenatingAudioSource(children: _queue.map(_sourceFor).toList());
       await _player.setAudioSource(
-        ConcatenatingAudioSource(children: _queue.map(_sourceFor).toList()),
+        _source!,
         initialIndex: _index,
         initialPosition: Duration(milliseconds: posMs),
         preload: false,

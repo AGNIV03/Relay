@@ -130,7 +130,7 @@ class _SongsScreenState extends State<SongsScreen> {
                   ? const Center(child: Text("No songs", style: TextStyle(color: kMuted)))
                   : ListView.builder(
                       itemCount: _tracks.length,
-                      itemBuilder: (_, i) => TrackTile(tracks: _tracks, index: i),
+                      itemBuilder: (_, i) => TrackTile(tracks: _tracks, index: i, showUploader: true),
                     ),
         ),
       ],

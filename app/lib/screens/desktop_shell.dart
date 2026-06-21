@@ -19,6 +19,7 @@ import 'liked_songs_screen.dart';
 import 'lyrics_screen.dart';
 import 'playlist_detail_screen.dart';
 import 'now_playing_screen.dart';
+import 'queue_screen.dart';
 
 /// Web-style desktop layout: left sidebar nav + content area + a full-width
 /// player bar pinned at the bottom. (Mobile keeps the bottom-nav layout.)
@@ -53,6 +54,11 @@ class _DesktopShellState extends State<DesktopShell> {
     final nav = _navKeys[playlistsTab].currentState;
     nav?.popUntil((r) => r.isFirst);
     nav?.push(MaterialPageRoute(builder: (_) => page));
+  }
+
+  /// Open a page in the active tab's content area (keeps sidebar + player bar).
+  void _openOnActiveTab(Widget page) {
+    _navKeys[_index].currentState?.push(MaterialPageRoute(builder: (_) => page));
   }
 
   /// Toggle the lyrics page in the active tab: open it if closed, close it if
@@ -99,6 +105,7 @@ class _DesktopShellState extends State<DesktopShell> {
       ),
       bottomNavigationBar: _DesktopPlayerBar(
         onOpenLyrics: _toggleLyrics,
+        onOpenQueue: () => _openOnActiveTab(const QueueScreen()),
       ),
     );
   }
@@ -244,7 +251,8 @@ class _NavItem extends StatelessWidget {
 
 class _DesktopPlayerBar extends StatelessWidget {
   final VoidCallback onOpenLyrics;
-  const _DesktopPlayerBar({required this.onOpenLyrics});
+  final VoidCallback onOpenQueue;
+  const _DesktopPlayerBar({required this.onOpenLyrics, required this.onOpenQueue});
 
   String _fmt(Duration d) => "${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}";
 
@@ -353,6 +361,12 @@ class _DesktopPlayerBar extends StatelessWidget {
                 Expanded(
                   flex: 3,
                   child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                    IconButton(
+                      tooltip: 'Queue',
+                      iconSize: 19,
+                      icon: const Icon(LucideIcons.listMusic, color: kMuted),
+                      onPressed: onOpenQueue,
+                    ),
                     IconButton(
                       tooltip: 'Lyrics',
                       iconSize: 19,

@@ -142,7 +142,7 @@ router.get("/tracks", async (req, res) => {
       orderBy: { title: "asc" },
       skip: offset,
       take: limit,
-      include: { artist: true, album: true },
+      include: { artist: true, album: true, uploader: { select: { username: true } } },
     }),
     prisma.track.count({ where }),
   ]);

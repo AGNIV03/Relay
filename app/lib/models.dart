@@ -53,6 +53,7 @@ class Track {
   final int? playCount;
   final Artist? artist;
   final Album? album;
+  final String? uploaderName;
 
   Track({
     required this.id,
@@ -64,6 +65,7 @@ class Track {
     this.playCount,
     this.artist,
     this.album,
+    this.uploaderName,
   });
 
   factory Track.fromJson(Map<String, dynamic> j) => Track(
@@ -76,6 +78,7 @@ class Track {
         playCount: j['playCount'] as int?,
         artist: j['artist'] != null ? Artist.fromJson(j['artist']) : null,
         album: j['album'] != null ? Album.fromJson(j['album']) : null,
+        uploaderName: j['uploader']?['username'] as String?,
       );
 
   String get artistName => artist?.name ?? '';

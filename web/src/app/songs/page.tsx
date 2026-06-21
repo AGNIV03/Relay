@@ -178,6 +178,7 @@ export default function SongsPage() {
                 <th className="w-10 px-3 py-2 text-center">#</th>
                 <th className="px-3 py-2">Title</th>
                 <th className="hidden px-3 py-2 md:table-cell">Album</th>
+                <th className="hidden px-3 py-2 lg:table-cell">Uploaded by</th>
                 <th className="hidden px-3 py-2 lg:table-cell">Added</th>
                 <th className="w-20 px-3 py-2"></th>
                 <th className="w-16 px-3 py-2 text-right">⏱</th>
@@ -239,6 +240,9 @@ export default function SongsPage() {
                     </td>
                     <td className="hidden px-3 py-2 text-[var(--muted)] md:table-cell">
                       {t.album?.title}
+                    </td>
+                    <td className="hidden px-3 py-2 text-[var(--muted)] lg:table-cell">
+                      {t.uploader?.username ?? "—"}
                     </td>
                     <td className="hidden px-3 py-2 text-[var(--muted)] lg:table-cell">
                       {fmtDateAdded(t.createdAt)}

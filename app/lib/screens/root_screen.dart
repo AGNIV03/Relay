@@ -3,7 +3,6 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import '../app_icons.dart';
 import 'package:provider/provider.dart';
-import '../app_state.dart';
 import '../player.dart';
 import '../theme.dart';
 import '../widgets/mini_player.dart';
@@ -11,8 +10,8 @@ import '../widgets/tab_navigator.dart';
 import 'desktop_shell.dart';
 import 'home_screen.dart';
 import 'songs_screen.dart';
-import 'artists_screen.dart';
 import 'playlists_screen.dart';
+import 'profile_screen.dart';
 
 bool get _isDesktop => !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
 
@@ -33,7 +32,7 @@ class _MobileRoot extends StatefulWidget {
 
 class _RootScreenState extends State<_MobileRoot> {
   int _index = 0;
-  static const _titles = ["Home", "Songs", "Artists", "Playlists"];
+  static const _titles = ["Home", "Songs", "Playlists", "Profile"];
   final List<GlobalKey<NavigatorState>> _navKeys =
       List.generate(4, (_) => GlobalKey<NavigatorState>());
 
@@ -50,18 +49,9 @@ class _RootScreenState extends State<_MobileRoot> {
   // pages push on top of this WITHIN the tab navigator, so the bottom nav +
   // mini-player below stay visible.
   Widget _tabRoot(int i) {
-    const pages = [HomeScreen(), SongsScreen(), ArtistsScreen(), PlaylistsScreen()];
+    const pages = [HomeScreen(), SongsScreen(), PlaylistsScreen(), ProfileScreen()];
     return Scaffold(
-      appBar: AppBar(
-        title: Text(_titles[i]),
-        actions: [
-          IconButton(
-            icon: const Icon(LucideIcons.logOut, size: 20),
-            tooltip: "Sign out",
-            onPressed: () => context.read<AppState>().logout(),
-          ),
-        ],
-      ),
+      appBar: AppBar(title: Text(_titles[i])),
       body: pages[i],
     );
   }
@@ -102,8 +92,8 @@ class _RootScreenState extends State<_MobileRoot> {
               destinations: const [
                 NavigationDestination(icon: Icon(LucideIcons.home), label: "Home"),
                 NavigationDestination(icon: Icon(LucideIcons.music2), label: "Songs"),
-                NavigationDestination(icon: Icon(LucideIcons.mic2), label: "Artists"),
                 NavigationDestination(icon: Icon(LucideIcons.listMusic), label: "Playlists"),
+                NavigationDestination(icon: Icon(LucideIcons.user), label: "Profile"),
               ],
             ),
           ],
