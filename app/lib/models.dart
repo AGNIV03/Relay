@@ -230,12 +230,14 @@ class Friend {
   final bool online;
   final bool playing;
   final Track? track;
+  final String? chorusMode; // 'open' | 'ask' | null — they're hosting a Chorus
   Friend({
     required this.id,
     required this.username,
     required this.online,
     required this.playing,
     this.track,
+    this.chorusMode,
   });
   factory Friend.fromJson(Map<String, dynamic> j) => Friend(
         id: j['id'] as String,
@@ -243,6 +245,59 @@ class Friend {
         online: j['online'] as bool? ?? false,
         playing: j['playing'] as bool? ?? false,
         track: j['track'] != null ? Track.fromJson(j['track']) : null,
+        chorusMode: j['chorusMode'] as String?,
+      );
+}
+
+/// A live Chorus session (collaborative synced listening).
+class ChorusState {
+  final String hostId;
+  final String hostName;
+  final String mode; // 'open' | 'ask'
+  final bool isHost;
+  final List<UserRef> members;
+  final List<UserRef> pending;
+  final List<Track> queue;
+  final List<String> queueIds;
+  final int index;
+  final int positionMs;
+  final bool playing;
+  final int updatedAt;
+  final String controllerId;
+  final String controllerName;
+
+  ChorusState({
+    required this.hostId,
+    required this.hostName,
+    required this.mode,
+    required this.isHost,
+    required this.members,
+    required this.pending,
+    required this.queue,
+    required this.queueIds,
+    required this.index,
+    required this.positionMs,
+    required this.playing,
+    required this.updatedAt,
+    required this.controllerId,
+    required this.controllerName,
+  });
+
+  factory ChorusState.fromJson(Map<String, dynamic> j) => ChorusState(
+        hostId: j['hostId'] as String,
+        hostName: j['hostName'] as String? ?? '?',
+        mode: j['mode'] as String? ?? 'open',
+        isHost: j['isHost'] as bool? ?? false,
+        members: (j['members'] as List?)?.map((e) => UserRef.fromJson(e)).toList() ?? const [],
+        pending: (j['pending'] as List?)?.map((e) => UserRef.fromJson(e)).toList() ?? const [],
+        queue: (j['queue'] as List?)?.map((e) => Track.fromJson(e)).toList() ?? const [],
+        queueIds: (j['queueIds'] as List?)?.cast<String>() ?? const [],
+        index: (j['index'] as int?) ?? 0,
+        positionMs: (j['positionMs'] as int?) ?? 0,
+        playing: j['playing'] as bool? ?? false,
+        updatedAt: (j['updatedAt'] as int?) ?? 0,
+        controllerId: j['controllerId'] as String? ?? '',
+        controllerName: j['controllerName'] as String? ?? '?',
       );
 }
 

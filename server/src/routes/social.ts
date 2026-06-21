@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { setActivity, getActivity, isOnline } from "../lib/presence.js";
+import { hostMode } from "../lib/chorus.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -66,6 +67,7 @@ router.get("/friends", async (req, res) => {
         playing: a?.playing ?? false,
         track,
         updatedAt: a?.updatedAt ?? null,
+        chorusMode: hostMode(u.id), // 'open' | 'ask' | null — they're hosting a Chorus
       };
     }),
   );

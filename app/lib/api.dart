@@ -340,6 +340,54 @@ class Api {
   Future<HostActivity> userActivity(String userId) async =>
       HostActivity.fromJson(await _get('/api/social/activity/$userId'));
 
+  // ---- Chorus (collaborative synced listening) ----
+  /// The chorus the current user is in, or null.
+  Future<ChorusState?> chorus() async {
+    final j = await _get('/api/chorus');
+    return j == null ? null : ChorusState.fromJson(j as Map<String, dynamic>);
+  }
+
+  Future<ChorusState> startChorus(
+    String mode,
+    List<String> queue,
+    int index,
+    int positionMs,
+    bool playing,
+  ) async =>
+      ChorusState.fromJson(await _send('POST', '/api/chorus/start', body: {
+        'mode': mode,
+        'queue': queue,
+        'index': index,
+        'positionMs': positionMs,
+        'playing': playing,
+      }) as Map<String, dynamic>);
+
+  Future<void> stopChorus() => _send('POST', '/api/chorus/stop');
+  Future<void> leaveChorus() => _send('POST', '/api/chorus/leave');
+  Future<void> setChorusMode(String mode) =>
+      _send('POST', '/api/chorus/mode', body: {'mode': mode});
+
+  /// Returns 'joined' or 'requested'.
+  Future<String> joinChorus(String hostId) async {
+    final j = await _send('POST', '/api/chorus/join', body: {'hostId': hostId});
+    return (j is Map ? j['status'] as String? : null) ?? 'requested';
+  }
+
+  Future<void> approveChorus(String userId) =>
+      _send('POST', '/api/chorus/approve', body: {'userId': userId});
+  Future<void> denyChorus(String userId) =>
+      _send('POST', '/api/chorus/deny', body: {'userId': userId});
+  Future<void> removeFromChorus(String userId) =>
+      _send('POST', '/api/chorus/remove', body: {'userId': userId});
+
+  Future<void> postChorusState(List<String> queue, int index, int positionMs, bool playing) =>
+      _send('POST', '/api/chorus/state', body: {
+        'queue': queue,
+        'index': index,
+        'positionMs': positionMs,
+        'playing': playing,
+      });
+
   // ---- Media URLs (token in query so the audio engine can authenticate) ----
   String streamUrl(String trackId) => '$baseUrl/api/stream/$trackId?token=$_access';
   String albumCoverUrl(String albumId) =>

@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { api, streamUrl, coverUrl, tokens } from "@/lib/api";
-import type { Track, Lyrics, HostActivity } from "@/lib/types";
+import type { Track, Lyrics, HostActivity, ChorusState } from "@/lib/types";
 
 export type RepeatMode = "off" | "all" | "one";
 
@@ -51,6 +51,15 @@ interface PlayerState {
   startListenAlong: (userId: string, name: string) => void;
   /** Stop following; finish the current song, then return to the saved queue. */
   stopListenAlong: () => void;
+  // ---- Chorus (collaborative synced listening) ----
+  chorus: ChorusState | null;
+  startChorus: (mode: "open" | "ask") => void;
+  setChorusMode: (mode: "open" | "ask") => void;
+  joinChorus: (hostId: string) => Promise<string>;
+  leaveChorus: () => void;
+  approveChorus: (userId: string) => void;
+  denyChorus: (userId: string) => void;
+  removeFromChorus: (userId: string) => void;
 }
 
 const PlayerContext = createContext<PlayerState | null>(null);
@@ -80,6 +89,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [lyrics, setLyrics] = useState<Lyrics | null>(null);
   const scrobbled = useRef<Set<string>>(new Set());
   const [listenHost, setListenHost] = useState<{ id: string; name: string } | null>(null);
+  const [chorus, setChorus] = useState<ChorusState | null>(null);
+  const chorusRef = useRef<ChorusState | null>(null);
+  const pendingSeekRef = useRef<number | null>(null); // seconds to seek to after the next load
+  useEffect(() => {
+    chorusRef.current = chorus;
+  }, [chorus]);
 
   const current = queue[index] ?? null;
 
@@ -142,7 +157,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         api.post("/api/library/scrobble", { trackId: t.id }).catch(() => {});
       }
     };
-    const onMeta = () => setDuration(audio.duration || 0);
+    const onMeta = () => {
+      setDuration(audio.duration || 0);
+      // Apply a pending chorus seek once the new track's metadata is ready.
+      if (pendingSeekRef.current != null) {
+        audio.currentTime = pendingSeekRef.current;
+        pendingSeekRef.current = null;
+      }
+    };
     const onEnd = () => {
       // A stopped listen-along session lets the current song finish, then
       // restores the queue the user had before they started following.
@@ -418,6 +440,160 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     };
   }, [listenHost]);
 
+  // ---- Chorus (collaborative synced listening) ----
+  const lastAppliedSig = useRef("");
+  const chorusSig = (ids: string[], idx: number, isPlaying: boolean) =>
+    `${ids.join(",")}#${idx}#${isPlaying}`;
+
+  // Reconcile local playback with the shared chorus state.
+  const chorusSync = useCallback(async () => {
+    let c: ChorusState | null;
+    try {
+      c = await api.get<ChorusState | null>("/api/chorus");
+    } catch {
+      return;
+    }
+    if (!c) {
+      if (chorusRef.current) setChorus(null);
+      return;
+    }
+    setChorus(c);
+    if (!c.queueIds.length) return;
+    lastAppliedSig.current = chorusSig(c.queueIds, c.index, c.playing); // suppress echo
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const sharedTrackId =
+      c.index >= 0 && c.index < c.queueIds.length ? c.queueIds[c.index] : null;
+    const sigMatch =
+      queueRef.current.map((t) => t.id).join(",") === c.queueIds.join(",") &&
+      indexRef.current === c.index;
+    let targetMs = c.positionMs;
+    if (c.playing) targetMs += Date.now() - c.updatedAt;
+    const targetSec = Math.max(0, targetMs / 1000);
+
+    if (!sigMatch) {
+      orderRef.current = Array.from({ length: c.queue.length }, (_, i) => i);
+      const sameTrack = currentIdRef.current === sharedTrackId;
+      scrobbled.current.clear();
+      setQueue(c.queue);
+      setIndex(c.index);
+      if (sameTrack) {
+        if (Math.abs(audio.currentTime - targetSec) > 3) audio.currentTime = targetSec;
+        if (c.playing) audio.play().catch(() => {});
+        else audio.pause();
+      } else {
+        // New track: the load effect will play from 0; seek once it's ready.
+        pendingSeekRef.current = targetSec;
+        if (!c.playing) setTimeout(() => audio.pause(), 80);
+      }
+      return;
+    }
+
+    if (c.isHost) {
+      // Host drives the shared timeline.
+      api
+        .post("/api/chorus/state", {
+          queue: queueRef.current.map((t) => t.id),
+          index: indexRef.current,
+          positionMs: Math.round(audio.currentTime * 1000),
+          playing: playingRef.current,
+        })
+        .catch(() => {});
+    } else {
+      if (Math.abs(audio.currentTime - targetSec) > 3) audio.currentTime = targetSec;
+      if (c.playing && audio.paused) audio.play().catch(() => {});
+      if (!c.playing && !audio.paused) audio.pause();
+    }
+  }, []);
+
+  // Poll while in a chorus.
+  useEffect(() => {
+    if (!chorus) return;
+    chorusSync();
+    const id = setInterval(chorusSync, 2000);
+    return () => clearInterval(id);
+  }, [chorus?.hostId, chorusSync]);
+
+  // Broadcast local content/play changes to the chorus (skipping echoes of state
+  // we just adopted from the server).
+  useEffect(() => {
+    if (!chorusRef.current) return;
+    const ids = queue.map((t) => t.id);
+    const sig = chorusSig(ids, index, playing);
+    if (sig === lastAppliedSig.current) return;
+    lastAppliedSig.current = sig;
+    api
+      .post("/api/chorus/state", {
+        queue: ids,
+        index,
+        positionMs: Math.round((audioRef.current?.currentTime ?? 0) * 1000),
+        playing,
+      })
+      .catch(() => {});
+  }, [queue, index, playing]);
+
+  const startChorus = useCallback(async (mode: "open" | "ask") => {
+    try {
+      const ids = queueRef.current.map((t) => t.id);
+      const c = await api.post<ChorusState>("/api/chorus/start", {
+        mode,
+        queue: ids,
+        index: indexRef.current,
+        positionMs: Math.round((audioRef.current?.currentTime ?? 0) * 1000),
+        playing: playingRef.current,
+      });
+      lastAppliedSig.current = chorusSig(c.queueIds, c.index, c.playing);
+      setChorus(c);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const setChorusMode = useCallback(
+    async (mode: "open" | "ask") => {
+      await api.post("/api/chorus/mode", { mode }).catch(() => {});
+      chorusSync();
+    },
+    [chorusSync],
+  );
+
+  const joinChorus = useCallback(
+    async (hostId: string): Promise<string> => {
+      const r = await api.post<{ status: string }>("/api/chorus/join", { hostId });
+      await chorusSync();
+      return r.status;
+    },
+    [chorusSync],
+  );
+
+  const leaveChorus = useCallback(async () => {
+    await api.post("/api/chorus/leave").catch(() => {});
+    setChorus(null);
+  }, []);
+
+  const approveChorus = useCallback(
+    async (userId: string) => {
+      await api.post("/api/chorus/approve", { userId }).catch(() => {});
+      chorusSync();
+    },
+    [chorusSync],
+  );
+  const denyChorus = useCallback(
+    async (userId: string) => {
+      await api.post("/api/chorus/deny", { userId }).catch(() => {});
+      chorusSync();
+    },
+    [chorusSync],
+  );
+  const removeFromChorus = useCallback(
+    async (userId: string) => {
+      await api.post("/api/chorus/remove", { userId }).catch(() => {});
+      chorusSync();
+    },
+    [chorusSync],
+  );
+
   // Browser media-key / lock-screen controls.
   useEffect(() => {
     if (!("mediaSession" in navigator)) return;
@@ -458,6 +634,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         listenHostId: listenHost?.id ?? null,
         startListenAlong,
         stopListenAlong,
+        chorus,
+        startChorus,
+        setChorusMode,
+        joinChorus,
+        leaveChorus,
+        approveChorus,
+        denyChorus,
+        removeFromChorus,
       }}
     >
       {children}

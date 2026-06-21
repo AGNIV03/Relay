@@ -38,6 +38,12 @@ class PlayerModel extends ChangeNotifier {
   int _savedIndex = 0;
   bool _restoreAfterCurrent = false;
 
+  // ---- Chorus (collaborative synced listening) ----
+  ChorusState? chorus;
+  Timer? _chorusTimer;
+  bool _applyingChorus = false; // guard: don't broadcast while adopting shared state
+  bool get inChorus => chorus != null;
+
   static const _kSession = 'last_session';
 
   PlayerModel(this.api, this.downloads) {
@@ -168,6 +174,7 @@ class PlayerModel extends ChangeNotifier {
       await _player.setAudioSource(_source!, initialIndex: start);
       await _player.play();
       _saveSession();
+      _broadcastChorus();
     } catch (e) {
       debugPrint('play error: $e');
     }
@@ -179,6 +186,7 @@ class PlayerModel extends ChangeNotifier {
     _queue.add(t);
     await _source!.add(_sourceFor(t));
     notifyListeners();
+    _broadcastChorus();
   }
 
   /// Insert a track right after the current one.
@@ -188,6 +196,7 @@ class PlayerModel extends ChangeNotifier {
     _queue.insert(at, t);
     await _source!.insert(at, _sourceFor(t));
     notifyListeners();
+    _broadcastChorus();
   }
 
   /// Remove an upcoming track from the queue (not the current one).
@@ -196,6 +205,7 @@ class PlayerModel extends ChangeNotifier {
     _queue.removeAt(index);
     await _source!.removeAt(index);
     notifyListeners();
+    _broadcastChorus();
   }
 
   /// Jump to a specific track in the queue.
@@ -203,6 +213,7 @@ class PlayerModel extends ChangeNotifier {
     if (index < 0 || index >= _queue.length) return;
     await _player.seek(Duration.zero, index: index);
     await _player.play();
+    _broadcastChorus();
   }
 
   // ---- Listen along ----
@@ -275,12 +286,153 @@ class PlayerModel extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ---- Chorus (collaborative synced listening) ----
+  void _ensureChorusPolling() {
+    _chorusTimer ??= Timer.periodic(const Duration(seconds: 2), (_) => _chorusSync());
+  }
+
+  void _stopChorusPolling() {
+    _chorusTimer?.cancel();
+    _chorusTimer = null;
+  }
+
+  /// Push our local playback (queue/index/position/playing) to the shared chorus.
+  void _broadcastChorus() {
+    if (chorus == null || _applyingChorus) return;
+    api
+        .postChorusState(
+          _queue.map((t) => t.id).toList(),
+          _index,
+          _player.position.inMilliseconds,
+          _player.playing,
+        )
+        .catchError((_) {});
+  }
+
+  bool _idsEqual(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  /// Start hosting a chorus from the current queue.
+  Future<void> startChorus(String mode) async {
+    if (_queue.isEmpty) return;
+    try {
+      chorus = await api.startChorus(
+        mode,
+        _queue.map((t) => t.id).toList(),
+        _index,
+        _player.position.inMilliseconds,
+        _player.playing,
+      );
+      notifyListeners();
+      _ensureChorusPolling();
+    } catch (e) {
+      debugPrint('startChorus error: $e');
+    }
+  }
+
+  Future<void> setChorusMode(String mode) async {
+    await api.setChorusMode(mode).catchError((_) {});
+    if (chorus != null) {
+      // optimistic; the next poll confirms
+      await _chorusSync();
+    }
+  }
+
+  /// Begin following a chorus after joining/requesting (kicks off polling).
+  void joinedChorus() {
+    _ensureChorusPolling();
+    _chorusSync();
+  }
+
+  /// Force an immediate chorus poll (e.g. after approving/removing a member).
+  Future<void> refreshChorus() => _chorusSync();
+
+  Future<void> leaveChorusSession() async {
+    await api.leaveChorus().catchError((_) {});
+    chorus = null;
+    _stopChorusPolling();
+    notifyListeners();
+  }
+
+  /// Poll the shared chorus state and reconcile local playback with it.
+  Future<void> _chorusSync() async {
+    ChorusState? c;
+    try {
+      c = await api.chorus();
+    } catch (_) {
+      return; // transient — keep current state
+    }
+    if (c == null) {
+      if (chorus != null) {
+        chorus = null;
+        _stopChorusPolling();
+        notifyListeners();
+      }
+      return;
+    }
+    chorus = c;
+    notifyListeners();
+    if (c.queueIds.isEmpty) return;
+
+    final localIds = _queue.map((t) => t.id).toList();
+    final sigMatch = _idsEqual(localIds, c.queueIds) && _index == c.index;
+    final sharedTrackId =
+        (c.index >= 0 && c.index < c.queueIds.length) ? c.queueIds[c.index] : null;
+    final drift = c.playing ? (DateTime.now().millisecondsSinceEpoch - c.updatedAt) : 0;
+    var targetMs = c.positionMs + (drift > 0 ? drift : 0);
+    if (targetMs < 0) targetMs = 0;
+
+    if (!sigMatch) {
+      // Adopt the shared queue/index. Keep the current track's position when it's
+      // unchanged; otherwise jump to the shared (extrapolated) position.
+      final sameTrack = current?.id == sharedTrackId;
+      final pos = sameTrack ? _player.position : Duration(milliseconds: targetMs);
+      _applyingChorus = true;
+      try {
+        _queue = List.of(c.queue);
+        _index = c.index;
+        _scrobbled = false;
+        _loadLyrics();
+        _source = ConcatenatingAudioSource(children: c.queue.map(_sourceFor).toList());
+        await _player.setAudioSource(_source!, initialIndex: c.index, initialPosition: pos);
+        if (c.playing) {
+          await _player.play();
+        } else {
+          await _player.pause();
+        }
+      } catch (e) {
+        debugPrint('chorus adopt error: $e');
+      } finally {
+        _applyingChorus = false;
+      }
+      notifyListeners();
+      return;
+    }
+
+    // Content matches the shared state.
+    if (c.isHost) {
+      _broadcastChorus(); // host drives the shared timeline
+    } else {
+      if ((_player.position.inMilliseconds - targetMs).abs() > 3000) {
+        await _player.seek(Duration(milliseconds: targetMs));
+      }
+      if (c.playing && !_player.playing) await _player.play();
+      if (!c.playing && _player.playing) await _player.pause();
+    }
+  }
+
   Future<void> toggle() async {
     if (_player.playing) {
       await _player.pause();
     } else {
       await _player.play();
     }
+    _broadcastChorus();
   }
 
   // Manual next/previous wrap around the ends so a playlist always loops.
@@ -290,6 +442,7 @@ class PlayerModel extends ChangeNotifier {
     } else {
       await _player.seek(Duration.zero, index: 0); // wrap to first
     }
+    _broadcastChorus();
   }
 
   Future<void> previous() async {
@@ -301,9 +454,13 @@ class PlayerModel extends ChangeNotifier {
       final last = _queue.isEmpty ? 0 : _queue.length - 1;
       await _player.seek(Duration.zero, index: last); // wrap to last
     }
+    _broadcastChorus();
   }
 
-  Future<void> seek(Duration d) => _player.seek(d);
+  Future<void> seek(Duration d) async {
+    await _player.seek(d);
+    _broadcastChorus();
+  }
   Future<void> setVolume(double v) async {
     await _player.setVolume(v);
     notifyListeners(); // update the slider immediately, even while paused
@@ -430,6 +587,7 @@ class PlayerModel extends ChangeNotifier {
     _saveTimer?.cancel();
     _heartbeat?.cancel();
     _listenTimer?.cancel();
+    _chorusTimer?.cancel();
     _player.dispose();
     super.dispose();
   }

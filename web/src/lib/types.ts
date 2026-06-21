@@ -49,6 +49,24 @@ export interface Friend {
   online: boolean;
   playing: boolean;
   track?: Track | null;
+  chorusMode?: "open" | "ask" | null; // they're hosting a Chorus
+}
+
+export interface ChorusState {
+  hostId: string;
+  hostName: string;
+  mode: "open" | "ask";
+  isHost: boolean;
+  members: UserRef[];
+  pending: UserRef[];
+  queue: Track[];
+  queueIds: string[];
+  index: number;
+  positionMs: number;
+  playing: boolean;
+  updatedAt: number;
+  controllerId: string;
+  controllerName: string;
 }
 
 export interface HostActivity {
