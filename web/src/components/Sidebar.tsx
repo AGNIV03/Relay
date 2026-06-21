@@ -38,7 +38,7 @@ export function Sidebar() {
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/logo.png" alt="Relay" className="h-6 w-6" /> Relay
         </div>
-        <div className="text-xs text-[var(--muted)]">self-hosted music</div>
+        <div className="text-xs text-[var(--muted)]">The ultimate music hosting solution</div>
       </div>
 
       <nav className="flex flex-1 flex-col gap-1 overflow-y-auto">

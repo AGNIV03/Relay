@@ -64,14 +64,23 @@ class TrackTile extends StatelessWidget {
             const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
           else if (downloads.isDownloaded(track.id))
             const Icon(LucideIcons.checkCircle, size: 17, color: kAccent),
-          _menu(context, track, downloads),
+          TrackMenu(track: track),
         ],
       ),
       onTap: () => player.playQueue(tracks, start: index),
     );
   }
+}
 
-  Widget _menu(BuildContext context, Track track, DownloadManager downloads) {
+/// The per-track "⋮" popup menu (Play next / Add to queue / playlist / download).
+/// Shared by the mobile list tile and the desktop table.
+class TrackMenu extends StatelessWidget {
+  final Track track;
+  const TrackMenu({super.key, required this.track});
+
+  @override
+  Widget build(BuildContext context) {
+    final downloads = context.watch<DownloadManager>();
     return PopupMenuButton<String>(
       icon: const Icon(LucideIcons.moreVertical, size: 18, color: kMuted),
       color: kPanel2,

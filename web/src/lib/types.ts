@@ -72,6 +72,10 @@ export interface WrappedStats {
 export interface Lyrics {
   synced: string | null;
   plain: string | null;
+  /** Line-aligned English translation (one line per non-empty original line). */
+  translated?: string | null;
+  /** Detected source language code (e.g. "ja"). */
+  lang?: string | null;
 }
 
 export interface Playlist {

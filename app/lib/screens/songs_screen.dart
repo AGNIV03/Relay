@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import '../app_icons.dart';
 import 'package:provider/provider.dart';
@@ -7,7 +9,10 @@ import '../api.dart';
 import '../app_state.dart';
 import '../models.dart';
 import '../theme.dart';
+import '../widgets/track_table.dart';
 import '../widgets/track_tile.dart';
+
+bool get _isDesktop => !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
 
 class SongsScreen extends StatefulWidget {
   const SongsScreen({super.key});
@@ -128,10 +133,14 @@ class _SongsScreenState extends State<SongsScreen> {
               ? const Center(child: CircularProgressIndicator())
               : _tracks.isEmpty
                   ? const Center(child: Text("No songs", style: TextStyle(color: kMuted)))
-                  : ListView.builder(
-                      itemCount: _tracks.length,
-                      itemBuilder: (_, i) => TrackTile(tracks: _tracks, index: i, showUploader: true),
-                    ),
+                  : _isDesktop
+                      // Desktop/web: columnar table (Album / Uploaded by / Added).
+                      ? TrackTable(tracks: _tracks)
+                      // Mobile: compact list, no "uploaded by".
+                      : ListView.builder(
+                          itemCount: _tracks.length,
+                          itemBuilder: (_, i) => TrackTile(tracks: _tracks, index: i),
+                        ),
         ),
       ],
     );

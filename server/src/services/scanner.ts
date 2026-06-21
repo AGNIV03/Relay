@@ -3,7 +3,8 @@ import path from "node:path";
 import { parseFile } from "music-metadata";
 import { prisma } from "../lib/prisma.js";
 import { env } from "../lib/env.js";
-import { fetchLyrics } from "./lyrics.service.js";
+import { fetchLyrics, lrcToPlain } from "./lyrics.service.js";
+import { translateText } from "./translate.service.js";
 
 const AUDIO_EXT = new Set([".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".wma"]);
 
@@ -78,11 +79,50 @@ export async function fetchAndStoreLyrics(trackId: string): Promise<void> {
     include: { artist: true, album: true },
   });
   if (!t) return;
-  const r = await fetchLyrics(t.artist?.name ?? "", t.title, t.album?.title, t.duration);
-  await prisma.track.update({
-    where: { id: trackId },
-    data: { lyricsPlain: r.plain, lyricsSynced: r.synced, lyricsChecked: r.checked },
-  });
+
+  let plain = t.lyricsPlain;
+  let synced = t.lyricsSynced;
+  let checked = t.lyricsChecked;
+
+  // 1. Fetch the lyrics themselves (once).
+  if (!checked) {
+    const r = await fetchLyrics(t.artist?.name ?? "", t.title, t.album?.title, t.duration);
+    plain = r.plain;
+    synced = r.synced;
+    checked = r.checked;
+    await prisma.track.update({
+      where: { id: trackId },
+      data: { lyricsPlain: plain, lyricsSynced: synced, lyricsChecked: checked },
+    });
+  }
+
+  // 2. Translate them to English (once). Source lines are taken from the SYNCED
+  //    lyrics when available so the translation aligns line-by-line with the
+  //    karaoke view; otherwise from the plain text. Stored so it's instant later.
+  if (checked && !t.lyricsTransChecked) {
+    const src = synced ? lrcToPlain(synced) : (plain?.trim() ?? "");
+    if (!src) {
+      await prisma.track.update({
+        where: { id: trackId },
+        data: { lyricsTransChecked: true },
+      });
+    } else {
+      try {
+        const r = await translateText(src, "en");
+        const english = r.lang === "en" || !r.text;
+        await prisma.track.update({
+          where: { id: trackId },
+          data: {
+            lyricsLang: r.lang,
+            lyricsTranslated: english ? null : r.text,
+            lyricsTransChecked: true,
+          },
+        });
+      } catch {
+        /* leave unchecked so it retries on the next request */
+      }
+    }
+  }
 }
 
 /**

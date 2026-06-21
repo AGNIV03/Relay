@@ -54,6 +54,7 @@ class Track {
   final Artist? artist;
   final Album? album;
   final String? uploaderName;
+  final String? createdAt;
 
   Track({
     required this.id,
@@ -66,6 +67,7 @@ class Track {
     this.artist,
     this.album,
     this.uploaderName,
+    this.createdAt,
   });
 
   factory Track.fromJson(Map<String, dynamic> j) => Track(
@@ -79,6 +81,7 @@ class Track {
         artist: j['artist'] != null ? Artist.fromJson(j['artist']) : null,
         album: j['album'] != null ? Album.fromJson(j['album']) : null,
         uploaderName: j['uploader']?['username'] as String?,
+        createdAt: j['createdAt'] as String?,
       );
 
   String get artistName => artist?.name ?? '';
@@ -138,9 +141,15 @@ class WrappedStats {
 class Lyrics {
   final String? synced;
   final String? plain;
-  Lyrics({this.synced, this.plain});
-  factory Lyrics.fromJson(Map<String, dynamic> j) =>
-      Lyrics(synced: j['synced'] as String?, plain: j['plain'] as String?);
+  final String? translated; // line-aligned English translation
+  final String? lang; // detected source language code
+  Lyrics({this.synced, this.plain, this.translated, this.lang});
+  factory Lyrics.fromJson(Map<String, dynamic> j) => Lyrics(
+        synced: j['synced'] as String?,
+        plain: j['plain'] as String?,
+        translated: j['translated'] as String?,
+        lang: j['lang'] as String?,
+      );
 }
 
 class Playlist {

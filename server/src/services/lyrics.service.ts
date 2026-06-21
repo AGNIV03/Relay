@@ -12,6 +12,15 @@ export interface LyricsResult {
 
 const UA = "StreamSelfHosted/1.0 (+https://github.com/AGNIV03/stream)";
 
+/** Strip LRC timestamp/metadata tags → ordered non-empty plain lines (one per line). */
+export function lrcToPlain(lrc: string): string {
+  return lrc
+    .split("\n")
+    .map((l) => l.replace(/\[[^\]]*\]/g, "").trim())
+    .filter((l) => l.length > 0)
+    .join("\n");
+}
+
 export async function fetchLyrics(
   artist: string,
   title: string,

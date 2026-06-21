@@ -248,15 +248,21 @@ router.get("/stats/me", async (req, res) => {
   });
 });
 
-/** GET /api/library/tracks/:id/lyrics — synced (LRC) + plain; fetches on demand if unchecked */
+/** GET /api/library/tracks/:id/lyrics — synced (LRC) + plain + line-aligned English
+ *  translation; fetches/translates on demand if not yet done. */
 router.get("/tracks/:id/lyrics", async (req, res) => {
   let track = await prisma.track.findUnique({ where: { id: req.params.id } });
   if (!track) return res.status(404).json({ error: "Not found" });
-  if (!track.lyricsChecked) {
+  if (!track.lyricsChecked || !track.lyricsTransChecked) {
     await fetchAndStoreLyrics(track.id).catch(() => {});
     track = await prisma.track.findUnique({ where: { id: req.params.id } });
   }
-  res.json({ synced: track?.lyricsSynced ?? null, plain: track?.lyricsPlain ?? null });
+  res.json({
+    synced: track?.lyricsSynced ?? null,
+    plain: track?.lyricsPlain ?? null,
+    translated: track?.lyricsTranslated ?? null,
+    lang: track?.lyricsLang ?? null,
+  });
 });
 
 /** GET /api/library/tracks/:id/lyrics/translation — English MT of the lyrics */

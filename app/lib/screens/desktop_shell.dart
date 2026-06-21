@@ -32,7 +32,7 @@ class DesktopShell extends StatefulWidget {
 
 class _DesktopShellState extends State<DesktopShell> {
   int _index = 0;
-  bool _showFriends = false;
+  bool _showFriends = true;
   final List<GlobalKey<NavigatorState>> _navKeys =
       List.generate(4, (_) => GlobalKey<NavigatorState>());
   // The open lyrics route per tab, so the lyrics button toggles instead of
@@ -197,7 +197,8 @@ class _SidebarState extends State<_Sidebar> {
           ),
           const Padding(
             padding: EdgeInsets.only(left: 20, bottom: 10),
-            child: Text('self-hosted music', style: TextStyle(color: kMuted, fontSize: 11)),
+            child: Text('The ultimate music hosting solution',
+                style: TextStyle(color: kMuted, fontSize: 11)),
           ),
           for (var i = 0; i < _nav.length; i++)
             _NavItem(

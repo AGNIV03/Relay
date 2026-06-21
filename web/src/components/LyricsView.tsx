@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePlayer } from "@/context/PlayerContext";
-import { api } from "@/lib/api";
 
 interface Line {
   t: number; // seconds
@@ -32,17 +31,38 @@ function parseLrc(lrc: string): Line[] {
   return out.sort((a, b) => a.t - b.t);
 }
 
+/** Align translation lines (non-empty, in order) to a list of original line texts.
+ *  Empty/instrumental lines get no translation. */
+function alignTranslations(originals: string[], translated: string | null | undefined): (string | null)[] {
+  if (!translated) return originals.map(() => null);
+  const trans = translated.split("\n");
+  let j = 0;
+  return originals.map((o) => (o.trim() ? trans[j++] ?? null : null));
+}
+
 export function LyricsView({ onClose }: { onClose: () => void }) {
   const { current, lyrics, position, seek } = usePlayer();
   const containerRef = useRef<HTMLDivElement>(null);
-  const activeRef = useRef<HTMLParagraphElement>(null);
+  const activeRef = useRef<HTMLDivElement>(null);
 
   const [showTrans, setShowTrans] = useState(false);
-  const [trans, setTrans] = useState<string | null>(null);
-  const [lang, setLang] = useState<string | null>(null);
-  const [loadingTrans, setLoadingTrans] = useState(false);
 
   const lines = useMemo(() => (lyrics?.synced ? parseLrc(lyrics.synced) : []), [lyrics?.synced]);
+  const plainLines = useMemo(
+    () => (lyrics?.plain ? lyrics.plain.split("\n") : []),
+    [lyrics?.plain],
+  );
+
+  // Translation aligned to whichever view we're showing.
+  const syncedTrans = useMemo(
+    () => alignTranslations(lines.map((l) => l.text), lyrics?.translated),
+    [lines, lyrics?.translated],
+  );
+  const plainTrans = useMemo(
+    () => alignTranslations(plainLines, lyrics?.translated),
+    [plainLines, lyrics?.translated],
+  );
+
   const activeIdx = useMemo(() => {
     if (!lines.length) return -1;
     let idx = -1;
@@ -54,55 +74,38 @@ export function LyricsView({ onClose }: { onClose: () => void }) {
   }, [lines, position]);
 
   useEffect(() => {
-    if (!showTrans) activeRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [activeIdx, showTrans]);
+    activeRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [activeIdx]);
 
-  // Reset translation when the track changes.
+  // Default to showing translations whenever a non-English translation exists.
   useEffect(() => {
-    setShowTrans(false);
-    setTrans(null);
-    setLang(null);
-  }, [current?.id]);
-
-  async function toggleTranslate() {
-    if (showTrans) {
-      setShowTrans(false);
-      return;
-    }
-    setShowTrans(true);
-    if (!current || trans !== null || loadingTrans) return;
-    setLoadingTrans(true);
-    try {
-      const r = await api.get<{ lang: string | null; translated: string | null }>(
-        `/api/library/tracks/${current.id}/lyrics/translation`,
-      );
-      setTrans(r.translated ?? "");
-      setLang(r.lang);
-    } catch {
-      setTrans("");
-    } finally {
-      setLoadingTrans(false);
-    }
-  }
+    setShowTrans(!!lyrics?.translated);
+  }, [current?.id, lyrics?.translated]);
 
   const hasLyrics = lines.length > 0 || !!lyrics?.plain;
+  const hasTrans = !!lyrics?.translated;
 
   return (
     <div className="absolute inset-0 z-30 flex flex-col bg-[var(--bg)]/97 backdrop-blur-xl">
       <div className="flex items-center justify-between border-b border-[var(--border)] px-6 py-4">
         <div className="min-w-0">
           <div className="truncate text-lg font-bold">{current?.title}</div>
-          <div className="truncate text-sm text-[var(--muted)]">{current?.artist?.name}</div>
+          <div className="truncate text-sm text-[var(--muted)]">
+            {current?.artist?.name}
+            {hasTrans && lyrics?.lang && (
+              <span> · translated from {LANG_NAMES[lyrics.lang] ?? lyrics.lang}</span>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-2">
-          {hasLyrics && (
+          {hasLyrics && hasTrans && (
             <button
-              onClick={toggleTranslate}
+              onClick={() => setShowTrans((s) => !s)}
               className={`rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm ${
                 showTrans ? "text-[var(--accent)]" : "text-[var(--muted)] hover:text-white"
               }`}
             >
-              {showTrans ? "Original" : "Translate"}
+              {showTrans ? "Hide translation" : "Translate"}
             </button>
           )}
           <button
@@ -115,44 +118,44 @@ export function LyricsView({ onClose }: { onClose: () => void }) {
       </div>
 
       <div ref={containerRef} className="flex-1 overflow-y-auto px-6 py-10">
-        {showTrans ? (
-          loadingTrans ? (
-            <div className="flex h-full items-center justify-center text-[var(--muted)]">Translating…</div>
-          ) : trans ? (
-            <div className="mx-auto max-w-2xl text-center">
-              {lang && (
-                <div className="mb-6 text-sm text-[var(--muted)]">
-                  Translated from {LANG_NAMES[lang] ?? lang}
-                </div>
-              )}
-              <pre className="whitespace-pre-wrap text-lg leading-relaxed text-[var(--text)]">{trans}</pre>
-            </div>
-          ) : (
-            <div className="flex h-full items-center justify-center text-center text-[var(--muted)]">
-              No translation available (the lyrics may already be in English).
-            </div>
-          )
-        ) : lines.length > 0 ? (
+        {lines.length > 0 ? (
           <div className="mx-auto max-w-2xl space-y-4 text-center">
             {lines.map((ln, i) => (
-              <p
-                key={i}
-                ref={i === activeIdx ? activeRef : undefined}
-                onClick={() => seek(ln.t)}
-                className={`cursor-pointer text-2xl font-semibold transition-all ${
-                  i === activeIdx
-                    ? "text-[var(--accent)]"
-                    : "text-[var(--muted)]/60 hover:text-[var(--muted)]"
-                }`}
-              >
-                {ln.text || "♪"}
-              </p>
+              <div key={i} ref={i === activeIdx ? activeRef : undefined}>
+                <p
+                  onClick={() => seek(ln.t)}
+                  className={`cursor-pointer text-2xl font-semibold transition-all ${
+                    i === activeIdx
+                      ? "text-[var(--accent)]"
+                      : "text-[var(--muted)]/60 hover:text-[var(--muted)]"
+                  }`}
+                >
+                  {ln.text || "♪"}
+                </p>
+                {showTrans && syncedTrans[i] && (
+                  <p
+                    onClick={() => seek(ln.t)}
+                    className={`cursor-pointer text-lg italic transition-all ${
+                      i === activeIdx ? "text-[var(--accent)]/80" : "text-[var(--muted)]/40"
+                    }`}
+                  >
+                    {syncedTrans[i]}
+                  </p>
+                )}
+              </div>
             ))}
           </div>
         ) : lyrics?.plain ? (
-          <pre className="mx-auto max-w-2xl whitespace-pre-wrap text-center text-lg text-[var(--text)]">
-            {lyrics.plain}
-          </pre>
+          <div className="mx-auto max-w-2xl space-y-2 text-center">
+            {plainLines.map((ln, i) => (
+              <div key={i}>
+                <p className="text-lg text-[var(--text)]">{ln || " "}</p>
+                {showTrans && plainTrans[i] && (
+                  <p className="text-base italic text-[var(--muted)]/60">{plainTrans[i]}</p>
+                )}
+              </div>
+            ))}
+          </div>
         ) : (
           <div className="flex h-full items-center justify-center text-[var(--muted)]">
             No lyrics found for this track.
