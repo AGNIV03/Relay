@@ -9,7 +9,7 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
-import { api, streamUrl, coverUrl } from "@/lib/api";
+import { api, streamUrl, coverUrl, tokens } from "@/lib/api";
 import type { Track, Lyrics, HostActivity } from "@/lib/types";
 
 export type RepeatMode = "off" | "all" | "one";
@@ -326,6 +326,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   // Post what we're playing every 12s, and immediately on track/play changes.
   useEffect(() => {
     const post = () => {
+      if (!tokens.access) return; // not signed in yet
       const t = queueRef.current[indexRef.current];
       api
         .post("/api/social/activity", {
