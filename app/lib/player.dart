@@ -121,7 +121,16 @@ class PlayerModel extends ChangeNotifier {
   Track? get current => (_index >= 0 && _index < _queue.length) ? _queue[_index] : null;
   bool get playing => _player.playing;
   Duration get position => _player.position;
-  Duration get duration => _player.duration ?? Duration.zero;
+  // Fall back to the track's known metadata length until the audio source loads
+  // its own duration. Otherwise a restored (paused, not-yet-loaded) session shows
+  // duration 0:00, so the progress bar reads 0 while the position is non-zero and
+  // then jumps on play.
+  Duration get duration {
+    final d = _player.duration;
+    if (d != null && d > Duration.zero) return d;
+    final t = current;
+    return t != null ? Duration(milliseconds: (t.duration * 1000).round()) : Duration.zero;
+  }
   Lyrics? get lyrics => _lyrics;
 
   AudioSource _sourceFor(Track t) {
