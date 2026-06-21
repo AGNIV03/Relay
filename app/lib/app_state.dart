@@ -7,6 +7,7 @@ class AppState extends ChangeNotifier {
   final Api api;
   AppUser? user;
   bool loading = true;
+  bool offline = false; // server unreachable — run in offline (downloads-only) mode
   final Set<String> _liked = {};
 
   AppState(this.api);
@@ -53,9 +54,18 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  /// Restore a saved session on startup.
+  /// Restore a saved session on startup. If the server is unreachable, enter
+  /// offline mode instead of trying (and failing) to verify credentials — so a
+  /// user with downloads is never locked out, even if their session expired.
   Future<void> bootstrap() async {
     await api.load();
+    if (!await api.isOnline()) {
+      offline = true;
+      loading = false;
+      notifyListeners();
+      return;
+    }
+    offline = false;
     if (api.isLoggedIn) {
       user = await api.me();
       if (user != null) _loadLiked();
@@ -64,8 +74,21 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Retry reaching the server from offline mode. Returns true once back online.
+  Future<bool> retryConnect() async {
+    if (!await api.isOnline()) return false;
+    offline = false;
+    if (api.isLoggedIn) {
+      user = await api.me();
+      if (user != null) _loadLiked();
+    }
+    notifyListeners();
+    return true;
+  }
+
   Future<void> login(String url, String username, String password) async {
     user = await api.login(url, username, password);
+    offline = false;
     _loadLiked();
     notifyListeners();
   }

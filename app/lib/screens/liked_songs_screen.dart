@@ -59,7 +59,7 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
                         if (allDown) {
                           await downloads.removeAll(tracks, 'liked');
                         } else {
-                          await downloads.downloadAll(tracks, 'liked');
+                          await downloads.downloadAll(tracks, 'liked', name: 'Liked Songs');
                         }
                       },
                     ),

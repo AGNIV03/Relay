@@ -88,6 +88,19 @@ class Api {
         body: {'currentPassword': currentPassword, 'newPassword': newPassword},
       );
 
+  /// Whether the server is reachable. Any HTTP response (even 401) counts as
+  /// online; only a network error / timeout means offline. Used to decide
+  /// whether to enter offline mode at startup.
+  Future<bool> isOnline() async {
+    if (baseUrl.isEmpty) return false; // no server configured yet
+    try {
+      final res = await http.get(_uri('/api/health')).timeout(const Duration(seconds: 5));
+      return res.statusCode > 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<AppUser?> me() async {
     try {
       final body = await _get('/api/auth/me');

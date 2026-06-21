@@ -52,7 +52,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                       : Center(
                           child: Padding(
                             padding: const EdgeInsets.all(28),
-                            child: Cover(url: api.trackCoverUrl(track.id), size: 300, radius: 18),
+                            child: Cover(url: api.trackCoverUrl(track.id), trackId: track.id, size: 300, radius: 18),
                           ),
                         ),
                 ),

@@ -13,6 +13,7 @@ import 'downloads.dart';
 import 'player.dart';
 import 'theme.dart';
 import 'screens/login_screen.dart';
+import 'screens/offline_screen.dart';
 import 'screens/root_screen.dart';
 
 bool get _isDesktop => !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
@@ -174,6 +175,12 @@ class _Gate extends StatelessWidget {
     final state = context.watch<AppState>();
     if (state.loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    // Offline: skip login entirely and let the user play their downloads. With no
+    // downloads there's nothing to do offline, so show the offline-empty prompt.
+    if (state.offline) {
+      final downloads = context.watch<DownloadManager>();
+      return downloads.hasDownloads ? const OfflineRoot() : const OfflineEmptyScreen();
     }
     return state.isLoggedIn ? const RootScreen() : const LoginScreen();
   }

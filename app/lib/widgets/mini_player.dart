@@ -42,7 +42,7 @@ class MiniPlayer extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
                 child: Row(
                   children: [
-                    Cover(url: api.trackCoverUrl(track.id), size: 42, radius: 8),
+                    Cover(url: api.trackCoverUrl(track.id), trackId: track.id, size: 42, radius: 8),
                     const SizedBox(width: 11),
                     Expanded(
                       child: Column(

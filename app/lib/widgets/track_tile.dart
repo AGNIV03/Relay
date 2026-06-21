@@ -39,7 +39,7 @@ class TrackTile extends StatelessWidget {
 
     return ListTile(
       leading: showCover
-          ? Cover(url: api.trackCoverUrl(track.id), size: 44)
+          ? Cover(url: api.trackCoverUrl(track.id), trackId: track.id, size: 44)
           : SizedBox(
               width: 28,
               child: Center(

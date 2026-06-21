@@ -366,7 +366,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                             if (allDown) {
                               await downloads.removeAll(tracks, widget.playlistId);
                             } else {
-                              await downloads.downloadAll(tracks, widget.playlistId);
+                              await downloads.downloadAll(tracks, widget.playlistId, name: _name);
                             }
                           },
                         ),
