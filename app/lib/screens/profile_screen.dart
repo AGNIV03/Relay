@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../api.dart';
 import '../app_icons.dart';
 import '../app_state.dart';
+import '../player.dart';
 import '../theme.dart';
 import '../widgets/friends_panel.dart';
 
@@ -52,7 +53,14 @@ class ProfileScreen extends StatelessWidget {
         ListTile(
           leading: const Icon(LucideIcons.logOut, size: 20),
           title: const Text('Sign out'),
-          onTap: () => context.read<AppState>().logout(),
+          onTap: () async {
+            // Stop + wipe the player BEFORE logging out, otherwise audio keeps
+            // playing with no UI to stop it once we're on the login screen.
+            final player = context.read<PlayerModel>();
+            final appState = context.read<AppState>();
+            await player.signOutReset();
+            await appState.logout();
+          },
         ),
         const Divider(height: 1),
         if (showFriends) ...[

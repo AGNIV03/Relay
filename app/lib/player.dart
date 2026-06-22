@@ -407,6 +407,33 @@ class PlayerModel extends ChangeNotifier {
     if (isChorusHost) _broadcastChorus(); // members clear their controls too
   }
 
+  /// Stop and wipe everything on sign-out: audio, queue, lyrics, chorus,
+  /// listen-along, and the saved session — so nothing keeps playing once the user
+  /// is logged out (and it won't resume on next launch).
+  Future<void> signOutReset() async {
+    _chorusLooping = false;
+    _listenLooping = false;
+    _stopMemberTicker();
+    chorus = null;
+    listenHostId = null;
+    listenHostName = null;
+    _restoreAfterCurrent = false;
+    try {
+      await _player.stop();
+    } catch (_) {}
+    _queue = [];
+    _index = 0;
+    _source = null;
+    _scrobbled = false;
+    _lyrics = null;
+    _lyricsForId = null;
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.remove(_kSession);
+    } catch (_) {}
+    notifyListeners();
+  }
+
   void stopListenAlong() {
     _listenLooping = false;
     listenHostId = null;
