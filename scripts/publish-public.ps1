@@ -43,6 +43,11 @@ if (-not (Test-Path $winDir)) { throw "Windows build not found at $winDir — bu
 git checkout main
 git pull --ff-only
 
+# Ensure the distribution remote exists (end-user repo; this branch lives there as `main`)
+if (-not (git remote | Select-String -SimpleMatch 'relay-v1')) {
+  git remote add relay-v1 https://github.com/AGNIV03/Relay-V1.0.git
+}
+
 # 3. Switch to public and sync the deploy files from main.
 #    NOTE: README.md, downloads/, and docs/screenshots/ are public-only — we do NOT
 #    overwrite the curated README from main. Edit the public README by hand when
@@ -58,12 +63,19 @@ Copy-Item $apk "$repo\downloads\Relay-Android.apk" -Force
 # 5. Commit (only if something actually changed) and push
 git add server web docker-compose.yml .env.example .gitignore .dockerignore downloads docs README.md
 git diff --cached --quiet
-if ($LASTEXITCODE -ne 0) {
+$changed = ($LASTEXITCODE -ne 0)
+if ($changed) {
   git commit -m "Sync public branch with main + refresh app builds"
-  git push origin public
-  Write-Host "`npublic branch updated and pushed." -ForegroundColor Green
+}
+# Always push (also covers a prior run that committed but failed to push).
+# origin/Relay keeps the `public` branch; relay-v1/Relay-V1.0 is the end-user
+# distribution repo, where this branch lives as `main`.
+git push origin public
+git push relay-v1 public:main
+if ($changed) {
+  Write-Host "`npublic updated; pushed to origin (public) + relay-v1 (main)." -ForegroundColor Green
 } else {
-  Write-Host "`npublic branch already up to date — nothing to commit." -ForegroundColor Yellow
+  Write-Host "`nNothing new to commit; re-pushed current public to both remotes." -ForegroundColor Yellow
 }
 
 # 6. Back to main
