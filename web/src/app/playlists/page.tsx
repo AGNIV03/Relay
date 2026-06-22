@@ -2,13 +2,14 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Trash2, Music } from "lucide-react";
+import { Trash2, Music, Search } from "lucide-react";
 import { api, playlistCoverUrl } from "@/lib/api";
 import type { Playlist } from "@/lib/types";
 
 export default function PlaylistsPage() {
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [name, setName] = useState("");
+  const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
 
   function load() {
@@ -52,13 +53,29 @@ export default function PlaylistsPage() {
         </button>
       </form>
 
-      {loading ? (
-        <div className="text-[var(--muted)]">Loading…</div>
-      ) : playlists.length === 0 ? (
-        <div className="text-[var(--muted)]">No playlists yet. Create one above.</div>
-      ) : (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-          {playlists.map((pl) => (
+      <div className="relative mb-6 max-w-md">
+        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted)]" />
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search playlists…"
+          className="w-full rounded-lg border border-[var(--border)] bg-[var(--panel)] py-2 pl-9 pr-3 outline-none focus:border-[var(--accent)]"
+        />
+      </div>
+
+      {(() => {
+        const shown = q.trim()
+          ? playlists.filter((pl) => pl.name.toLowerCase().includes(q.trim().toLowerCase()))
+          : playlists;
+        return loading ? (
+          <div className="text-[var(--muted)]">Loading…</div>
+        ) : playlists.length === 0 ? (
+          <div className="text-[var(--muted)]">No playlists yet. Create one above.</div>
+        ) : shown.length === 0 ? (
+          <div className="text-[var(--muted)]">No playlists match “{q}”.</div>
+        ) : (
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+            {shown.map((pl) => (
             <div key={pl.id} className="group relative">
               <Link href={`/playlists/${pl.id}`} className="block">
                 <div className="relative mb-2 aspect-square overflow-hidden rounded-xl bg-[var(--panel-2)] shadow-lg">
@@ -75,9 +92,10 @@ export default function PlaylistsPage() {
                 <Trash2 size={15} />
               </button>
             </div>
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
+        );
+      })()}
     </div>
   );
 }

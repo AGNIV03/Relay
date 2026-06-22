@@ -16,6 +16,8 @@ class PlaylistsScreen extends StatefulWidget {
 
 class _PlaylistsScreenState extends State<PlaylistsScreen> {
   late Future<List<Playlist>> _future;
+  final _searchController = TextEditingController();
+  String _q = '';
 
   @override
   void initState() {
@@ -26,6 +28,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
 
   @override
   void dispose() {
+    _searchController.dispose();
     playlistsChanged.removeListener(_reload);
     super.dispose();
   }
@@ -86,22 +89,50 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
         onPressed: _create,
         child: const Icon(Icons.add),
       ),
-      body: FutureBuilder<List<Playlist>>(
-        future: _future,
-        builder: (context, snap) {
-          if (!snap.hasData) return const Center(child: CircularProgressIndicator());
-          final playlists = snap.data!;
-          return GridView.builder(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 90),
-            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-              maxCrossAxisExtent: 180,
-              mainAxisSpacing: 16,
-              crossAxisSpacing: 16,
-              childAspectRatio: 0.76,
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+            child: TextField(
+              controller: _searchController,
+              onChanged: (v) => setState(() => _q = v.trim()),
+              decoration: InputDecoration(
+                prefixIcon: const Icon(LucideIcons.search, size: 18),
+                hintText: 'Search playlists…',
+                suffixIcon: _q.isEmpty
+                    ? null
+                    : IconButton(
+                        icon: const Icon(LucideIcons.x, size: 18),
+                        onPressed: () {
+                          _searchController.clear();
+                          setState(() => _q = '');
+                        },
+                      ),
+              ),
             ),
-            itemCount: playlists.length + 1,
-            itemBuilder: (context, idx) {
-              if (idx == 0) {
+          ),
+          Expanded(
+            child: FutureBuilder<List<Playlist>>(
+              future: _future,
+              builder: (context, snap) {
+                if (!snap.hasData) return const Center(child: CircularProgressIndicator());
+                final ql = _q.toLowerCase();
+                final playlists = ql.isEmpty
+                    ? snap.data!
+                    : snap.data!.where((p) => p.name.toLowerCase().contains(ql)).toList();
+                // The permanent Liked Songs tile shows when not filtering (or if it matches).
+                final showLiked = ql.isEmpty || 'liked songs'.contains(ql);
+                return GridView.builder(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 90),
+                  gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                    maxCrossAxisExtent: 180,
+                    mainAxisSpacing: 16,
+                    crossAxisSpacing: 16,
+                    childAspectRatio: 0.76,
+                  ),
+                  itemCount: playlists.length + (showLiked ? 1 : 0),
+                  itemBuilder: (context, idx) {
+                    if (showLiked && idx == 0) {
                 return _Tile(
                   title: 'Liked Songs',
                   subtitle: 'Your favourites',
@@ -118,7 +149,7 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
                   ),
                 );
               }
-              final pl = playlists[idx - 1];
+              final pl = playlists[idx - (showLiked ? 1 : 0)];
               return _Tile(
                 title: pl.name,
                 subtitle: '${pl.trackCount} ${pl.trackCount == 1 ? 'song' : 'songs'}',
@@ -138,9 +169,12 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
                 },
                 onLongPress: () => _delete(pl),
               );
-            },
-          );
-        },
+                  },
+                );
+              },
+            ),
+          ),
+        ],
       ),
     );
   }

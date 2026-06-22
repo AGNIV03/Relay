@@ -14,6 +14,8 @@ class ArtistsScreen extends StatefulWidget {
 
 class _ArtistsScreenState extends State<ArtistsScreen> {
   List<Artist>? _artists;
+  final _controller = TextEditingController();
+  String _q = '';
 
   @override
   void initState() {
@@ -26,22 +28,67 @@ class _ArtistsScreenState extends State<ArtistsScreen> {
   }
 
   @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    if (_artists == null) return const Center(child: CircularProgressIndicator());
-    if (_artists!.isEmpty) return const Center(child: Text("No artists", style: TextStyle(color: kMuted)));
-    return ListView.builder(
-      itemCount: _artists!.length,
-      itemBuilder: (_, i) {
-        final a = _artists![i];
-        return ListTile(
-          leading: const CircleAvatar(backgroundColor: kPanel2, child: Icon(LucideIcons.user, size: 18, color: kMuted)),
-          title: Text(a.name),
-          subtitle: Text("${a.albumCount} albums · ${a.trackCount} tracks"),
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => ArtistScreen(artistId: a.id, artistName: a.name)),
+    final all = _artists;
+    final shown = (all == null || _q.isEmpty)
+        ? all
+        : all.where((a) => a.name.toLowerCase().contains(_q.toLowerCase())).toList();
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+          child: TextField(
+            controller: _controller,
+            onChanged: (v) => setState(() => _q = v.trim()),
+            decoration: InputDecoration(
+              prefixIcon: const Icon(LucideIcons.search, size: 18),
+              hintText: 'Search artists…',
+              suffixIcon: _q.isEmpty
+                  ? null
+                  : IconButton(
+                      icon: const Icon(LucideIcons.x, size: 18),
+                      onPressed: () {
+                        _controller.clear();
+                        setState(() => _q = '');
+                      },
+                    ),
+            ),
           ),
-        );
-      },
+        ),
+        Expanded(
+          child: all == null
+              ? const Center(child: CircularProgressIndicator())
+              : all.isEmpty
+                  ? const Center(child: Text('No artists', style: TextStyle(color: kMuted)))
+                  : shown!.isEmpty
+                      ? const Center(
+                          child: Text('No matching artists', style: TextStyle(color: kMuted)))
+                      : ListView.builder(
+                          itemCount: shown.length,
+                          itemBuilder: (_, i) {
+                            final a = shown[i];
+                            return ListTile(
+                              leading: const CircleAvatar(
+                                  backgroundColor: kPanel2,
+                                  child: Icon(LucideIcons.user, size: 18, color: kMuted)),
+                              title: Text(a.name),
+                              subtitle: Text('${a.albumCount} albums · ${a.trackCount} tracks'),
+                              onTap: () => Navigator.of(context).push(
+                                MaterialPageRoute(
+                                    builder: (_) =>
+                                        ArtistScreen(artistId: a.id, artistName: a.name)),
+                              ),
+                            );
+                          },
+                        ),
+        ),
+      ],
     );
   }
 }
