@@ -50,9 +50,29 @@ class Api {
         if (_access != null) 'Authorization': 'Bearer $_access',
       };
 
+  /// Normalize a user-entered server URL: trim, drop trailing slash, add a scheme
+  /// if missing, and upgrade http→https for public hosts. Most hosts (Cloudflare,
+  /// etc.) 301-redirect http→https, and that redirect DROPS the POST body so login
+  /// silently fails — so we send https directly. Plain http is preserved for
+  /// localhost / LAN addresses where it's the legitimate self-host case.
+  static String normalizeServerUrl(String input) {
+    var u = input.trim().replaceAll(RegExp(r'/+$'), '');
+    if (u.isEmpty) return u;
+    if (!u.startsWith('http://') && !u.startsWith('https://')) u = 'https://$u';
+    final m = RegExp(r'^http://([^/:]+)').firstMatch(u);
+    if (m != null) {
+      final host = m.group(1)!;
+      final isLocal = host == 'localhost' ||
+          host.endsWith('.local') ||
+          RegExp(r'^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)').hasMatch(host);
+      if (!isLocal) u = u.replaceFirst('http://', 'https://');
+    }
+    return u;
+  }
+
   // ---- Auth ----
   Future<AppUser> login(String url, String username, String password) async {
-    baseUrl = url.replaceAll(RegExp(r'/$'), '');
+    baseUrl = normalizeServerUrl(url);
     final res = await http.post(
       _uri('/api/auth/login'),
       headers: {'Content-Type': 'application/json'},

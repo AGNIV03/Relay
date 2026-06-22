@@ -21,7 +21,7 @@ class _LoginScreenState extends State<LoginScreen> {
   void initState() {
     super.initState();
     final saved = context.read<Api>().baseUrl;
-    _server = TextEditingController(text: saved.isNotEmpty ? saved : 'http://');
+    _server = TextEditingController(text: saved.isNotEmpty ? saved : 'https://');
   }
 
   @override
