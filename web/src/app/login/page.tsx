@@ -37,10 +37,13 @@ export default function LoginPage() {
         className="w-full max-w-sm rounded-2xl border border-[var(--border)] bg-[var(--panel)] p-8"
       >
         <div className="mb-6 text-center">
-          <div className="text-2xl font-bold">
-            <span className="text-[var(--accent-2)]">♪</span> Stream
+          <div className="flex items-center justify-center gap-2 text-2xl font-bold">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/logo.png" alt="Relay" className="h-7 w-7" /> Relay
           </div>
-          <div className="text-sm text-[var(--muted)]">Sign in to your music</div>
+          <div className="mt-1 text-sm text-[var(--muted)]">
+            The ultimate music hosting solution
+          </div>
         </div>
 
         {error && (
