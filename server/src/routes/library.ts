@@ -21,23 +21,29 @@ function lrcToPlain(lrc: string): string {
 const router = Router();
 router.use(requireAuth);
 
-// Uploads are restricted to MP3 + FLAC only.
-const UPLOAD_EXT = new Set([".mp3", ".flac"]);
+// Uploadable audio formats — all play natively on web, Android (ExoPlayer) and
+// desktop (media_kit). WMA/AIFF are deliberately excluded (poor web/Android support).
+const UPLOAD_EXT = new Set([".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wav"]);
 
 /**
- * Sniff the first bytes to confirm the file is genuinely an MP3 or FLAC — not a
- * renamed executable/script. FLAC starts with "fLaC"; MP3 starts with an "ID3"
- * tag or an MPEG audio frame sync (0xFF Ex/Fx).
+ * Sniff the first bytes to confirm the file is genuinely audio — not a renamed
+ * executable/script. Recognizes FLAC ("fLaC"), MP3 ("ID3" tag or MPEG/AAC-ADTS
+ * frame sync), OGG ("OggS"), WAV ("RIFF"…"WAVE") and MP4/M4A/AAC ("…ftyp").
  */
 function looksLikeAudio(filePath: string): boolean {
   let fd: number | undefined;
   try {
     fd = fs.openSync(filePath, "r");
-    const buf = Buffer.alloc(4);
-    fs.readSync(fd, buf, 0, 4, 0);
-    if (buf.toString("latin1") === "fLaC") return true; // FLAC
+    const buf = Buffer.alloc(12);
+    const n = fs.readSync(fd, buf, 0, 12, 0);
+    if (n < 4) return false;
+    const head = buf.toString("latin1", 0, 4);
+    if (head === "fLaC") return true; // FLAC
     if (buf.toString("latin1", 0, 3) === "ID3") return true; // MP3 with ID3v2
-    if (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) return true; // MPEG frame sync
+    if (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) return true; // MPEG / AAC-ADTS frame sync
+    if (head === "OggS") return true; // OGG (Vorbis / Opus)
+    if (head === "RIFF" && buf.toString("latin1", 8, 12) === "WAVE") return true; // WAV
+    if (buf.toString("latin1", 4, 8) === "ftyp") return true; // MP4 / M4A / AAC (incl. ALAC)
     return false;
   } catch {
     return false;

@@ -80,7 +80,7 @@ class _SongsScreenState extends State<SongsScreen> {
     final appState = context.read<AppState>();
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: ['mp3', 'flac'],
+      allowedExtensions: ['mp3', 'flac', 'm4a', 'aac', 'ogg', 'opus', 'wav'],
       allowMultiple: true,
     );
     final files = result?.files.where((f) => f.path != null).toList() ?? [];

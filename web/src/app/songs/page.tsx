@@ -156,7 +156,7 @@ export default function SongsPage() {
       <input
         ref={fileInput}
         type="file"
-        accept=".mp3,.flac,audio/mpeg,audio/flac"
+        accept=".mp3,.flac,.m4a,.aac,.ogg,.opus,.wav,audio/*"
         multiple
         className="hidden"
         onChange={(e) => onUpload(e.target.files)}
