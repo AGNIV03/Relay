@@ -20,7 +20,7 @@ const MIME: Record<string, string> = {
 
 /** GET /api/stream/album/:albumId/cover — album art (registered before /:trackId). */
 router.get("/album/:albumId/cover", requireAuth, async (req, res) => {
-  const album = await prisma.album.findUnique({ where: { id: req.params.albumId } });
+  const album = await prisma.album.findUnique({ where: { id: String(req.params.albumId) } });
   if (!album?.coverPath) return res.status(404).end();
   const { env } = await import("../lib/env.js");
   res.sendFile(path.resolve(env.dataPath, album.coverPath));
@@ -32,7 +32,7 @@ router.get("/album/:albumId/cover", requireAuth, async (req, res) => {
  *   (no params)                          -> direct file with HTTP Range support
  */
 router.get("/:trackId", requireAuth, async (req, res) => {
-  const track = await prisma.track.findUnique({ where: { id: req.params.trackId } });
+  const track = await prisma.track.findUnique({ where: { id: String(req.params.trackId) } });
   if (!track) return res.status(404).json({ error: "Track not found" });
 
   try {
@@ -86,7 +86,7 @@ router.get("/:trackId", requireAuth, async (req, res) => {
 /** GET /api/stream/:trackId/cover — album art for the track (no auth-in-header friendly). */
 router.get("/:trackId/cover", requireAuth, async (req, res) => {
   const track = await prisma.track.findUnique({
-    where: { id: req.params.trackId },
+    where: { id: String(req.params.trackId) },
     include: { album: true },
   });
   const coverPath = track?.album?.coverPath;

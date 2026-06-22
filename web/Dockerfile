@@ -20,4 +20,6 @@ COPY --from=build /app/web/.next/standalone ./
 COPY --from=build /app/web/.next/static ./.next/static
 COPY --from=build /app/web/public ./public
 EXPOSE 3000
+# Run as the unprivileged node user (the standalone server is stateless).
+USER node
 CMD ["node", "server.js"]

@@ -1,7 +1,3 @@
-// Patches Express 4 so rejected async route handlers are forwarded to the error
-// handler (returning 500) instead of hanging the request. MUST be imported before
-// any routes are registered.
-import "express-async-errors";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -80,9 +76,9 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/social", socialRoutes);
 app.use("/api/chorus", chorusRoutes);
 
-// Fallback error handler. express-async-errors routes rejected promises here, so
-// async handler failures return 500 instead of hanging the socket. Never leaks
-// internals to the client.
+// Fallback error handler. Express 5 forwards rejected async-handler promises here
+// natively, so async failures return 500 instead of hanging the socket. Never
+// leaks internals to the client.
 app.use(
   (
     err: Error,

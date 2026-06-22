@@ -243,7 +243,7 @@ router.post("/:id/cover/regenerate", async (req, res) => {
 /** POST /api/playlists/:id/cover (multipart "cover") — upload a custom image (owner only) */
 router.post("/:id/cover", coverUpload.single("cover"), async (req, res) => {
   const pl = await prisma.playlist.findFirst({
-    where: { id: req.params.id, userId: req.user!.id },
+    where: { id: String(req.params.id), userId: req.user!.id },
   });
   if (!pl) return res.status(404).json({ error: "Not found" });
   if (!req.file) return res.status(400).json({ error: "No image uploaded" });
