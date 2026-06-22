@@ -14,6 +14,10 @@ FROM node:24-alpine AS runtime
 WORKDIR /app/web
 ENV NODE_ENV=production
 ENV PORT=3000
+# Next's standalone server binds to $HOSTNAME; Docker sets it to the container id
+# (a single non-loopback interface), which makes the 127.0.0.1 healthcheck fail
+# even though the app serves fine. Bind all interfaces instead.
+ENV HOSTNAME=0.0.0.0
 # Next.js "standalone" output bundles only what's needed.
 # For a single (non-monorepo) project, server.js sits at the standalone root.
 COPY --from=build /app/web/.next/standalone ./
