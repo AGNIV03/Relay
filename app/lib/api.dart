@@ -373,9 +373,17 @@ class Api {
   }
 
   // ---- Social / friends ----
-  Future<void> postActivity({String? trackId, required int positionMs, required bool playing}) =>
-      _send('POST', '/api/social/activity',
-          body: {'trackId': trackId, 'positionMs': positionMs, 'playing': playing});
+  Future<void> postActivity(
+          {String? trackId,
+          required int positionMs,
+          required bool playing,
+          String? listeningTo}) =>
+      _send('POST', '/api/social/activity', body: {
+        'trackId': trackId,
+        'positionMs': positionMs,
+        'playing': playing,
+        'listeningTo': listeningTo,
+      });
 
   Future<List<Friend>> friends() async =>
       (await _get('/api/social/friends') as List).map((e) => Friend.fromJson(e)).toList();

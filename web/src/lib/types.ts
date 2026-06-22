@@ -50,6 +50,8 @@ export interface Friend {
   playing: boolean;
   track?: Track | null;
   chorusMode?: "open" | "ask" | null; // they're hosting a Chorus
+  inChorusWithYou?: boolean; // they share the chorus you're in
+  listeningToYou?: boolean; // they're listening along to your playback
 }
 
 export interface ChorusPatch {

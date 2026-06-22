@@ -2,6 +2,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../api.dart';
+import '../format.dart';
 import '../app_icons.dart';
 import '../app_state.dart';
 import '../downloads.dart';
@@ -88,7 +89,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     } catch (_) {}
   }
 
-  Widget _coverHeader(int trackCount) {
+  Widget _coverHeader(int trackCount, int totalSec) {
     final api = context.read<Api>();
     return Padding(
       padding: const EdgeInsets.all(16),
@@ -130,11 +131,15 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
-            Text('$trackCount ${trackCount == 1 ? 'song' : 'songs'}',
+            Text(
+                '$trackCount ${trackCount == 1 ? 'song' : 'songs'}'
+                '${totalSec > 0 ? ' · ${formatPlaylistLength(totalSec)}' : ''}',
                 style: const TextStyle(color: kMuted, fontSize: 13)),
-            const SizedBox(height: 2),
-            Text('Tap the cover to change it',
-                style: TextStyle(color: kMuted.withValues(alpha: 0.7), fontSize: 11)),
+            if (_pl?.owned ?? true) ...[
+              const SizedBox(height: 2),
+              Text('Tap the cover to change it',
+                  style: TextStyle(color: kMuted.withValues(alpha: 0.7), fontSize: 11)),
+            ],
           ]),
         ),
       ]),
@@ -341,9 +346,10 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
           final downloads = context.watch<DownloadManager>();
           final allDown = downloads.allDownloaded(tracks);
           final downCount = downloads.downloadedCount(tracks);
+          final totalSec = totalDurationSeconds(tracks.map((t) => t.duration));
           return Column(
             children: [
-              _coverHeader(tracks.length),
+              _coverHeader(tracks.length, totalSec),
               if (tracks.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),

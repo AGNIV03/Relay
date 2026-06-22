@@ -151,6 +151,7 @@ class PlayerModel extends ChangeNotifier {
           trackId: current?.id,
           positionMs: position.inMilliseconds,
           playing: playing,
+          listeningTo: listenHostId, // host we're listening-along to (or null)
         )
         .catchError((_) {});
   }

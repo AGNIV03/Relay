@@ -11,6 +11,7 @@ export interface Activity {
   playing: boolean;
   updatedAt: number; // epoch ms of the last heartbeat
   version: number; // bumps on every change — long-poll cursor
+  listeningTo: string | null; // host this user is listening-along to (for status)
 }
 
 const presence = new Map<string, Activity>();
@@ -24,9 +25,17 @@ function wake(userId: string) {
   for (const fn of [...set]) fn(); // each callback removes itself
 }
 
-export function setActivity(userId: string, a: Omit<Activity, "updatedAt" | "version">): void {
+export function setActivity(
+  userId: string,
+  a: Omit<Activity, "updatedAt" | "version" | "listeningTo"> & { listeningTo?: string | null },
+): void {
   const prev = presence.get(userId);
-  presence.set(userId, { ...a, updatedAt: Date.now(), version: (prev?.version ?? 0) + 1 });
+  presence.set(userId, {
+    ...a,
+    listeningTo: a.listeningTo ?? null,
+    updatedAt: Date.now(),
+    version: (prev?.version ?? 0) + 1,
+  });
   wake(userId);
 }
 

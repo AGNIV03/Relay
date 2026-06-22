@@ -270,11 +270,22 @@ class TrackMenu extends StatelessWidget {
                   leading: const Icon(LucideIcons.listMusic, size: 18),
                   title: Text(pl.name),
                   onTap: () async {
-                    await api.addToPlaylist(pl.id, track.id);
-                    if (ctx.mounted) Navigator.pop(ctx);
+                    String msg;
+                    try {
+                      await api.addToPlaylist(pl.id, track.id);
+                      msg = "Added to ${pl.name}";
+                    } on ApiException catch (e) {
+                      // Backend returns 409 "Track already in playlist".
+                      msg = e.message.toLowerCase().contains("already")
+                          ? "Song already in playlist"
+                          : e.message;
+                    } catch (_) {
+                      msg = "Couldn't add to playlist";
+                    }
+                    if (ctx.mounted) Navigator.pop(ctx); // always close the menu
                     if (context.mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text("Added to ${pl.name}"), duration: const Duration(seconds: 1)),
+                        SnackBar(content: Text(msg), duration: const Duration(seconds: 1)),
                       );
                     }
                   },

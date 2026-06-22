@@ -71,6 +71,12 @@ export function FriendsPanel({ onClose }: { onClose?: () => void }) {
 function FriendRow({ f, onOpen }: { f: Friend; onOpen: () => void }) {
   const p = usePlayer();
   const isHost = p.listenHostId === f.id;
+  // Per-viewer relationship status takes priority over the now-playing line.
+  const status = f.inChorusWithYou
+    ? "In a chorus with you"
+    : f.listeningToYou
+      ? "Listening along with you"
+      : null;
   // Show the current/last track regardless of online state (never "Offline").
   const subtitle = f.track
     ? `${f.track.title} · ${f.track.artist?.name ?? ""}`
@@ -91,10 +97,17 @@ function FriendRow({ f, onOpen }: { f: Friend; onOpen: () => void }) {
         </div>
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium">{f.username}</div>
-          <div className="flex items-center gap-1 truncate text-xs text-[var(--muted)]">
-            {f.track && <Music size={11} className="shrink-0" />}
-            <span className="truncate">{subtitle}</span>
-          </div>
+          {status ? (
+            <div className="flex items-center gap-1 truncate text-xs font-medium text-[var(--accent)]">
+              <Radio size={11} className="shrink-0" />
+              <span className="truncate">{status}</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1 truncate text-xs text-[var(--muted)]">
+              {f.track && <Music size={11} className="shrink-0" />}
+              <span className="truncate">{subtitle}</span>
+            </div>
+          )}
         </div>
       </button>
       {/* Join Chorus (friend is hosting, and we aren't already a member of one).

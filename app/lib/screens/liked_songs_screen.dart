@@ -4,6 +4,7 @@ import '../api.dart';
 import '../app_icons.dart';
 import '../app_state.dart';
 import '../downloads.dart';
+import '../format.dart';
 import '../models.dart';
 import '../player.dart';
 import '../theme.dart';
@@ -39,8 +40,40 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
           }
           final downloads = context.watch<DownloadManager>();
           final allDown = downloads.allDownloaded(tracks);
+          final totalSec = totalDurationSeconds(tracks.map((t) => t.duration));
           return Column(
             children: [
+              // Cover header (matches the playlist detail layout).
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 12, 14, 4),
+                child: Row(children: [
+                  Container(
+                    width: 110,
+                    height: 110,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(12),
+                      gradient: const LinearGradient(colors: [kAccent, kAccent2]),
+                    ),
+                    child: const Center(
+                      child: Icon(LucideIcons.heart, fill: 1, size: 52, color: kAccentInk),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      const Text('Liked Songs',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 4),
+                      Text(
+                          '${tracks.length} ${tracks.length == 1 ? 'song' : 'songs'}'
+                          '${totalSec > 0 ? ' · ${formatPlaylistLength(totalSec)}' : ''}',
+                          style: const TextStyle(color: kMuted, fontSize: 13)),
+                    ]),
+                  ),
+                ]),
+              ),
               Padding(
                 padding: const EdgeInsets.all(8),
                 child: Row(children: [

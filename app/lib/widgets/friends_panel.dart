@@ -82,6 +82,12 @@ class _FriendTile extends StatelessWidget {
     final f = friend;
     final isHost = player.listenHostId == f.id;
     final initial = f.username.isNotEmpty ? f.username[0].toUpperCase() : '?';
+    // Per-viewer relationship status takes priority over the now-playing line.
+    final status = f.inChorusWithYou
+        ? 'In a chorus with you'
+        : f.listeningToYou
+            ? 'Listening along with you'
+            : null;
     // Show the current/last track regardless of online state (never "Offline").
     final subtitle =
         f.track != null ? '${f.track!.title} • ${f.track!.artistName}' : 'No recent activity';
@@ -134,10 +140,22 @@ class _FriendTile extends StatelessWidget {
         ),
       ),
       title: Text(f.username, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: Text(subtitle,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 12, color: kMuted)),
+      subtitle: status != null
+          ? Row(children: [
+              const Icon(LucideIcons.radio, size: 12, color: kAccent),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(status,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 12, color: kAccent, fontWeight: FontWeight.w600)),
+              ),
+            ])
+          : Text(subtitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 12, color: kMuted)),
       trailing: trailing,
       onTap: () => showUserProfileDialog(context, f.id),
     );

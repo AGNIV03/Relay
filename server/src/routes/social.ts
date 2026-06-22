@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { setActivity, getActivity, isOnline, subscribeActivity } from "../lib/presence.js";
-import { hostMode } from "../lib/chorus.js";
+import { hostMode, chorusHostOf } from "../lib/chorus.js";
 import { acquirePoll, releasePoll } from "../lib/pollGuard.js";
 
 const router = Router();
@@ -40,6 +40,7 @@ router.post("/activity", (req, res) => {
       trackId: z.string().nullable().optional(),
       positionMs: z.number().int().nonnegative().optional(),
       playing: z.boolean().optional(),
+      listeningTo: z.string().nullable().optional(), // host we're listening-along to
     })
     .safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid input" });
@@ -47,6 +48,7 @@ router.post("/activity", (req, res) => {
     trackId: parsed.data.trackId ?? null,
     positionMs: parsed.data.positionMs ?? 0,
     playing: parsed.data.playing ?? false,
+    listeningTo: parsed.data.listeningTo ?? null,
   });
   res.status(204).end();
 });
@@ -88,6 +90,7 @@ router.get("/friends", async (req, res) => {
     for (const h of hist) if (h.track) lastByUser.set(h.userId, h.track);
   }
 
+  const myChorus = chorusHostOf(me); // the chorus I'm in, if any
   const friends = acts.map(({ u, a }) => {
     // Prefer the live presence track; fall back to the last played track so
     // an offline user still shows what they were last listening to.
@@ -100,6 +103,9 @@ router.get("/friends", async (req, res) => {
       track,
       updatedAt: a?.updatedAt ?? null,
       chorusMode: hostMode(u.id), // 'open' | 'ask' | null — they're hosting a Chorus
+      // Per-viewer relationship to ME (the requester):
+      inChorusWithYou: !!myChorus && chorusHostOf(u.id) === myChorus,
+      listeningToYou: isOnline(a) && a?.listeningTo === me,
     };
   });
   friends.sort(

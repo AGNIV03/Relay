@@ -131,6 +131,13 @@ export function hostMode(hostId: string): ChorusMode | null {
   return c ? c.mode : null;
 }
 
+/** The host id of the (live) chorus a user is an approved member of, else null.
+ *  Read-only (no pruning) — used to tell if two users share a chorus. */
+export function chorusHostOf(userId: string): string | null {
+  const h = memberOf.get(userId);
+  return h && choruses.has(h) ? h : null;
+}
+
 export function startChorus(
   hostId: string,
   mode: ChorusMode,

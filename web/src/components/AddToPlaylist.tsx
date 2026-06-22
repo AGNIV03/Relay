@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { MoreHorizontal, ListEnd, ListPlus, Trash2 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { usePlayer } from "@/context/PlayerContext";
 import { useAuth } from "@/context/AuthContext";
 import type { Playlist, Track } from "@/lib/types";
@@ -26,7 +26,7 @@ export function AddToPlaylist({
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
-  const [added, setAdded] = useState<string | null>(null);
+  const [result, setResult] = useState<{ id: string; text: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
   // Fixed-position coords for the portal menu (viewport-relative).
   const [pos, setPos] = useState<{ left: number; top?: number; bottom?: number }>({ left: 0 });
@@ -89,9 +89,14 @@ export function AddToPlaylist({
   }, [open]);
 
   async function add(playlistId: string) {
-    await api.post(`/api/playlists/${playlistId}/tracks`, { trackId }).catch(() => {});
-    setAdded(playlistId);
-    setTimeout(() => setOpen(false), 600);
+    try {
+      await api.post(`/api/playlists/${playlistId}/tracks`, { trackId });
+      setResult({ id: playlistId, text: "✓ Added" });
+    } catch (e) {
+      const dup = e instanceof ApiError && e.status === 409;
+      setResult({ id: playlistId, text: dup ? "Already in playlist" : "Couldn’t add" });
+    }
+    setTimeout(() => setOpen(false), 900);
   }
 
   return (
@@ -145,7 +150,7 @@ export function AddToPlaylist({
                 onClick={() => add(pl.id)}
                 className="block w-full px-3 py-2 text-left hover:bg-[var(--panel)]"
               >
-                {added === pl.id ? "✓ Added" : pl.name}
+                {result?.id === pl.id ? result.text : pl.name}
               </button>
             ))}
             {canDelete && (

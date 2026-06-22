@@ -238,6 +238,8 @@ class Friend {
   final bool playing;
   final Track? track;
   final String? chorusMode; // 'open' | 'ask' | null — they're hosting a Chorus
+  final bool inChorusWithYou; // they share the chorus you're in
+  final bool listeningToYou; // they're listening along to your playback
   Friend({
     required this.id,
     required this.username,
@@ -245,6 +247,8 @@ class Friend {
     required this.playing,
     this.track,
     this.chorusMode,
+    this.inChorusWithYou = false,
+    this.listeningToYou = false,
   });
   factory Friend.fromJson(Map<String, dynamic> j) => Friend(
         id: j['id'] as String,
@@ -253,6 +257,8 @@ class Friend {
         playing: j['playing'] as bool? ?? false,
         track: j['track'] != null ? Track.fromJson(j['track']) : null,
         chorusMode: j['chorusMode'] as String?,
+        inChorusWithYou: j['inChorusWithYou'] as bool? ?? false,
+        listeningToYou: j['listeningToYou'] as bool? ?? false,
       );
 }
 

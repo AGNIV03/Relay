@@ -682,6 +682,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
             ? memberPositionMs()
             : Math.round((audioRef.current?.currentTime ?? 0) * 1000),
           playing: member && c ? c.playing : playingRef.current,
+          listeningTo: listenHostRef.current, // host we're listening-along to (or null)
         })
         .catch(() => {});
     };
