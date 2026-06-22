@@ -59,7 +59,12 @@ class AppState extends ChangeNotifier {
   /// user with downloads is never locked out, even if their session expired.
   Future<void> bootstrap() async {
     await api.load();
-    if (!await api.isOnline()) {
+    // Offline (downloads-only) mode is a fallback for users who already configured
+    // a server — never trap a fresh / logged-out-without-server install here; it
+    // must reach the login screen (where the server URL is entered) even with no
+    // connectivity. So only fall offline if there's a prior session to fall back to.
+    final hadSession = api.isLoggedIn || api.baseUrl.isNotEmpty;
+    if (hadSession && !await api.isOnline()) {
       offline = true;
       loading = false;
       notifyListeners();
