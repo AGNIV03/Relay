@@ -34,8 +34,11 @@ class DesktopShell extends StatefulWidget {
 
 class _DesktopShellState extends State<DesktopShell> {
   int _index = 0;
-  // Which right-side panel is open (web-style): 'friends' | 'queue' | 'lyrics' | ''.
+  // Which right-side panel is open (web-style): 'friends' | 'queue' | ''.
   String _rightPanel = 'friends';
+  // Lyrics overlay the MIDDLE content area (they need the width/height), separate
+  // from the right-side panels.
+  bool _showLyrics = false;
   final List<GlobalKey<NavigatorState>> _navKeys =
       List.generate(4, (_) => GlobalKey<NavigatorState>());
   // The open profile route, so the profile button doesn't stack duplicates.
@@ -43,6 +46,43 @@ class _DesktopShellState extends State<DesktopShell> {
 
   void _toggleRight(String name) =>
       setState(() => _rightPanel = _rightPanel == name ? '' : name);
+
+  /// Lyrics overlay shown over the middle content area (full width/height).
+  Widget _lyricsOverlay() {
+    return Material(
+      color: kBg,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Consumer<PlayerModel>(
+            builder: (_, player, _) => Padding(
+              padding: const EdgeInsets.fromLTRB(20, 14, 8, 8),
+              child: Row(children: [
+                Expanded(
+                  child: Text(
+                      player.current == null ? 'Lyrics' : '${player.current!.title} — Lyrics',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                ),
+                IconButton(
+                  icon: const Icon(LucideIcons.x, size: 18),
+                  onPressed: () => setState(() => _showLyrics = false),
+                ),
+              ]),
+            ),
+          ),
+          Expanded(
+            child: Consumer<PlayerModel>(
+              builder: (_, player, _) => player.current == null
+                  ? const Center(child: Text('Nothing playing', style: TextStyle(color: kMuted)))
+                  : LyricsPane(player: player),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -85,13 +125,6 @@ class _DesktopShellState extends State<DesktopShell> {
       case 'queue':
         title = 'Queue';
         body = const QueuePanel();
-      case 'lyrics':
-        title = 'Lyrics';
-        body = Consumer<PlayerModel>(
-          builder: (_, player, _) => player.current == null
-              ? const Center(child: Text('Nothing playing', style: TextStyle(color: kMuted)))
-              : LyricsPane(player: player),
-        );
       case 'friends':
         title = 'Friend activity';
         body = const FriendsList();
@@ -140,11 +173,16 @@ class _DesktopShellState extends State<DesktopShell> {
             onOpenProfile: _openProfile,
           ),
           Expanded(
-            child: IndexedStack(
-              index: _index,
+            child: Stack(
               children: [
-                for (var i = 0; i < 4; i++)
-                  TabNavigator(navKey: _navKeys[i], rootBuilder: (_) => pages[i]),
+                IndexedStack(
+                  index: _index,
+                  children: [
+                    for (var i = 0; i < 4; i++)
+                      TabNavigator(navKey: _navKeys[i], rootBuilder: (_) => pages[i]),
+                  ],
+                ),
+                if (_showLyrics) Positioned.fill(child: _lyricsOverlay()),
               ],
             ),
           ),
@@ -155,7 +193,12 @@ class _DesktopShellState extends State<DesktopShell> {
         mainAxisSize: MainAxisSize.min,
         children: [
           const ListenAlongBar(),
-          _DesktopPlayerBar(activePanel: _rightPanel, onTogglePanel: _toggleRight),
+          _DesktopPlayerBar(
+            activePanel: _rightPanel,
+            onTogglePanel: _toggleRight,
+            lyricsOpen: _showLyrics,
+            onToggleLyrics: () => setState(() => _showLyrics = !_showLyrics),
+          ),
         ],
       ),
     );
@@ -327,9 +370,16 @@ class _NavItem extends StatelessWidget {
 }
 
 class _DesktopPlayerBar extends StatelessWidget {
-  final String activePanel; // 'friends' | 'queue' | 'lyrics' | ''
+  final String activePanel; // 'friends' | 'queue' | ''
   final void Function(String) onTogglePanel;
-  const _DesktopPlayerBar({required this.activePanel, required this.onTogglePanel});
+  final bool lyricsOpen;
+  final VoidCallback onToggleLyrics;
+  const _DesktopPlayerBar({
+    required this.activePanel,
+    required this.onTogglePanel,
+    required this.lyricsOpen,
+    required this.onToggleLyrics,
+  });
 
   String _fmt(Duration d) => "${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}";
 
@@ -478,9 +528,8 @@ class _DesktopPlayerBar extends StatelessWidget {
                     IconButton(
                       tooltip: 'Lyrics',
                       iconSize: 19,
-                      icon: Icon(LucideIcons.lyrics,
-                          color: activePanel == 'lyrics' ? kAccent : kMuted),
-                      onPressed: () => onTogglePanel('lyrics'),
+                      icon: Icon(LucideIcons.lyrics, color: lyricsOpen ? kAccent : kMuted),
+                      onPressed: onToggleLyrics,
                     ),
                     const SizedBox(width: 4),
                     const Icon(LucideIcons.volume2, size: 18, color: kMuted),
