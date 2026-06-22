@@ -340,7 +340,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const localIds = queueRef.current.map((t) => t.id);
       if (tQueue && tQueue.join(",") !== localIds.join(",")) {
         const resolved = await resolveTracks(tQueue, c);
-        if (resolved.length) {
+        const curId = currentIdRef.current;
+        // A queue EDIT that keeps the current track (add / play-next / remove
+        // upcoming) with no explicit seek or play/pause → update the list only;
+        // the current track stays at its index so the <audio> never reloads.
+        const keepsCurrent = !!curId && tQueue[indexRef.current] === curId;
+        if (resolved.length && keepsCurrent && tPos == null && tPlaying == null) {
+          orderRef.current = Array.from({ length: resolved.length }, (_, i) => i);
+          setQueue(resolved);
+        } else if (resolved.length) {
           orderRef.current = Array.from({ length: resolved.length }, (_, i) => i);
           scrobbled.current.clear();
           pendingSeekRef.current = (tPos ?? 0) / 1000;

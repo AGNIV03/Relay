@@ -550,15 +550,28 @@ class PlayerModel extends ChangeNotifier {
     try {
       final localIds = _queue.map((t) => t.id).toList();
       if (tQueue != null && !_idsEqual(tQueue, localIds)) {
-        final resolved = await _resolveTracks(tQueue, c);
-        if (resolved.isNotEmpty) {
-          _queue = resolved;
-          _index = (tIndex ?? 0).clamp(0, _queue.length - 1);
-          _scrobbled = false;
-          _loadLyrics();
-          _source = ConcatenatingAudioSource(children: _queue.map(_sourceFor).toList());
-          await _player.setAudioSource(_source!,
-              initialIndex: _index, initialPosition: Duration(milliseconds: tPos ?? 0));
+        final curId = current?.id;
+        // A queue EDIT that keeps the current track (add to queue / play next /
+        // remove upcoming) with no explicit seek or play/pause → reconcile the
+        // upcoming items in place WITHOUT restarting the current song. Anything
+        // else (song change, explicit seek/play) → rebuild the source.
+        final keepsCurrent = curId != null &&
+            _index >= 0 &&
+            _index < tQueue.length &&
+            tQueue[_index] == curId;
+        if (keepsCurrent && _source != null && tPos == null && tPlaying == null) {
+          await _reconcileUpcoming(tQueue, c);
+        } else {
+          final resolved = await _resolveTracks(tQueue, c);
+          if (resolved.isNotEmpty) {
+            _queue = resolved;
+            _index = (tIndex ?? 0).clamp(0, _queue.length - 1);
+            _scrobbled = false;
+            _loadLyrics();
+            _source = ConcatenatingAudioSource(children: _queue.map(_sourceFor).toList());
+            await _player.setAudioSource(_source!,
+                initialIndex: _index, initialPosition: Duration(milliseconds: tPos ?? 0));
+          }
         }
       } else {
         if (tIndex != null && tIndex != _index && tIndex >= 0 && tIndex < _queue.length) {
@@ -578,6 +591,55 @@ class PlayerModel extends ChangeNotifier {
       _applyingChorus = false;
     }
     _broadcastChorus();
+  }
+
+  /// Host: edit the UPCOMING portion of the queue/source to match [newIds]
+  /// without disturbing the currently-playing track (positions <= _index are
+  /// left untouched, so playback continues seamlessly).
+  Future<void> _reconcileUpcoming(List<String> newIds, ChorusState c) async {
+    final src = _source;
+    if (src == null) return;
+    // Drop upcoming items that are no longer present (scan from the end down).
+    for (var i = _queue.length - 1; i > _index; i--) {
+      if (!newIds.contains(_queue[i].id)) {
+        _queue.removeAt(i);
+        await src.removeAt(i);
+      }
+    }
+    // Insert/append upcoming items so the order matches newIds after the current.
+    for (var p = _index + 1; p < newIds.length; p++) {
+      if (p < _queue.length && _queue[p].id == newIds[p]) continue;
+      final t = await _resolveOne(newIds[p], c);
+      if (t == null) continue;
+      if (p >= _queue.length) {
+        _queue.add(t);
+        await src.add(_sourceFor(t));
+      } else {
+        _queue.insert(p, t);
+        await src.insert(p, _sourceFor(t));
+      }
+    }
+    // Trim any trailing extras beyond newIds.
+    while (_queue.length > newIds.length && _queue.length - 1 > _index) {
+      final i = _queue.length - 1;
+      _queue.removeAt(i);
+      await src.removeAt(i);
+    }
+  }
+
+  /// Resolve a single track id (local queue → hydrated chorus queue → server).
+  Future<Track?> _resolveOne(String id, ChorusState c) async {
+    for (final t in _queue) {
+      if (t.id == id) return t;
+    }
+    for (final t in c.queue) {
+      if (t.id == id) return t;
+    }
+    try {
+      final r = await api.tracksByIds([id]);
+      if (r.isNotEmpty) return r.first;
+    } catch (_) {}
+    return null;
   }
 
   /// Resolve track ids to Track objects: from the current queue or the hydrated
