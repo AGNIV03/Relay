@@ -157,9 +157,10 @@ class Playlist {
   final String name;
   final int trackCount;
   final List<Track> tracks;
-  final bool owned; // false when the current user is only a collaborator
+  final bool owned; // false when the current user is only a collaborator/viewer
   final String? ownerName;
   final int collaboratorCount;
+  final List<UserRef> collaborators; // populated by GET /:id (empty in list view)
 
   Playlist({
     required this.id,
@@ -169,6 +170,7 @@ class Playlist {
     this.owned = true,
     this.ownerName,
     this.collaboratorCount = 0,
+    this.collaborators = const [],
   });
 
   factory Playlist.fromJson(Map<String, dynamic> j) => Playlist(
@@ -183,6 +185,11 @@ class Playlist {
         ownerName: (j['ownerName'] ?? j['owner']?['username']) as String?,
         collaboratorCount:
             (j['collaboratorCount'] as int?) ?? (j['collaborators'] as List?)?.length ?? 0,
+        collaborators: (j['collaborators'] as List?)
+                ?.whereType<Map<String, dynamic>>()
+                .map((e) => UserRef.fromJson(e))
+                .toList() ??
+            const [],
       );
 }
 

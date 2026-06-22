@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../api.dart';
 import '../app_icons.dart';
 import '../app_state.dart';
+import '../events.dart';
 import '../models.dart';
 import '../player.dart';
 import '../theme.dart';
@@ -39,6 +40,8 @@ class _DesktopShellState extends State<DesktopShell> {
   // The open lyrics route per tab, so the lyrics button toggles instead of
   // stacking duplicate lyrics pages.
   final List<Route<dynamic>?> _lyricsRoutes = List.filled(4, null);
+  // The open profile route, so the profile button doesn't stack duplicates.
+  Route<dynamic>? _profileRoute;
 
   @override
   void initState() {
@@ -62,6 +65,19 @@ class _DesktopShellState extends State<DesktopShell> {
   /// Open a page in the active tab's content area (keeps sidebar + player bar).
   void _openOnActiveTab(Widget page) {
     _navKeys[_index].currentState?.push(MaterialPageRoute(builder: (_) => page));
+  }
+
+  /// Open the profile page, idempotently — clicking Profile again while it's
+  /// already showing does nothing (instead of stacking duplicate profile pages).
+  void _openProfile() {
+    final nav = _navKeys[_index].currentState;
+    if (nav == null) return;
+    if (_profileRoute != null && _profileRoute!.isCurrent) return;
+    final route = MaterialPageRoute<void>(builder: (_) => const _ProfilePage());
+    _profileRoute = route;
+    nav.push(route).then((_) {
+      if (_profileRoute == route) _profileRoute = null;
+    });
   }
 
   /// Toggle the lyrics page in the active tab: open it if closed, close it if
@@ -94,7 +110,7 @@ class _DesktopShellState extends State<DesktopShell> {
             index: _index,
             onSelect: (i) => setState(() => _index = i),
             onOpen: _openInTab,
-            onOpenProfile: () => _openOnActiveTab(const _ProfilePage()),
+            onOpenProfile: _openProfile,
           ),
           Expanded(
             child: IndexedStack(
@@ -170,6 +186,13 @@ class _SidebarState extends State<_Sidebar> {
   void initState() {
     super.initState();
     _loadPlaylists();
+    playlistsChanged.addListener(_loadPlaylists); // refresh on create/delete/rename
+  }
+
+  @override
+  void dispose() {
+    playlistsChanged.removeListener(_loadPlaylists);
+    super.dispose();
   }
 
   Future<void> _loadPlaylists() async {

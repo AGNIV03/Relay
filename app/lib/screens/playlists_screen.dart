@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../api.dart';
 import '../app_icons.dart';
+import '../events.dart';
 import '../models.dart';
 import '../theme.dart';
 import 'liked_songs_screen.dart';
@@ -20,6 +21,17 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
   void initState() {
     super.initState();
     _load();
+    playlistsChanged.addListener(_reload); // refresh when a playlist is created/deleted elsewhere
+  }
+
+  @override
+  void dispose() {
+    playlistsChanged.removeListener(_reload);
+    super.dispose();
+  }
+
+  void _reload() {
+    if (mounted) setState(_load);
   }
 
   void _load() => _future = context.read<Api>().playlists();

@@ -61,10 +61,12 @@ router.get("/", async (req, res) => {
   res.json(ranked);
 });
 
-/** GET /api/playlists/:id — playlist with ordered tracks (owner or collaborator) */
+/** GET /api/playlists/:id — playlist with ordered tracks. Any signed-in user may
+ *  VIEW any playlist (they're already listed on public profiles in this sharing
+ *  app); the `owned` flag gates edit controls. Mutations stay owner/collaborator-only. */
 router.get("/:id", async (req, res) => {
   const playlist = await prisma.playlist.findFirst({
-    where: accessibleWhere(req.params.id, req.user!.id),
+    where: { id: String(req.params.id) },
     include: {
       tracks: {
         orderBy: { position: "asc" },

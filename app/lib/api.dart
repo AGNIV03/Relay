@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'events.dart';
 import 'models.dart';
 
 /// Thin API client for the Stream server. Holds the base URL + tokens,
@@ -293,11 +294,20 @@ class Api {
   Future<List<Playlist>> playlists() async =>
       (await _get('/api/playlists') as List).map((e) => Playlist.fromJson(e)).toList();
   Future<Playlist> playlist(String id) async => Playlist.fromJson(await _get('/api/playlists/$id'));
-  Future<void> createPlaylist(String name) =>
-      _send('POST', '/api/playlists', body: {'name': name});
-  Future<void> renamePlaylist(String id, String name) =>
-      _send('PATCH', '/api/playlists/$id', body: {'name': name});
-  Future<void> deletePlaylist(String id) => _send('DELETE', '/api/playlists/$id');
+  Future<void> createPlaylist(String name) async {
+    await _send('POST', '/api/playlists', body: {'name': name});
+    notifyPlaylistsChanged();
+  }
+
+  Future<void> renamePlaylist(String id, String name) async {
+    await _send('PATCH', '/api/playlists/$id', body: {'name': name});
+    notifyPlaylistsChanged();
+  }
+
+  Future<void> deletePlaylist(String id) async {
+    await _send('DELETE', '/api/playlists/$id');
+    notifyPlaylistsChanged();
+  }
 
   // ---- Playlist collaborators ----
   /// {owner: UserRef, collaborators: [UserRef]}

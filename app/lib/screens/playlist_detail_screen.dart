@@ -94,7 +94,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       padding: const EdgeInsets.all(16),
       child: Row(children: [
         GestureDetector(
-          onTap: _editCover,
+          onTap: (_pl?.owned ?? true) ? _editCover : null, // only the owner edits the cover
           child: Stack(children: [
             ClipRRect(
               borderRadius: BorderRadius.circular(12),
@@ -269,10 +269,15 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final owned = _pl?.owned ?? true;
+    final myId = context.read<AppState>().user?.id;
+    final isCollaborator = _pl?.collaborators.any((c) => c.id == myId) ?? false;
+    // A pure viewer (someone else's playlist, not a collaborator) gets no menu.
+    final showMenu = owned || isCollaborator;
     return Scaffold(
       appBar: AppBar(
         title: Text(_name),
         actions: [
+          if (showMenu)
           PopupMenuButton<String>(
             icon: const Icon(LucideIcons.moreVertical),
             color: kPanel2,
