@@ -70,6 +70,19 @@ export function PlayerBar({
         <div className="min-w-0">
           <div className="truncate text-sm font-medium">{t.title}</div>
           <div className="truncate text-xs text-[var(--muted)]">{t.artist?.name}</div>
+          {(() => {
+            const q = [
+              t.format?.toUpperCase(),
+              t.bitrate ? `${t.bitrate >= 2000 ? Math.round(t.bitrate / 1000) : t.bitrate} kbps` : null,
+            ]
+              .filter(Boolean)
+              .join(" · ");
+            return q ? (
+              <div className="truncate text-[10px] uppercase tracking-wide text-[var(--muted)] opacity-70">
+                {q}
+              </div>
+            ) : null;
+          })()}
         </div>
         <LikeButton trackId={t.id} size={16} />
       </div>

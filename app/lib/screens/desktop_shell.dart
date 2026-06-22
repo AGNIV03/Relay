@@ -341,6 +341,18 @@ class _DesktopPlayerBar extends StatelessWidget {
 
   String _fmt(Duration d) => "${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}";
 
+  /// Quality line from metadata, e.g. "FLAC · 1058 kbps" or "MP3 · 320 kbps".
+  String? _quality(Track t) {
+    final parts = <String>[];
+    if (t.format != null && t.format!.trim().isNotEmpty) parts.add(t.format!.toUpperCase());
+    if (t.bitrate != null && t.bitrate! > 0) {
+      // music-metadata reports bitrate in bits/sec.
+      final kbps = t.bitrate! >= 2000 ? (t.bitrate! / 1000).round() : t.bitrate!;
+      parts.add('$kbps kbps');
+    }
+    return parts.isEmpty ? null : parts.join(' · ');
+  }
+
   @override
   Widget build(BuildContext context) {
     final player = context.watch<PlayerModel>();
@@ -369,7 +381,9 @@ class _DesktopPlayerBar extends StatelessWidget {
                       child: Cover(url: api.trackCoverUrl(track.id), size: 52, radius: 8),
                     ),
                     const SizedBox(width: 12),
-                    Expanded(
+                    // Flexible (not Expanded) so the heart sits right next to the
+                    // song name instead of being pushed to the far right.
+                    Flexible(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisAlignment: MainAxisAlignment.center,
@@ -382,9 +396,18 @@ class _DesktopPlayerBar extends StatelessWidget {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(color: kMuted, fontSize: 12)),
+                          if (_quality(track) != null)
+                            Text(_quality(track)!,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                    color: kMuted.withValues(alpha: 0.7),
+                                    fontSize: 10,
+                                    letterSpacing: 0.3)),
                         ],
                       ),
                     ),
+                    const SizedBox(width: 6),
                     LikeButton(trackId: track.id, size: 20),
                   ]),
                 ),
