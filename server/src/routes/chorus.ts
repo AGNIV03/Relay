@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
+import { acquirePoll, releasePoll } from "../lib/pollGuard.js";
 import {
   type ChorusMode,
   approve,
@@ -103,12 +104,20 @@ router.get("/poll", async (req, res) => {
   if (!current) return res.json(null);
   if (current.version > since) return res.json(await hydrate(userId, true));
 
+  // Cap concurrent held polls per user; over the cap, return current state now.
+  if (!acquirePoll(userId)) return res.json(await hydrate(userId, true));
+
   let settled = false;
-  const finish = async () => {
-    if (settled) return;
+  const done = () => {
+    if (settled) return false;
     settled = true;
     clearTimeout(timer);
     unsub();
+    releasePoll(userId);
+    return true;
+  };
+  const finish = async () => {
+    if (!done()) return;
     try {
       res.json(await hydrate(userId, true));
     } catch {
@@ -117,12 +126,7 @@ router.get("/poll", async (req, res) => {
   };
   const unsub = subscribe(current.hostId, () => void finish());
   const timer = setTimeout(() => void finish(), LONG_POLL_MS);
-  req.on("close", () => {
-    if (settled) return;
-    settled = true;
-    clearTimeout(timer);
-    unsub();
-  });
+  req.on("close", () => void done());
 });
 
 /** POST /api/chorus/start { mode, queue, index, positionMs, playing } */

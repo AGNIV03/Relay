@@ -66,7 +66,7 @@ router.post("/users", async (req, res) => {
   const user = await prisma.user.create({
     data: {
       username: parsed.data.username,
-      passwordHash: await bcrypt.hash(parsed.data.password, 10),
+      passwordHash: await bcrypt.hash(parsed.data.password, 12),
       role: parsed.data.role,
     },
     select: { id: true, username: true, role: true, createdAt: true },

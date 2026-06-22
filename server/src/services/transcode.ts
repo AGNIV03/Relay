@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 
 export interface TranscodeOptions {
@@ -25,8 +25,14 @@ export const CONTENT_TYPE: Record<TranscodeOptions["format"], string> = {
  *
  * Note: transcoded streams are not seekable via byte ranges — clients should
  * request the original file for scrubbing, or re-request to seek.
+ *
+ * Returns the child process; the caller pipes `.stdout` and MUST `.kill()` it when
+ * the client disconnects, otherwise ffmpeg keeps running (orphaned) after abort.
  */
-export function transcodeStream(inputPath: string, opts: TranscodeOptions): Readable {
+export function transcodeStream(
+  inputPath: string,
+  opts: TranscodeOptions,
+): ChildProcessByStdio<null, Readable, Readable> {
   const args = [
     "-hide_banner",
     "-loglevel",
@@ -44,5 +50,5 @@ export function transcodeStream(inputPath: string, opts: TranscodeOptions): Read
   const ff = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
   ff.stderr.on("data", (d) => console.error("[ffmpeg]", d.toString().trim()));
   ff.on("error", (e) => console.error("[ffmpeg] spawn failed:", e.message));
-  return ff.stdout;
+  return ff;
 }

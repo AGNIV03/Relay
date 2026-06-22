@@ -48,8 +48,10 @@ router.get("/:trackId", requireAuth, async (req, res) => {
     res.setHeader("Content-Type", CONTENT_TYPE[format]);
     res.setHeader("Accept-Ranges", "none");
     const ff = transcodeStream(track.path, { format, bitrate });
-    ff.pipe(res);
-    req.on("close", () => ff.destroy());
+    ff.stdout.pipe(res);
+    // Kill the ffmpeg process (not just the pipe) when the client disconnects,
+    // otherwise it keeps transcoding orphaned.
+    req.on("close", () => ff.kill("SIGKILL"));
     return;
   }
 

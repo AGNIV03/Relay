@@ -331,15 +331,18 @@ class PlayerModel extends ChangeNotifier {
 
   /// Long-poll the host's activity and keep our playback in lock-step.
   Future<void> _listenLoop() async {
+    var backoffMs = 1000;
     while (_listenLooping && listenHostId != null) {
       final hostId = listenHostId!;
       HostActivity a;
       try {
         a = await api.userActivityPoll(hostId, _listenVersion);
       } catch (_) {
-        await Future.delayed(const Duration(seconds: 1));
+        await Future.delayed(Duration(milliseconds: backoffMs));
+        backoffMs = (backoffMs * 2).clamp(1000, 30000); // exponential backoff
         continue;
       }
+      backoffMs = 1000;
       if (!_listenLooping || listenHostId != hostId) break;
       _listenVersion = a.version;
       await _applyHostActivity(a);
@@ -432,14 +435,17 @@ class PlayerModel extends ChangeNotifier {
   /// Long-poll the shared chorus; reconcile as host (apply commands + broadcast)
   /// or as a silent member (mirror the state).
   Future<void> _chorusLoop() async {
+    var backoffMs = 1000;
     while (_chorusLooping) {
       ChorusState? c;
       try {
         c = await api.chorusPoll(_chorusVersion);
       } catch (_) {
-        await Future.delayed(const Duration(seconds: 1));
+        await Future.delayed(Duration(milliseconds: backoffMs));
+        backoffMs = (backoffMs * 2).clamp(1000, 30000); // exponential backoff
         continue;
       }
+      backoffMs = 1000; // reset after a successful poll
       if (!_chorusLooping) break;
       if (c == null) {
         _onChorusEnded();

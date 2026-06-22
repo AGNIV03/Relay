@@ -93,8 +93,16 @@ class TrackTile extends StatelessWidget {
       tooltip: done ? 'Remove download' : 'Download',
       icon: Icon(done ? LucideIcons.checkCircle : LucideIcons.download,
           color: done ? kAccent : kMuted),
-      onPressed: () =>
-          done ? downloads.remove(track.id) : downloads.download(track),
+      onPressed: () async {
+        if (done) return downloads.remove(track.id);
+        try {
+          await downloads.download(track);
+        } catch (e) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+          }
+        }
+      },
     );
   }
 }
@@ -124,7 +132,13 @@ class TrackMenu extends StatelessWidget {
             await context.read<PlayerModel>().addToQueue(track);
             break;
           case 'download':
-            await downloads.download(track);
+            try {
+              await downloads.download(track);
+            } catch (e) {
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+              }
+            }
             break;
           case 'undownload':
             await downloads.remove(track.id);

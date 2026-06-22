@@ -139,18 +139,25 @@ class DownloadManager extends ChangeNotifier {
   int downloadedCount(List<Track> tracks) =>
       tracks.where((t) => _downloaded.contains(t.id)).length;
 
-  /// Fetch the audio + cover once (no-op if already present). Does not touch sources.
+  /// Fetch the audio + cover once (no-op if already present). Does not touch
+  /// sources. Throws [ApiException] on failure so callers can surface it.
   Future<void> _fetch(Track track) async {
     if (!supported || _downloaded.contains(track.id) || _inProgress.contains(track.id)) return;
     _inProgress.add(track.id);
     notifyListeners();
     try {
-      final res = await http.get(Uri.parse(api.streamUrl(track.id)));
-      if (res.statusCode == 200) {
-        await File(_pathFor(track.id)).writeAsBytes(res.bodyBytes);
-        _downloaded.add(track.id);
-        await _fetchCover(track); // best-effort cover for offline display
+      var res = await http.get(Uri.parse(api.streamUrl(track.id)));
+      // The stream URL carries the token in the query (no refresh interceptor),
+      // so on 401 try a token refresh and retry once.
+      if (res.statusCode == 401 && await api.ensureFreshToken()) {
+        res = await http.get(Uri.parse(api.streamUrl(track.id)));
       }
+      if (res.statusCode != 200) {
+        throw ApiException('Download failed (HTTP ${res.statusCode})');
+      }
+      await File(_pathFor(track.id)).writeAsBytes(res.bodyBytes);
+      _downloaded.add(track.id);
+      await _fetchCover(track); // best-effort cover for offline display
     } finally {
       _inProgress.remove(track.id);
       notifyListeners();
@@ -200,16 +207,24 @@ class DownloadManager extends ChangeNotifier {
 
   // ---- Whole-playlist (or Liked Songs) download toggle ----
   Future<void> downloadAll(List<Track> tracks, String source, {String? name}) async {
+    var failed = 0;
     for (final t in tracks) {
       _addSource(t.id, source);
       _meta[t.id] = t.toJson();
-      await _fetch(t);
+      try {
+        await _fetch(t);
+      } catch (_) {
+        failed++; // keep going; report the count at the end
+      }
     }
     // Record the playlist so it can be browsed offline (snapshot of name + order).
     if (source != manual) {
       _playlists[source] = (name: name ?? source, ids: tracks.map((t) => t.id).toList());
     }
     await _save();
+    if (failed > 0) {
+      throw ApiException('$failed of ${tracks.length} downloads failed');
+    }
   }
 
   Future<void> removeAll(List<Track> tracks, String source) async {

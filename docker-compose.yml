@@ -8,13 +8,18 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # Loopback-only: the DB is reached by the `server` container over the internal
+    # compose network. Never publish 5432 to 0.0.0.0.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
 
   server:
     build:
@@ -25,6 +30,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      NODE_ENV: production
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
       JWT_SECRET: ${JWT_SECRET}
       PORT: 4000
@@ -32,11 +38,30 @@ services:
       DATA_PATH: /data
       ADMIN_USERNAME: ${ADMIN_USERNAME}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      # Comma-separated browser origins allowed to call the API cross-origin. The
+      # web app uses a same-origin /api proxy and native apps send no Origin, so
+      # this only needs the public web origin (or can stay empty).
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
     volumes:
       - ${MUSIC_DIR}:/music # your audio library (writable — in-app uploads land here)
       - appdata:/data # extracted cover art, etc.
-    ports:
-      - "4000:4000"
+    # No published ports: the API is reached only via the web container's /api
+    # proxy over the internal network (and thus only through the Cloudflare Tunnel).
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://localhost:4000/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
 
   web:
     build:
@@ -47,8 +72,26 @@ services:
     restart: unless-stopped
     depends_on:
       - server
+    # Loopback-only: the Cloudflare Tunnel (cloudflared, running on the host)
+    # reaches this on localhost. Never publish to 0.0.0.0 — that would bypass the
+    # tunnel/WAF. (The deployed host may remap the port via an override file.)
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://localhost:3000/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
 
 volumes:
   pgdata:

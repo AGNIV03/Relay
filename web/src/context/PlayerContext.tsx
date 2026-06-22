@@ -402,6 +402,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (chorusLoopRef.current) return;
     chorusLoopRef.current = true;
     (async () => {
+      let backoff = 1000;
       while (chorusLoopRef.current) {
         let c: ChorusState | null;
         const ctrl = new AbortController();
@@ -413,9 +414,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           );
         } catch {
           if (!chorusLoopRef.current) break;
-          await new Promise((r) => setTimeout(r, 1000));
+          await new Promise((r) => setTimeout(r, backoff));
+          backoff = Math.min(backoff * 2, 30000); // exponential backoff on errors
           continue;
         }
+        backoff = 1000; // reset after a successful poll
         if (!chorusLoopRef.current) break;
         if (!c) {
           onChorusEnded();
@@ -762,6 +765,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       }
     };
     (async () => {
+      let backoff = 1000;
       while (active && listenHostRef.current === listenHost.id) {
         let act: HostActivity;
         try {
@@ -771,9 +775,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           );
         } catch {
           if (!active) break;
-          await new Promise((r) => setTimeout(r, 1000));
+          await new Promise((r) => setTimeout(r, backoff));
+          backoff = Math.min(backoff * 2, 30000); // exponential backoff on errors
           continue;
         }
+        backoff = 1000;
         if (!active || listenHostRef.current !== listenHost.id) break;
         version = act.version ?? 0;
         applyHostActivity(act);

@@ -1,5 +1,11 @@
+// Patches Express 4 so rejected async route handlers are forwarded to the error
+// handler (returning 500) instead of hanging the request. MUST be imported before
+// any routes are registered.
+import "express-async-errors";
 import express from "express";
 import cors from "cors";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 import { env } from "./lib/env.js";
 import { ensureFirstAdmin } from "./bootstrap.js";
 
@@ -14,10 +20,56 @@ import chorusRoutes from "./routes/chorus.js";
 
 const app = express();
 
-app.use(cors());
+// Behind Cloudflare + cloudflared + the Next.js /api proxy. Trust the proxy chain
+// so req.ip reflects the forwarded client IP (used for rate limiting).
+app.set("trust proxy", true);
+
+// Security headers. CSP / Cross-Origin-Resource-Policy are intentionally left off
+// here — the web app owns the page CSP, and it proxies media same-origin, while
+// native apps fetch directly; a CORP/CSP on the API would break those. This still
+// adds nosniff, X-Frame-Options: DENY, HSTS, Referrer-Policy, etc.
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginResourcePolicy: false,
+    crossOriginEmbedderPolicy: false,
+  }),
+);
+
+// CORS: the web calls the API same-origin (via its own /api proxy) and native
+// apps send no Origin header, so cross-origin browser access is only granted to
+// explicitly allow-listed origins (CORS_ORIGINS, comma-separated). Unknown
+// browser origins are denied.
+const allowedOrigins = (process.env.CORS_ORIGINS ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+app.use(
+  cors({
+    origin(origin, cb) {
+      // No Origin = native app / curl / same-origin server hop → allow.
+      if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+      return cb(null, false);
+    },
+  }),
+);
+
 app.use(express.json());
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
+
+// Brute-force protection on credential endpoints (Cloudflare is the edge limiter;
+// this is in-app defense-in-depth).
+const authLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 40,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  validate: { trustProxy: false }, // we knowingly run behind a trusted proxy chain
+  message: { error: "Too many attempts — please try again later." },
+});
+app.use("/api/auth/login", authLimiter);
+app.use("/api/auth/refresh", authLimiter);
 
 app.use("/api/auth", authRoutes);
 app.use("/api/library", libraryRoutes);
@@ -28,7 +80,9 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/social", socialRoutes);
 app.use("/api/chorus", chorusRoutes);
 
-// Fallback error handler
+// Fallback error handler. express-async-errors routes rejected promises here, so
+// async handler failures return 500 instead of hanging the socket. Never leaks
+// internals to the client.
 app.use(
   (
     err: Error,
@@ -37,6 +91,7 @@ app.use(
     _next: express.NextFunction,
   ) => {
     console.error("[error]", err);
+    if (res.headersSent) return;
     res.status(500).json({ error: "Internal server error" });
   },
 );

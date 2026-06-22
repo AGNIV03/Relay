@@ -82,6 +82,11 @@ class Api {
     return true;
   }
 
+  /// Force a token refresh (used by media/download fetches that put the token in
+  /// the URL query and so bypass the normal 401-retry interceptor). Returns
+  /// whether a fresh access token is now available.
+  Future<bool> ensureFreshToken() => _tryRefresh();
+
   Future<void> changePassword(String currentPassword, String newPassword) => _send(
         'POST',
         '/api/auth/change-password',

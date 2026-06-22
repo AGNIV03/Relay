@@ -366,7 +366,14 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                             if (allDown) {
                               await downloads.removeAll(tracks, widget.playlistId);
                             } else {
-                              await downloads.downloadAll(tracks, widget.playlistId, name: _name);
+                              try {
+                                await downloads.downloadAll(tracks, widget.playlistId, name: _name);
+                              } catch (e) {
+                                if (context.mounted) {
+                                  ScaffoldMessenger.of(context)
+                                      .showSnackBar(SnackBar(content: Text('$e')));
+                                }
+                              }
                             }
                           },
                         ),

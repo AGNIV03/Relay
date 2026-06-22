@@ -4,6 +4,7 @@ import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { setActivity, getActivity, isOnline, subscribeActivity } from "../lib/presence.js";
 import { hostMode } from "../lib/chorus.js";
+import { acquirePoll, releasePoll } from "../lib/pollGuard.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -71,30 +72,36 @@ router.get("/friends", async (req, res) => {
     : [];
   const byId = new Map(liveTracks.map((t) => [t.id, t]));
 
-  const friends = await Promise.all(
-    acts.map(async ({ u, a }) => {
-      // Prefer the live presence track; fall back to the last played track so
-      // an offline user still shows what they were last listening to.
-      let track = a?.trackId ? byId.get(a.trackId) ?? null : null;
-      if (!track) {
-        const last = await prisma.playHistory.findFirst({
-          where: { userId: u.id },
-          orderBy: { playedAt: "desc" },
-          include: { track: { include: { artist: true, album: true } } },
-        });
-        track = last?.track ?? null;
-      }
-      return {
-        id: u.id,
-        username: u.username,
-        online: isOnline(a),
-        playing: a?.playing ?? false,
-        track,
-        updatedAt: a?.updatedAt ?? null,
-        chorusMode: hostMode(u.id), // 'open' | 'ask' | null — they're hosting a Chorus
-      };
-    }),
-  );
+  // Fallback "last played" for users without a live track — resolved in ONE query
+  // (distinct on userId, newest first) instead of one findFirst per user.
+  const needFallback = acts
+    .filter((x) => !(x.a?.trackId && byId.has(x.a.trackId)))
+    .map((x) => x.u.id);
+  const lastByUser = new Map<string, (typeof liveTracks)[number]>();
+  if (needFallback.length) {
+    const hist = await prisma.playHistory.findMany({
+      where: { userId: { in: needFallback } },
+      orderBy: { playedAt: "desc" },
+      distinct: ["userId"],
+      include: { track: { include: { artist: true, album: true } } },
+    });
+    for (const h of hist) if (h.track) lastByUser.set(h.userId, h.track);
+  }
+
+  const friends = acts.map(({ u, a }) => {
+    // Prefer the live presence track; fall back to the last played track so
+    // an offline user still shows what they were last listening to.
+    const track = (a?.trackId ? byId.get(a.trackId) : undefined) ?? lastByUser.get(u.id) ?? null;
+    return {
+      id: u.id,
+      username: u.username,
+      online: isOnline(a),
+      playing: a?.playing ?? false,
+      track,
+      updatedAt: a?.updatedAt ?? null,
+      chorusMode: hostMode(u.id), // 'open' | 'ask' | null — they're hosting a Chorus
+    };
+  });
   friends.sort(
     (x, y) => Number(y.online) - Number(x.online) || (y.updatedAt ?? 0) - (x.updatedAt ?? 0),
   );
@@ -142,17 +149,26 @@ router.get("/activity/:userId", async (req, res) => {
  *  soon as the host's playback changes past `since` (or after ~25s). Lets listen-
  *  along followers track pauses/seeks near-instantly instead of every few seconds. */
 router.get("/activity/:userId/poll", async (req, res) => {
+  const me = req.user!.id;
   const hostId = req.params.userId;
   const since = Number(req.query.since ?? 0) || 0;
   const a = getActivity(hostId);
   if (!a || a.version > since) return res.json(await hostActivity(hostId));
 
+  // Cap concurrent held polls per user; over the cap, return current state now.
+  if (!acquirePoll(me)) return res.json(await hostActivity(hostId));
+
   let settled = false;
-  const finish = async () => {
-    if (settled) return;
+  const done = () => {
+    if (settled) return false;
     settled = true;
     clearTimeout(timer);
     unsub();
+    releasePoll(me);
+    return true;
+  };
+  const finish = async () => {
+    if (!done()) return;
     try {
       res.json(await hostActivity(hostId));
     } catch {
@@ -161,12 +177,7 @@ router.get("/activity/:userId/poll", async (req, res) => {
   };
   const unsub = subscribeActivity(hostId, () => void finish());
   const timer = setTimeout(() => void finish(), LONG_POLL_MS);
-  req.on("close", () => {
-    if (settled) return;
-    settled = true;
-    clearTimeout(timer);
-    unsub();
-  });
+  req.on("close", () => void done());
 });
 
 export default router;
