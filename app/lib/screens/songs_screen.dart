@@ -189,6 +189,7 @@ class _SongsScreenState extends State<SongsScreen> {
                           itemBuilder: (_, i) => TrackTile(
                             tracks: _tracks,
                             index: i,
+                            showDownload: true,
                             onChanged: () => _load(_controller.text),
                           ),
                         ),

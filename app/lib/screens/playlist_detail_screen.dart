@@ -1,4 +1,6 @@
+import 'dart:io' show Platform;
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../api.dart';
@@ -9,7 +11,10 @@ import '../downloads.dart';
 import '../models.dart';
 import '../player.dart';
 import '../theme.dart';
+import '../widgets/track_table.dart';
 import '../widgets/track_tile.dart';
+
+bool get _isDesktop => !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
 
 class PlaylistDetailScreen extends StatefulWidget {
   final String playlistId;
@@ -38,6 +43,15 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     f.then((p) {
       if (mounted) setState(() => _pl = p);
     }).catchError((_) {});
+  }
+
+  Future<void> _removeFromPlaylist(String id) async {
+    final api = context.read<Api>();
+    final downloads = context.read<DownloadManager>();
+    await api.removeFromPlaylist(widget.playlistId, id).catchError((_) {});
+    // Dropped from this playlist — release its download if nothing else needs it.
+    await downloads.onRemovedFromSource(id, widget.playlistId);
+    if (mounted) setState(_load);
   }
 
   void _editCover() {
@@ -397,7 +411,17 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                         child: Text('Empty playlist.\nAdd tracks with the ⋮ menu.',
                             textAlign: TextAlign.center, style: TextStyle(color: kMuted)),
                       )
-                    : ListView.builder(
+                    : _isDesktop
+                        // Desktop: the columnar, sortable table (Added = playlist
+                        // add date; no "Uploaded by"; X removes from the playlist).
+                        ? TrackTable(
+                            tracks: tracks,
+                            addedAtById: _pl?.addedAt,
+                            showUploadedBy: false,
+                            onChanged: _load,
+                            onRemove: (t) => _removeFromPlaylist(t.id),
+                          )
+                        : ListView.builder(
                         itemCount: tracks.length,
                         itemBuilder: (context, i) => Dismissible(
                     key: ValueKey(tracks[i].id),

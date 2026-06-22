@@ -161,6 +161,7 @@ class Playlist {
   final String? ownerName;
   final int collaboratorCount;
   final List<UserRef> collaborators; // populated by GET /:id (empty in list view)
+  final Map<String, String?> addedAt; // trackId -> when it was added to this playlist
 
   Playlist({
     required this.id,
@@ -171,6 +172,7 @@ class Playlist {
     this.ownerName,
     this.collaboratorCount = 0,
     this.collaborators = const [],
+    this.addedAt = const {},
   });
 
   factory Playlist.fromJson(Map<String, dynamic> j) => Playlist(
@@ -190,6 +192,10 @@ class Playlist {
                 .map((e) => UserRef.fromJson(e))
                 .toList() ??
             const [],
+        addedAt: {
+          for (final pt in (j['tracks'] as List? ?? []))
+            if (pt['track']?['id'] != null) pt['track']['id'] as String: pt['addedAt'] as String?,
+        },
       );
 }
 
