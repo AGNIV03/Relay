@@ -135,7 +135,9 @@ class _TrackTableState extends State<TrackTable> {
   @override
   Widget build(BuildContext context) {
     final sorted = _sorted;
-    final actionsW = 84.0 + (widget.onRemove != null ? 28 : 0);
+    // Wide enough for like + download + menu (+ optional remove) at their natural
+    // ~40px tap sizes; too narrow here overflows and shifts the tap targets.
+    final actionsW = widget.onRemove != null ? 164.0 : 124.0;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [

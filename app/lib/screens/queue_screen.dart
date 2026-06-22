@@ -7,9 +7,10 @@ import '../player.dart';
 import '../theme.dart';
 import '../widgets/cover.dart';
 
-/// The play queue: the current track plus what's coming up. Tap to jump, ✕ to remove.
-class QueueScreen extends StatelessWidget {
-  const QueueScreen({super.key});
+/// The play queue contents (current track + what's coming up). Tap to jump, ✕ to
+/// remove. Used both full-screen (mobile) and in the desktop right-side panel.
+class QueuePanel extends StatelessWidget {
+  const QueuePanel({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -23,8 +24,7 @@ class QueueScreen extends StatelessWidget {
           title: Text(t.title,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                  fontWeight: FontWeight.w600, color: current ? kAccent : null)),
+              style: TextStyle(fontWeight: FontWeight.w600, color: current ? kAccent : null)),
           subtitle: Text(t.artistName, maxLines: 1, overflow: TextOverflow.ellipsis),
           trailing: removeAt == null
               ? null
@@ -35,28 +35,37 @@ class QueueScreen extends StatelessWidget {
           onTap: removeAt == null ? null : () => player.playAt(removeAt),
         );
 
+    if (q.isEmpty || idx < 0 || idx >= q.length) {
+      return const Center(child: Text('Nothing in the queue', style: TextStyle(color: kMuted)));
+    }
+    return ListView(
+      children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(16, 12, 16, 2),
+          child: Text('NOW PLAYING',
+              style: TextStyle(color: kMuted, fontSize: 11, letterSpacing: 1)),
+        ),
+        tile(q[idx], current: true),
+        if (idx + 1 < q.length) ...[
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 18, 16, 2),
+            child: Text('NEXT UP', style: TextStyle(color: kMuted, fontSize: 11, letterSpacing: 1)),
+          ),
+          for (int i = idx + 1; i < q.length; i++) tile(q[i], removeAt: i),
+        ],
+      ],
+    );
+  }
+}
+
+/// Full-screen queue (mobile: pushed from the now-playing screen).
+class QueueScreen extends StatelessWidget {
+  const QueueScreen({super.key});
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Queue')),
-      body: q.isEmpty || idx < 0 || idx >= q.length
-          ? const Center(child: Text('Nothing in the queue', style: TextStyle(color: kMuted)))
-          : ListView(
-              children: [
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(16, 12, 16, 2),
-                  child: Text('NOW PLAYING',
-                      style: TextStyle(color: kMuted, fontSize: 11, letterSpacing: 1)),
-                ),
-                tile(q[idx], current: true),
-                if (idx + 1 < q.length) ...[
-                  const Padding(
-                    padding: EdgeInsets.fromLTRB(16, 18, 16, 2),
-                    child: Text('NEXT UP',
-                        style: TextStyle(color: kMuted, fontSize: 11, letterSpacing: 1)),
-                  ),
-                  for (int i = idx + 1; i < q.length; i++) tile(q[i], removeAt: i),
-                ],
-              ],
-            ),
+      body: const QueuePanel(),
     );
   }
 }

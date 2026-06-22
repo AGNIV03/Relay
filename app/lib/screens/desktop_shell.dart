@@ -18,7 +18,7 @@ import 'songs_screen.dart';
 import 'artists_screen.dart';
 import 'playlists_screen.dart';
 import 'liked_songs_screen.dart';
-import 'lyrics_screen.dart';
+import '../widgets/lyrics_pane.dart';
 import 'playlist_detail_screen.dart';
 import 'profile_screen.dart';
 import 'now_playing_screen.dart';
@@ -34,14 +34,15 @@ class DesktopShell extends StatefulWidget {
 
 class _DesktopShellState extends State<DesktopShell> {
   int _index = 0;
-  bool _showFriends = true;
+  // Which right-side panel is open (web-style): 'friends' | 'queue' | 'lyrics' | ''.
+  String _rightPanel = 'friends';
   final List<GlobalKey<NavigatorState>> _navKeys =
       List.generate(4, (_) => GlobalKey<NavigatorState>());
-  // The open lyrics route per tab, so the lyrics button toggles instead of
-  // stacking duplicate lyrics pages.
-  final List<Route<dynamic>?> _lyricsRoutes = List.filled(4, null);
   // The open profile route, so the profile button doesn't stack duplicates.
   Route<dynamic>? _profileRoute;
+
+  void _toggleRight(String name) =>
+      setState(() => _rightPanel = _rightPanel == name ? '' : name);
 
   @override
   void initState() {
@@ -62,11 +63,6 @@ class _DesktopShellState extends State<DesktopShell> {
     nav?.push(MaterialPageRoute(builder: (_) => page));
   }
 
-  /// Open a page in the active tab's content area (keeps sidebar + player bar).
-  void _openOnActiveTab(Widget page) {
-    _navKeys[_index].currentState?.push(MaterialPageRoute(builder: (_) => page));
-  }
-
   /// Open the profile page, idempotently — clicking Profile again while it's
   /// already showing does nothing (instead of stacking duplicate profile pages).
   void _openProfile() {
@@ -80,23 +76,54 @@ class _DesktopShellState extends State<DesktopShell> {
     });
   }
 
-  /// Toggle the lyrics page in the active tab: open it if closed, close it if
-  /// it's currently showing (so the note button doesn't stack duplicates).
-  void _toggleLyrics() {
-    final i = _index;
-    final nav = _navKeys[i].currentState;
-    if (nav == null) return;
-    final open = _lyricsRoutes[i];
-    if (open != null && open.isCurrent) {
-      nav.pop();
-      _lyricsRoutes[i] = null;
-    } else {
-      final route = MaterialPageRoute<void>(builder: (_) => const LyricsScreen());
-      _lyricsRoutes[i] = route;
-      nav.push(route).then((_) {
-        if (_lyricsRoutes[i] == route) _lyricsRoutes[i] = null;
-      });
+  /// The right-side panel (queue / lyrics / friends), web-style. Returns an empty
+  /// box when nothing is open.
+  Widget _rightPanelArea() {
+    String title;
+    Widget body;
+    switch (_rightPanel) {
+      case 'queue':
+        title = 'Queue';
+        body = const QueuePanel();
+      case 'lyrics':
+        title = 'Lyrics';
+        body = Consumer<PlayerModel>(
+          builder: (_, player, _) => player.current == null
+              ? const Center(child: Text('Nothing playing', style: TextStyle(color: kMuted)))
+              : LyricsPane(player: player),
+        );
+      case 'friends':
+        title = 'Friend activity';
+        body = const FriendsList();
+      default:
+        return const SizedBox.shrink();
     }
+    return Container(
+      width: 320,
+      decoration: const BoxDecoration(
+        color: kPanel,
+        border: Border(left: BorderSide(color: kBorder)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 8, 8),
+            child: Row(children: [
+              Expanded(
+                child: Text(title,
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              ),
+              IconButton(
+                icon: const Icon(LucideIcons.x, size: 18),
+                onPressed: () => setState(() => _rightPanel = ''),
+              ),
+            ]),
+          ),
+          Expanded(child: body),
+        ],
+      ),
+    );
   }
 
   @override
@@ -121,44 +148,14 @@ class _DesktopShellState extends State<DesktopShell> {
               ],
             ),
           ),
-          if (_showFriends)
-            Container(
-              width: 300,
-              decoration: const BoxDecoration(
-                color: kPanel,
-                border: Border(left: BorderSide(color: kBorder)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 16, 8, 8),
-                    child: Row(children: [
-                      const Expanded(
-                        child: Text('Friend activity',
-                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                      ),
-                      IconButton(
-                        icon: const Icon(LucideIcons.x, size: 18),
-                        onPressed: () => setState(() => _showFriends = false),
-                      ),
-                    ]),
-                  ),
-                  const Expanded(child: FriendsList()),
-                ],
-              ),
-            ),
+          _rightPanelArea(),
         ],
       ),
       bottomNavigationBar: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           const ListenAlongBar(),
-          _DesktopPlayerBar(
-            onOpenLyrics: _toggleLyrics,
-            onOpenQueue: () => _openOnActiveTab(const QueueScreen()),
-            onToggleFriends: () => setState(() => _showFriends = !_showFriends),
-          ),
+          _DesktopPlayerBar(activePanel: _rightPanel, onTogglePanel: _toggleRight),
         ],
       ),
     );
@@ -330,14 +327,9 @@ class _NavItem extends StatelessWidget {
 }
 
 class _DesktopPlayerBar extends StatelessWidget {
-  final VoidCallback onOpenLyrics;
-  final VoidCallback onOpenQueue;
-  final VoidCallback onToggleFriends;
-  const _DesktopPlayerBar({
-    required this.onOpenLyrics,
-    required this.onOpenQueue,
-    required this.onToggleFriends,
-  });
+  final String activePanel; // 'friends' | 'queue' | 'lyrics' | ''
+  final void Function(String) onTogglePanel;
+  const _DesktopPlayerBar({required this.activePanel, required this.onTogglePanel});
 
   String _fmt(Duration d) => "${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}";
 
@@ -472,20 +464,23 @@ class _DesktopPlayerBar extends StatelessWidget {
                     IconButton(
                       tooltip: 'Friend activity',
                       iconSize: 19,
-                      icon: const Icon(LucideIcons.users, color: kMuted),
-                      onPressed: onToggleFriends,
+                      icon: Icon(LucideIcons.users,
+                          color: activePanel == 'friends' ? kAccent : kMuted),
+                      onPressed: () => onTogglePanel('friends'),
                     ),
                     IconButton(
                       tooltip: 'Queue',
                       iconSize: 19,
-                      icon: const Icon(LucideIcons.listMusic, color: kMuted),
-                      onPressed: onOpenQueue,
+                      icon: Icon(LucideIcons.listMusic,
+                          color: activePanel == 'queue' ? kAccent : kMuted),
+                      onPressed: () => onTogglePanel('queue'),
                     ),
                     IconButton(
                       tooltip: 'Lyrics',
                       iconSize: 19,
-                      icon: const Icon(LucideIcons.lyrics, color: kMuted),
-                      onPressed: onOpenLyrics,
+                      icon: Icon(LucideIcons.lyrics,
+                          color: activePanel == 'lyrics' ? kAccent : kMuted),
+                      onPressed: () => onTogglePanel('lyrics'),
                     ),
                     const SizedBox(width: 4),
                     const Icon(LucideIcons.volume2, size: 18, color: kMuted),
