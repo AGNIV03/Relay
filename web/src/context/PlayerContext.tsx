@@ -600,6 +600,77 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (audioRef.current) audioRef.current.volume = v;
   }, []);
 
+  // Relative volume/seek used by the keyboard + mouse-wheel shortcuts.
+  const nudgeVolume = useCallback(
+    (delta: number) => {
+      const cur = audioRef.current?.volume ?? 1;
+      setVolume(Math.min(1, Math.max(0, cur + delta)));
+    },
+    [setVolume],
+  );
+
+  const nudgeSeek = useCallback(
+    (deltaSec: number) => {
+      const base = memberNow() ? memberPositionMs() / 1000 : audioRef.current?.currentTime ?? 0;
+      const dur = audioRef.current?.duration ?? 0;
+      let target = base + deltaSec;
+      if (target < 0) target = 0;
+      if (dur > 0 && target > dur) target = dur;
+      seek(target);
+    },
+    [memberNow, memberPositionMs, seek],
+  );
+
+  // App-wide keyboard shortcuts (web). Skipped while typing in a field so search
+  // boxes keep Space / arrows. Keyed off e.code so it's keyboard-layout-independent.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const el = document.activeElement as HTMLElement | null;
+      if (
+        el &&
+        (el.tagName === "INPUT" ||
+          el.tagName === "TEXTAREA" ||
+          el.tagName === "SELECT" ||
+          el.isContentEditable)
+      ) {
+        return;
+      }
+      switch (e.code) {
+        case "Space":
+          e.preventDefault();
+          toggle();
+          break;
+        case "ArrowUp":
+          e.preventDefault();
+          nudgeVolume(0.05);
+          break;
+        case "ArrowDown":
+          e.preventDefault();
+          nudgeVolume(-0.05);
+          break;
+        case "ArrowRight":
+          e.preventDefault();
+          nudgeSeek(10);
+          break;
+        case "ArrowLeft":
+          e.preventDefault();
+          nudgeSeek(-10);
+          break;
+        case "BracketLeft":
+          e.preventDefault();
+          prev();
+          break;
+        case "BracketRight":
+          e.preventDefault();
+          next();
+          break;
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [toggle, next, prev, nudgeVolume, nudgeSeek]);
+
   const toggleRepeat = useCallback(
     () => setRepeat((r) => (r === "off" ? "all" : r === "all" ? "one" : "off")),
     [],

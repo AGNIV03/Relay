@@ -49,7 +49,12 @@ export function PlayerBar({
   const t = p.current;
 
   return (
-    <div className="flex h-20 shrink-0 items-center gap-4 border-t border-[var(--border)] bg-[var(--panel)] px-4">
+    <div
+      onWheel={(e) =>
+        p.setVolume(Math.min(1, Math.max(0, p.volume + (e.deltaY < 0 ? 0.05 : -0.05))))
+      }
+      className="flex h-20 shrink-0 items-center gap-4 border-t border-[var(--border)] bg-[var(--panel)] px-4"
+    >
       {/* Now playing */}
       <div className="flex w-1/4 min-w-0 items-center gap-3">
         <div className="h-12 w-12 shrink-0 overflow-hidden rounded-md bg-[var(--panel-2)]">

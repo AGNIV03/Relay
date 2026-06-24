@@ -875,6 +875,23 @@ class PlayerModel extends ChangeNotifier {
     _broadcastChorus();
   }
 
+  /// Seek relative to the current position, clamped to [0, duration]. Used by the
+  /// desktop left/right-arrow shortcuts (±10s). Routes through [seek] so it works
+  /// for a chorus member (remote command) too.
+  Future<void> nudgeSeek(Duration delta) async {
+    var target = position + delta;
+    if (target < Duration.zero) target = Duration.zero;
+    final d = duration;
+    if (d > Duration.zero && target > d) target = d;
+    await seek(target);
+  }
+
+  /// Adjust volume by [delta], clamped to [0, 1]. Used by the desktop up/down-arrow
+  /// and mouse-wheel volume shortcuts.
+  Future<void> nudgeVolume(double delta) async {
+    await setVolume((volume + delta).clamp(0.0, 1.0));
+  }
+
   Future<void> setVolume(double v) async {
     await _player.setVolume(v);
     notifyListeners(); // update the slider immediately, even while paused

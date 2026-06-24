@@ -1,4 +1,6 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 import '../api.dart';
@@ -159,10 +161,50 @@ class _DesktopShellState extends State<DesktopShell> {
     );
   }
 
+  /// True when a text field (search box, etc.) currently has focus, so the
+  /// keyboard shortcuts below don't hijack Space / arrows while the user types.
+  bool _isTyping() {
+    final ctx = FocusManager.instance.primaryFocus?.context;
+    return ctx != null && ctx.findAncestorStateOfType<EditableTextState>() != null;
+  }
+
+  /// App-level media shortcuts (desktop). Key events bubble up to this root
+  /// [Focus]; text fields consume their own keys first, and we also bail out
+  /// while typing. Repeats are allowed for volume/seek (hold to ramp) but not
+  /// for play/pause and track skip.
+  KeyEventResult _onKey(FocusNode node, KeyEvent e) {
+    if (e is KeyUpEvent) return KeyEventResult.ignored;
+    if (_isTyping()) return KeyEventResult.ignored;
+    final repeat = e is KeyRepeatEvent;
+    final player = context.read<PlayerModel>();
+    final k = e.logicalKey;
+    if (k == LogicalKeyboardKey.space) {
+      if (!repeat) player.toggle();
+    } else if (k == LogicalKeyboardKey.arrowUp) {
+      player.nudgeVolume(0.05);
+    } else if (k == LogicalKeyboardKey.arrowDown) {
+      player.nudgeVolume(-0.05);
+    } else if (k == LogicalKeyboardKey.arrowRight) {
+      player.nudgeSeek(const Duration(seconds: 10));
+    } else if (k == LogicalKeyboardKey.arrowLeft) {
+      player.nudgeSeek(const Duration(seconds: -10));
+    } else if (k == LogicalKeyboardKey.bracketLeft) {
+      if (!repeat) player.previous();
+    } else if (k == LogicalKeyboardKey.bracketRight) {
+      if (!repeat) player.next();
+    } else {
+      return KeyEventResult.ignored;
+    }
+    return KeyEventResult.handled;
+  }
+
   @override
   Widget build(BuildContext context) {
     const pages = [HomeScreen(), SongsScreen(), ArtistsScreen(), PlaylistsScreen()];
-    return Scaffold(
+    return Focus(
+      autofocus: true,
+      onKeyEvent: _onKey,
+      child: Scaffold(
       body: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -200,6 +242,7 @@ class _DesktopShellState extends State<DesktopShell> {
             onToggleLyrics: () => setState(() => _showLyrics = !_showLyrics),
           ),
         ],
+      ),
       ),
     );
   }
@@ -400,7 +443,15 @@ class _DesktopPlayerBar extends StatelessWidget {
     final player = context.watch<PlayerModel>();
     final api = context.read<Api>();
     final track = player.current;
-    return Container(
+    // Mouse wheel over the player bar adjusts volume (scoped here so scrolling
+    // the song lists elsewhere keeps scrolling, not changing volume).
+    return Listener(
+      onPointerSignal: (signal) {
+        if (signal is PointerScrollEvent) {
+          player.nudgeVolume(signal.scrollDelta.dy < 0 ? 0.05 : -0.05);
+        }
+      },
+      child: Container(
       height: 84,
       decoration: const BoxDecoration(
         color: kPanel,
@@ -544,6 +595,7 @@ class _DesktopPlayerBar extends StatelessWidget {
                 ),
               ],
             ),
+      ),
     );
   }
 }

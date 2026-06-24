@@ -45,9 +45,14 @@ dependencies:
 
 # Patched just_audio_background: media notification shows prev/play/next only
 # (no stop button). See third_party/just_audio_background.
+# Patched just_audio_media_kit: fixes an off-by-one in concatenatingInsertAll
+# (desktop "add to queue"/"play next" inserted at the wrong spot, desyncing the
+# displayed track from the audible one). See third_party/just_audio_media_kit.
 dependency_overrides:
   just_audio_background:
     path: third_party/just_audio_background
+  just_audio_media_kit:
+    path: third_party/just_audio_media_kit
 
 dev_dependencies:
   flutter_test:
