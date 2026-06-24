@@ -27,6 +27,10 @@ Future<void> main() async {
   // just_audio binds to a platform with no desktop support and nothing plays.
   try {
     if (_isDesktop) {
+      // Prefetch the next playlist item (libmpv --prefetch-playlist) so tracks
+      // switch near-instantly instead of stalling for seconds while the next
+      // stream is opened.
+      JustAudioMediaKit.prefetchPlaylist = true;
       JustAudioMediaKit.ensureInitialized(
         windows: true,
         linux: true,

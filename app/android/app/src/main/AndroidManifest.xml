@@ -47,10 +47,14 @@
             android:name="com.google.android.gms.car.notification.SmallIcon"
             android:resource="@drawable/ic_notification" />
 
-        <!-- just_audio_background: media session service + media-button receiver -->
+        <!-- just_audio_background: media session service + media-button receiver.
+             stopWithTask=true: swiping the app away from Recents stops the audio
+             service (and playback) and lets the process exit, instead of leaving
+             it running in the background. -->
         <service
             android:name="com.ryanheise.audioservice.AudioService"
             android:foregroundServiceType="mediaPlayback"
+            android:stopWithTask="true"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.media.browse.MediaBrowserService"/>

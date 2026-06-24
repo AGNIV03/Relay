@@ -375,6 +375,12 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                         onPressed: () => context.read<PlayerModel>().playQueue(tracks),
                       ),
                       const SizedBox(width: 10),
+                      OutlinedButton.icon(
+                        icon: const Icon(LucideIcons.shuffle, size: 18),
+                        label: const Text('Shuffle'),
+                        onPressed: () => context.read<PlayerModel>().shuffleAndPlay(tracks),
+                      ),
+                      const SizedBox(width: 10),
                       if (downloads.supported)
                         OutlinedButton.icon(
                           icon: Icon(

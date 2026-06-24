@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Search, Upload, RefreshCw, Play, Music, X } from "lucide-react";
-import { api, coverUrl, uploadFiles, uploadFileChunked, CHUNK_THRESHOLD } from "@/lib/api";
+import { Search, Upload, RefreshCw, Play, Music, X, Shuffle } from "lucide-react";
+import { api, coverUrl, uploadManyFiles } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { usePlayer } from "@/context/PlayerContext";
 import { useLiked } from "@/context/LikedContext";
@@ -10,6 +10,7 @@ import { fmtTime, fmtDateAdded } from "@/lib/format";
 import type { Track } from "@/lib/types";
 import { AddToPlaylist } from "@/components/AddToPlaylist";
 import { LikeButton } from "@/components/LikeButton";
+import { BulkBar } from "@/components/BulkBar";
 
 export default function SongsPage() {
   const { user } = useAuth();
@@ -24,7 +25,29 @@ export default function SongsPage() {
   const [uploadPct, setUploadPct] = useState<number | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [imgErr, setImgErr] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const fileInput = useRef<HTMLInputElement>(null);
+
+  const toggleSel = (id: string) =>
+    setSelected((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  const clearSel = () => setSelected(new Set());
+  const allVisibleSelected = tracks.length > 0 && tracks.every((t) => selected.has(t.id));
+  const toggleAll = () =>
+    setSelected((s) => (tracks.every((t) => s.has(t.id)) ? new Set() : new Set(tracks.map((t) => t.id))));
+  // Drop selections that no longer exist after a reload/search.
+  useEffect(() => {
+    setSelected((s) => {
+      if (s.size === 0) return s;
+      const ids = new Set(tracks.map((t) => t.id));
+      const n = new Set([...s].filter((id) => ids.has(id)));
+      return n.size === s.size ? s : n;
+    });
+  }, [tracks]);
 
   const load = useCallback(async (query: string) => {
     const params = new URLSearchParams({ limit: "500" });
@@ -76,30 +99,9 @@ export default function SongsPage() {
     if (!files || files.length === 0) return;
     setUploadPct(0);
     try {
-      const all = Array.from(files);
-      // Small files go in one batched multipart request; large files (over the
-      // CDN's request-body cap) upload individually in chunks.
-      const small = all.filter((f) => f.size < CHUNK_THRESHOLD);
-      const large = all.filter((f) => f.size >= CHUNK_THRESHOLD);
-      let added = 0,
-        duplicates = 0,
-        failed = 0;
-      if (small.length) {
-        const r = await uploadFiles(small, setUploadPct);
-        added += r.added;
-        duplicates += r.duplicates ?? 0;
-        failed += r.failed;
-      }
-      for (const f of large) {
-        try {
-          const r = await uploadFileChunked(f, setUploadPct);
-          added += r.added;
-          duplicates += r.duplicates ?? 0;
-          failed += r.failed;
-        } catch {
-          failed += 1;
-        }
-      }
+      // Handles any count/size: small files batched under the CDN cap, large
+      // files chunked individually.
+      const { added, duplicates, failed } = await uploadManyFiles(Array.from(files), setUploadPct);
       showToast(
         `Uploaded ${added} song${added === 1 ? "" : "s"}` +
           (duplicates ? `, ${duplicates} already in library` : "") +
@@ -125,12 +127,21 @@ export default function SongsPage() {
         </div>
         <div className="flex items-center gap-2">
           {tracks.length > 0 && (
-            <button
-              onClick={() => player.playQueue(tracks, 0)}
-              className="flex items-center gap-2 rounded-full bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--accent-ink)] hover:brightness-110"
-            >
-              <Play size={16} /> Play all
-            </button>
+            <>
+              <button
+                onClick={() => player.playQueue(tracks, 0)}
+                className="flex items-center gap-2 rounded-full bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--accent-ink)] hover:brightness-110"
+              >
+                <Play size={16} /> Play all
+              </button>
+              <button
+                onClick={() => player.shuffleAndPlay(tracks)}
+                title="Shuffle play"
+                className="flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--panel)] px-4 py-2 text-sm font-medium hover:bg-[var(--panel-2)]"
+              >
+                <Shuffle size={16} /> Shuffle
+              </button>
+            </>
           )}
           <button
             onClick={() => fileInput.current?.click()}
@@ -187,6 +198,10 @@ export default function SongsPage() {
         </div>
       )}
 
+      {selected.size > 0 && (
+        <BulkBar ids={[...selected]} onClear={clearSel} onChanged={() => load(q)} />
+      )}
+
       {loading ? (
         <div className="text-[var(--muted)]">Loading…</div>
       ) : tracks.length === 0 ? (
@@ -198,6 +213,15 @@ export default function SongsPage() {
           <table className="w-full text-sm">
             <thead className="text-left text-xs uppercase text-[var(--muted)]">
               <tr className="border-b border-[var(--border)]">
+                <th className="w-8 px-2 py-2 text-center">
+                  <input
+                    type="checkbox"
+                    checked={allVisibleSelected}
+                    onChange={toggleAll}
+                    className="cursor-pointer accent-[var(--accent)]"
+                    title="Select all"
+                  />
+                </th>
                 <th className="w-10 px-3 py-2 text-center">#</th>
                 <th className="px-3 py-2">Title</th>
                 <th className="hidden px-3 py-2 md:table-cell">Album</th>
@@ -214,9 +238,17 @@ export default function SongsPage() {
                   <tr
                     key={t.id}
                     className={`group border-b border-[var(--border)]/50 hover:bg-[var(--panel-2)] ${
-                      isCurrent ? "bg-[var(--panel-2)]" : ""
+                      selected.has(t.id) ? "bg-[var(--panel-2)]" : isCurrent ? "bg-[var(--panel-2)]" : ""
                     }`}
                   >
+                    <td className="px-2 py-2 text-center">
+                      <input
+                        type="checkbox"
+                        checked={selected.has(t.id)}
+                        onChange={() => toggleSel(t.id)}
+                        className="cursor-pointer accent-[var(--accent)]"
+                      />
+                    </td>
                     <td
                       className="cursor-pointer px-3 py-2 text-center text-[var(--muted)]"
                       onClick={() => player.playQueue(tracks, i)}

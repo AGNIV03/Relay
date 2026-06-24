@@ -13,6 +13,21 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     CreateAndAttachConsole();
   }
 
+  // Single-instance guard: only one Relay window per device. If another instance
+  // already holds the named mutex, tell it to surface its window (it may be hidden
+  // in the system tray) and exit this second process instead of opening a new one.
+  HANDLE single_instance_mutex =
+      ::CreateMutexW(nullptr, TRUE, L"Relay-SingleInstance-Mutex");
+  if (single_instance_mutex != nullptr &&
+      ::GetLastError() == ERROR_ALREADY_EXISTS) {
+    // Grant the existing instance the right to take foreground, then broadcast a
+    // registered message it listens for (see win32_window.cpp) to show itself.
+    ::AllowSetForegroundWindow(ASFW_ANY);
+    UINT show_message = ::RegisterWindowMessageW(L"Relay_SHOW_EXISTING_INSTANCE");
+    ::PostMessageW(HWND_BROADCAST, show_message, 0, 0);
+    return EXIT_SUCCESS;
+  }
+
   // Initialize COM, so that it is available for use in the library and/or
   // plugins.
   ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);

@@ -148,16 +148,21 @@ export async function ingestFile(
   const artistId = await findOrCreateArtist(artistName);
 
   const title = common.title || path.basename(file, path.extname(file));
-  // Reject duplicate songs (same title + artist already in the library). Checked
-  // before creating the album so we don't leave an orphan album behind.
+  const albumTitle = (common.album || "Unknown Album").trim() || "Unknown Album";
+  // Reject duplicate songs (same title + album + artist already in the library).
+  // Checked before creating the album so we don't leave an orphan album behind.
   if (dedupe && !existing) {
     const dup = await prisma.track.findFirst({
-      where: { title: { equals: title, mode: "insensitive" }, artistId },
+      where: {
+        title: { equals: title, mode: "insensitive" },
+        artistId,
+        album: { is: { title: { equals: albumTitle, mode: "insensitive" } } },
+      },
     });
     if (dup) return { trackId: dup.id, created: false, duplicate: true };
   }
 
-  const albumId = await findOrCreateAlbum(common.album || "Unknown Album", artistId, common.year);
+  const albumId = await findOrCreateAlbum(albumTitle, artistId, common.year);
 
   const album = await prisma.album.findUnique({ where: { id: albumId } });
   if (album && !album.coverPath && common.picture?.[0]) {

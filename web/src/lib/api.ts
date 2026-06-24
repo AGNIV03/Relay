@@ -170,6 +170,86 @@ export async function uploadFileChunked(
   return res.json();
 }
 
+/** Keep each batched multipart request comfortably under the CDN's ~100MB body
+ *  cap, and cap the file count per request (server allows 50). */
+const BATCH_BYTES = 80 * 1024 * 1024;
+const BATCH_COUNT = 25;
+
+export interface UploadTotals {
+  added: number;
+  failed: number;
+  duplicates: number;
+  addedNames: string[];
+  failedNames: string[];
+}
+
+/**
+ * Upload any number of files reliably. Large files (≥ CHUNK_THRESHOLD) are sent
+ * individually in chunks; small files are grouped into size-capped batches so a
+ * single multipart request never exceeds the CDN body cap (the previous code put
+ * *all* small files in one request, which 413'd as soon as a few lossless tracks
+ * were selected). Progress is reported across the whole set by bytes.
+ */
+export async function uploadManyFiles(
+  files: File[],
+  onProgress?: (pct: number) => void,
+): Promise<UploadTotals> {
+  const totals: UploadTotals = { added: 0, failed: 0, duplicates: 0, addedNames: [], failedNames: [] };
+  if (!files.length) return totals;
+  const totalBytes = files.reduce((n, f) => n + f.size, 0) || 1;
+  let doneBytes = 0;
+  const report = (cur: number) =>
+    onProgress?.(Math.min(100, Math.round(((doneBytes + cur) / totalBytes) * 100)));
+
+  const small: File[] = [];
+  const large: File[] = [];
+  for (const f of files) (f.size >= CHUNK_THRESHOLD ? large : small).push(f);
+
+  // Greedy size-capped batches of small files.
+  const batches: File[][] = [];
+  let cur: File[] = [];
+  let curSize = 0;
+  for (const f of small) {
+    if (cur.length && (curSize + f.size > BATCH_BYTES || cur.length >= BATCH_COUNT)) {
+      batches.push(cur);
+      cur = [];
+      curSize = 0;
+    }
+    cur.push(f);
+    curSize += f.size;
+  }
+  if (cur.length) batches.push(cur);
+
+  const merge = (r: UploadResult) => {
+    totals.added += r.added;
+    totals.failed += r.failed;
+    totals.duplicates += r.duplicates ?? 0;
+    totals.addedNames.push(...r.addedNames);
+    totals.failedNames.push(...r.failedNames);
+  };
+
+  for (const batch of batches) {
+    const batchBytes = batch.reduce((n, f) => n + f.size, 0);
+    try {
+      merge(await uploadFiles(batch, (pct) => report((pct / 100) * batchBytes)));
+    } catch {
+      totals.failed += batch.length;
+    }
+    doneBytes += batchBytes;
+    report(0);
+  }
+  for (const f of large) {
+    try {
+      merge(await uploadFileChunked(f, (pct) => report((pct / 100) * f.size)));
+    } catch {
+      totals.failed += 1;
+    }
+    doneBytes += f.size;
+    report(0);
+  }
+  return totals;
+}
+
 /** Build an authenticated media URL for <audio>/<img> (token in query). */
 export function streamUrl(trackId: string, opts?: { format?: string; bitrate?: number }) {
   const params = new URLSearchParams({ token: tokens.access ?? "" });

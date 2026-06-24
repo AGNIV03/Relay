@@ -38,6 +38,20 @@ class QueuePanel extends StatelessWidget {
     if (q.isEmpty || idx < 0 || idx >= q.length) {
       return const Center(child: Text('Nothing in the queue', style: TextStyle(color: kMuted)));
     }
+
+    // Two layers: manually-queued songs ("Next in queue") play before the rest of
+    // the context ("Next up") resumes.
+    final inQueue = <int>[];
+    final fromContext = <int>[];
+    for (var i = idx + 1; i < q.length; i++) {
+      (player.isUserQueuedAt(i) ? inQueue : fromContext).add(i);
+    }
+
+    Widget header(String label) => Padding(
+          padding: const EdgeInsets.fromLTRB(16, 18, 16, 2),
+          child: Text(label, style: const TextStyle(color: kMuted, fontSize: 11, letterSpacing: 1)),
+        );
+
     return ListView(
       children: [
         const Padding(
@@ -46,12 +60,13 @@ class QueuePanel extends StatelessWidget {
               style: TextStyle(color: kMuted, fontSize: 11, letterSpacing: 1)),
         ),
         tile(q[idx], current: true),
-        if (idx + 1 < q.length) ...[
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 18, 16, 2),
-            child: Text('NEXT UP', style: TextStyle(color: kMuted, fontSize: 11, letterSpacing: 1)),
-          ),
-          for (int i = idx + 1; i < q.length; i++) tile(q[i], removeAt: i),
+        if (inQueue.isNotEmpty) ...[
+          header('NEXT IN QUEUE'),
+          for (final i in inQueue) tile(q[i], removeAt: i),
+        ],
+        if (fromContext.isNotEmpty) ...[
+          header('NEXT UP'),
+          for (final i in fromContext) tile(q[i], removeAt: i),
         ],
       ],
     );

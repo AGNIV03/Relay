@@ -206,6 +206,16 @@ class Api {
   /// Permanently delete a track (file + DB). Admin or the uploader only.
   Future<void> deleteTrack(String trackId) => _send('DELETE', '/api/library/tracks/$trackId');
 
+  /// Delete many tracks at once. Returns {deleted, forbidden} (forbidden = tracks
+  /// the caller wasn't allowed to delete and that were skipped).
+  Future<Map<String, int>> bulkDeleteTracks(List<String> ids) async {
+    final j = await _send('POST', '/api/library/tracks/bulk-delete', body: {'ids': ids});
+    return {
+      'deleted': (j?['deleted'] ?? 0) as int,
+      'forbidden': (j?['forbidden'] ?? 0) as int,
+    };
+  }
+
   // ---- Library scan (admin) ----
   /// Trigger a server-side rescan of the music folder (picks up new/removed files).
   Future<void> triggerScan() => _send('POST', '/api/admin/scan');
@@ -302,6 +312,63 @@ class Api {
     return jsonDecode(fin.body) as Map<String, dynamic>;
   }
 
+  /// Upload any number of files reliably. Small files are grouped into size-capped
+  /// multipart batches so a single request never exceeds the CDN's ~100MB body cap
+  /// (uploading several lossless tracks in one request used to fail); large files
+  /// are chunked individually. Returns aggregated {added, failed, duplicates}.
+  Future<Map<String, int>> uploadManyTracks(List<String> paths) async {
+    const batchBytes = 80 * 1024 * 1024;
+    const batchCount = 25;
+    var added = 0, failed = 0, duplicates = 0;
+    void merge(Map<String, dynamic> r) {
+      added += (r['added'] ?? 0) as int;
+      failed += (r['failed'] ?? 0) as int;
+      duplicates += (r['duplicates'] ?? 0) as int;
+    }
+
+    final sizes = <String, int>{};
+    for (final p in paths) {
+      try {
+        sizes[p] = await File(p).length();
+      } catch (_) {
+        sizes[p] = 0;
+      }
+    }
+    final small = paths.where((p) => sizes[p]! < chunkThreshold).toList();
+    final large = paths.where((p) => sizes[p]! >= chunkThreshold).toList();
+
+    // Greedy size-capped batches of small files.
+    final batches = <List<String>>[];
+    var cur = <String>[];
+    var curSize = 0;
+    for (final p in small) {
+      if (cur.isNotEmpty && (curSize + sizes[p]! > batchBytes || cur.length >= batchCount)) {
+        batches.add(cur);
+        cur = [];
+        curSize = 0;
+      }
+      cur.add(p);
+      curSize += sizes[p]!;
+    }
+    if (cur.isNotEmpty) batches.add(cur);
+
+    for (final batch in batches) {
+      try {
+        merge(await uploadTracks(batch));
+      } catch (_) {
+        failed += batch.length;
+      }
+    }
+    for (final p in large) {
+      try {
+        merge(await uploadTrackChunked(p));
+      } catch (_) {
+        failed += 1;
+      }
+    }
+    return {'added': added, 'failed': failed, 'duplicates': duplicates};
+  }
+
   // ---- Likes / Liked Songs ----
   Future<List<String>> likedIds() async =>
       (await _get('/api/library/liked/ids') as List).cast<String>();
@@ -349,6 +416,13 @@ class Api {
       UserProfile.fromJson(await _get('/api/social/users/$userId'));
   Future<void> addToPlaylist(String playlistId, String trackId) =>
       _send('POST', '/api/playlists/$playlistId/tracks', body: {'trackId': trackId});
+  /// Add many tracks to a playlist at once (already-present tracks are skipped).
+  /// Returns the number actually added.
+  Future<int> addManyToPlaylist(String playlistId, List<String> trackIds) async {
+    final j = await _send('POST', '/api/playlists/$playlistId/tracks/bulk',
+        body: {'trackIds': trackIds});
+    return (j?['added'] ?? 0) as int;
+  }
   Future<void> removeFromPlaylist(String playlistId, String trackId) =>
       _send('DELETE', '/api/playlists/$playlistId/tracks/$trackId');
 

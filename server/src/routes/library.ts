@@ -324,34 +324,30 @@ router.get("/tracks/:id/lyrics/translation", async (req, res) => {
   res.json({ lang: track?.lyricsLang ?? null, translated: track?.lyricsTranslated ?? null });
 });
 
-/** DELETE /api/library/tracks/:id — permanently delete a track: removes the DB
- *  record (cascades likes / playlist entries / play history) AND the underlying
- *  audio file from storage. Allowed for an ADMIN or the user who uploaded it. */
-router.delete("/tracks/:id", async (req, res) => {
-  const track = await prisma.track.findUnique({ where: { id: req.params.id } });
-  if (!track) return res.status(404).json({ error: "Not found" });
-  const isAdmin = req.user!.role === "ADMIN";
-  if (!isAdmin && track.uploaderId !== req.user!.id) {
-    return res.status(403).json({ error: "You can only delete songs you uploaded" });
-  }
-
-  const { albumId, artistId, path: filePath } = track;
-
+/** Permanently delete a track: removes the DB row (cascades likes / playlist
+ *  entries / play history) and the underlying audio file, then cleans up an
+ *  album/artist left empty. Caller must have already authorized the deletion. */
+async function removeTrackRecord(track: {
+  id: string;
+  albumId: string | null;
+  artistId: string;
+  path: string;
+}) {
   // Remove the DB row first (FK cascades clear favorites/playlist entries/history).
   await prisma.track.delete({ where: { id: track.id } });
 
   // Delete the actual file from disk so storage is reclaimed.
   try {
-    if (filePath) fs.rmSync(filePath, { force: true });
+    if (track.path) fs.rmSync(track.path, { force: true });
   } catch (e) {
-    console.error(`[delete] could not remove file ${filePath}:`, (e as Error).message);
+    console.error(`[delete] could not remove file ${track.path}:`, (e as Error).message);
   }
 
   // Clean up an album left with no tracks (plus its cover-art file).
-  if (albumId) {
-    const remaining = await prisma.track.count({ where: { albumId } });
+  if (track.albumId) {
+    const remaining = await prisma.track.count({ where: { albumId: track.albumId } });
     if (remaining === 0) {
-      const album = await prisma.album.findUnique({ where: { id: albumId } });
+      const album = await prisma.album.findUnique({ where: { id: track.albumId } });
       if (album?.coverPath) {
         try {
           fs.rmSync(album.coverPath, { force: true });
@@ -359,17 +355,50 @@ router.delete("/tracks/:id", async (req, res) => {
           /* ignore */
         }
       }
-      await prisma.album.delete({ where: { id: albumId } }).catch(() => {});
+      await prisma.album.delete({ where: { id: track.albumId } }).catch(() => {});
     }
   }
   // Clean up an artist left with no tracks and no albums.
-  const tracksLeft = await prisma.track.count({ where: { artistId } });
-  const albumsLeft = await prisma.album.count({ where: { artistId } });
+  const tracksLeft = await prisma.track.count({ where: { artistId: track.artistId } });
+  const albumsLeft = await prisma.album.count({ where: { artistId: track.artistId } });
   if (tracksLeft === 0 && albumsLeft === 0) {
-    await prisma.artist.delete({ where: { id: artistId } }).catch(() => {});
+    await prisma.artist.delete({ where: { id: track.artistId } }).catch(() => {});
   }
+}
 
+/** DELETE /api/library/tracks/:id — permanently delete a track. Allowed for an
+ *  ADMIN or the user who uploaded it. */
+router.delete("/tracks/:id", async (req, res) => {
+  const track = await prisma.track.findUnique({ where: { id: req.params.id } });
+  if (!track) return res.status(404).json({ error: "Not found" });
+  const isAdmin = req.user!.role === "ADMIN";
+  if (!isAdmin && track.uploaderId !== req.user!.id) {
+    return res.status(403).json({ error: "You can only delete songs you uploaded" });
+  }
+  await removeTrackRecord(track);
   res.status(204).end();
+});
+
+/** POST /api/library/tracks/bulk-delete { ids } — delete many tracks at once.
+ *  Each must be admin-owned or uploaded by the caller; others are skipped and
+ *  counted in `forbidden`. */
+router.post("/tracks/bulk-delete", async (req, res) => {
+  const parsed = z.object({ ids: z.array(z.string()).min(1).max(2000) }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid input" });
+  const isAdmin = req.user!.role === "ADMIN";
+  let deleted = 0;
+  let forbidden = 0;
+  for (const id of parsed.data.ids) {
+    const track = await prisma.track.findUnique({ where: { id } });
+    if (!track) continue;
+    if (!isAdmin && track.uploaderId !== req.user!.id) {
+      forbidden++;
+      continue;
+    }
+    await removeTrackRecord(track);
+    deleted++;
+  }
+  res.json({ deleted, forbidden });
 });
 
 // ---- Likes / "Liked Songs" ------------------------------------------------

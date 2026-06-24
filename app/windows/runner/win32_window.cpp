@@ -178,6 +178,21 @@ Win32Window::MessageHandler(HWND hwnd,
                             UINT const message,
                             WPARAM const wparam,
                             LPARAM const lparam) noexcept {
+  // A second launch broadcasts this registered message (see main.cpp). Surface
+  // this window — it may be hidden in the tray (SW_HIDE) or minimized — instead
+  // of letting the second process open a new window.
+  static const UINT kShowExistingInstance =
+      ::RegisterWindowMessageW(L"Relay_SHOW_EXISTING_INSTANCE");
+  if (message == kShowExistingInstance) {
+    ::ShowWindow(hwnd, SW_SHOW);
+    if (::IsIconic(hwnd)) {
+      ::ShowWindow(hwnd, SW_RESTORE);
+    }
+    ::SetForegroundWindow(hwnd);
+    ::BringWindowToTop(hwnd);
+    return 0;
+  }
+
   switch (message) {
     case WM_DESTROY:
       window_handle_ = nullptr;

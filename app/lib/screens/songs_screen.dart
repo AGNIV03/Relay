@@ -27,6 +27,159 @@ class _SongsScreenState extends State<SongsScreen> {
   bool _loading = true;
   bool _uploading = false;
   bool _refreshing = false;
+  final Set<String> _selected = {}; // multi-select on the songs list
+
+  void _toggleSelect(Track t) => setState(() {
+        if (!_selected.remove(t.id)) _selected.add(t.id);
+      });
+
+  void _clearSelection() => setState(_selected.clear);
+
+  void _selectAll() => setState(() {
+        if (_selected.length == _tracks.length) {
+          _selected.clear();
+        } else {
+          _selected
+            ..clear()
+            ..addAll(_tracks.map((t) => t.id));
+        }
+      });
+
+  Future<void> _bulkDelete() async {
+    final ids = _selected.toList();
+    if (ids.isEmpty) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: kPanel,
+        title: Text('Delete ${ids.length} song${ids.length == 1 ? '' : 's'}?'),
+        content: const Text('The selected songs will be permanently removed from the '
+            'server, including the files. This cannot be undone.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete', style: TextStyle(color: Color(0xFFEF4444))),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      final r = await context.read<Api>().bulkDeleteTracks(ids);
+      if (!mounted) return;
+      final deleted = r['deleted'] ?? 0;
+      final forbidden = r['forbidden'] ?? 0;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Deleted $deleted song${deleted == 1 ? '' : 's'}'
+            '${forbidden > 0 ? ', $forbidden skipped (not yours)' : ''}'),
+      ));
+      _clearSelection();
+      _load(_controller.text);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Delete failed: $e')));
+      }
+    }
+  }
+
+  Future<void> _bulkAddToPlaylist() async {
+    final ids = _selected.toList();
+    if (ids.isEmpty) return;
+    final api = context.read<Api>();
+    final playlists = await api.playlists();
+    if (!mounted) return;
+    await showModalBottomSheet(
+      context: context,
+      backgroundColor: kPanel,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text('Add ${ids.length} song${ids.length == 1 ? '' : 's'} to playlist',
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            if (playlists.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(16),
+                child: Text('No playlists yet', style: TextStyle(color: kMuted)),
+              ),
+            ...playlists.map((pl) => ListTile(
+                  leading: const Icon(LucideIcons.listMusic, size: 18),
+                  title: Text(pl.name),
+                  onTap: () async {
+                    String msg;
+                    try {
+                      final added = await api.addManyToPlaylist(pl.id, ids);
+                      final skipped = ids.length - added;
+                      msg = 'Added $added to ${pl.name}'
+                          '${skipped > 0 ? ' ($skipped already there)' : ''}';
+                    } catch (_) {
+                      msg = "Couldn't add to playlist";
+                    }
+                    if (ctx.mounted) Navigator.pop(ctx);
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+                      );
+                      _clearSelection();
+                    }
+                  },
+                )),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _selectionBar() {
+    final n = _selected.length;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: kPanel2,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: kBorder),
+      ),
+      child: Row(
+        children: [
+          IconButton(
+            onPressed: _clearSelection,
+            icon: const Icon(LucideIcons.x, size: 18),
+            tooltip: 'Clear selection',
+          ),
+          Text('$n selected', style: const TextStyle(fontWeight: FontWeight.w600)),
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              reverse: true,
+              child: Row(
+                children: [
+                  TextButton.icon(
+                    onPressed: _bulkAddToPlaylist,
+                    icon: const Icon(LucideIcons.listPlus, size: 18),
+                    label: const Text('Add to playlist'),
+                  ),
+                  TextButton.icon(
+                    onPressed: _bulkDelete,
+                    icon: const Icon(LucideIcons.trash2, size: 18, color: Color(0xFFEF4444)),
+                    label: const Text('Delete', style: TextStyle(color: Color(0xFFEF4444))),
+                  ),
+                  TextButton(
+                    onPressed: _selectAll,
+                    child: Text(n == _tracks.length ? 'Unselect all' : 'Select all'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -47,6 +200,7 @@ class _SongsScreenState extends State<SongsScreen> {
     setState(() {
       _tracks = tracks;
       _loading = false;
+      _selected.retainWhere((id) => tracks.any((t) => t.id == id));
     });
   }
 
@@ -85,29 +239,15 @@ class _SongsScreenState extends State<SongsScreen> {
     );
     final files = result?.files.where((f) => f.path != null).toList() ?? [];
     if (files.isEmpty) return;
-    // Small files batch in one multipart request; large files (over the CDN's
-    // request-body cap) upload individually in chunks.
-    final small = files.where((f) => f.size < Api.chunkThreshold).map((f) => f.path!).toList();
-    final large = files.where((f) => f.size >= Api.chunkThreshold).toList();
+    final paths = files.map((f) => f.path!).toList();
     setState(() => _uploading = true);
     try {
-      var added = 0, failed = 0, dupes = 0;
-      if (small.isNotEmpty) {
-        final r = await api.uploadTracks(small);
-        added += (r['added'] ?? 0) as int;
-        failed += (r['failed'] ?? 0) as int;
-        dupes += (r['duplicates'] ?? 0) as int;
-      }
-      for (final f in large) {
-        try {
-          final r = await api.uploadTrackChunked(f.path!);
-          added += (r['added'] ?? 0) as int;
-          failed += (r['failed'] ?? 0) as int;
-          dupes += (r['duplicates'] ?? 0) as int;
-        } catch (_) {
-          failed += 1;
-        }
-      }
+      // Handles any count/size: small files batched under the CDN cap, large
+      // files chunked individually.
+      final r = await api.uploadManyTracks(paths);
+      final added = r['added'] ?? 0;
+      final failed = r['failed'] ?? 0;
+      final dupes = r['duplicates'] ?? 0;
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text('Uploaded $added song${added == 1 ? '' : 's'}'
@@ -175,6 +315,7 @@ class _SongsScreenState extends State<SongsScreen> {
             ],
           ),
         ),
+        if (_selected.isNotEmpty) _selectionBar(),
         Expanded(
           child: _loading
               ? const Center(child: CircularProgressIndicator())
@@ -182,7 +323,12 @@ class _SongsScreenState extends State<SongsScreen> {
                   ? const Center(child: Text("No songs", style: TextStyle(color: kMuted)))
                   : _isDesktop
                       // Desktop/web: columnar table (Album / Uploaded by / Added).
-                      ? TrackTable(tracks: _tracks, onChanged: () => _load(_controller.text))
+                      ? TrackTable(
+                          tracks: _tracks,
+                          onChanged: () => _load(_controller.text),
+                          selectedIds: _selected,
+                          onSelectToggle: _toggleSelect,
+                        )
                       // Mobile: compact list, no "uploaded by".
                       : ListView.builder(
                           itemCount: _tracks.length,
@@ -191,6 +337,8 @@ class _SongsScreenState extends State<SongsScreen> {
                             index: i,
                             showDownload: true,
                             onChanged: () => _load(_controller.text),
+                            selectedIds: _selected,
+                            onSelectToggle: _toggleSelect,
                           ),
                         ),
         ),

@@ -27,6 +27,8 @@ interface PlayerState {
   lyrics: Lyrics | null;
   /** Play a list of tracks starting at `start`. */
   playQueue: (tracks: Track[], start?: number) => void;
+  /** Shuffle a list and start playing immediately (regardless of the toggle). */
+  shuffleAndPlay: (tracks: Track[]) => void;
   toggle: () => void;
   next: () => void;
   prev: () => void;
@@ -43,6 +45,8 @@ interface PlayerState {
   removeFromQueue: (i: number) => void;
   /** Jump to queue position `i`. */
   playAt: (i: number) => void;
+  /** Whether the upcoming queue item at index `i` was manually queued (vs context). */
+  isUserQueued: (i: number) => boolean;
   /** Whether a listen-along session is active. */
   listeningAlong: boolean;
   listenHostName: string | null;
@@ -66,15 +70,12 @@ interface PlayerState {
 
 const PlayerContext = createContext<PlayerState | null>(null);
 
-/** Fisher–Yates over [0..n), with `first` moved to the front so playback continues. */
-function shuffledOrder(n: number, first: number): number[] {
-  const arr = Array.from({ length: n }, (_, i) => i);
-  for (let i = n - 1; i > 0; i--) {
+/** In-place Fisher–Yates shuffle. */
+function shuffleInPlace<T>(arr: T[]): T[] {
+  for (let i = arr.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
-  const fi = arr.indexOf(first);
-  if (fi > 0) [arr[0], arr[fi]] = [arr[fi], arr[0]];
   return arr;
 }
 
@@ -115,9 +116,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const queueRef = useRef<Track[]>([]);
   const indexRef = useRef(0);
   const repeatRef = useRef<RepeatMode>("off");
-  const orderRef = useRef<number[]>([]); // playback order: positions -> queue index
+  // Two-layer queue: `queue` is the real flat play order; userQRef[i] marks
+  // whether queue[i] is a manually-queued item ("Play next" / "Add to queue")
+  // vs part of the context (playlist/album/songs). contextOriginalRef keeps the
+  // context's unshuffled order so toggling shuffle off can restore it.
+  const userQRef = useRef<boolean[]>([]);
+  const contextOriginalRef = useRef<Track[]>([]);
   // Listen-along: saved session to restore on stop, + "finish current then restore" flag.
-  const savedSessionRef = useRef<{ queue: Track[]; index: number; order: number[] } | null>(null);
+  const savedSessionRef = useRef<{ queue: Track[]; index: number; userQ: boolean[] } | null>(null);
   const restoreAfterCurrentRef = useRef(false);
   const listenHostRef = useRef<string | null>(null);
   const currentIdRef = useRef<string | null>(null);
@@ -158,20 +164,19 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     return ms < 0 ? 0 : ms;
   }, []);
 
-  // Advance helper shared by manual-next and natural-end.
+  // Advance helper shared by manual-next and natural-end. The queue IS the play
+  // order, so this is just index ± 1 with optional wrap.
   const advance = useCallback((dir: 1 | -1, loop: boolean): number | null => {
-    const order = orderRef.current;
-    const n = order.length;
+    const n = queueRef.current.length;
     if (n === 0) return null;
-    const pos = order.indexOf(indexRef.current);
-    let np = (pos < 0 ? 0 : pos) + dir;
+    let np = indexRef.current + dir;
     if (np >= n) {
       if (!loop) return null;
       np = 0;
     } else if (np < 0) {
       np = n - 1;
     }
-    return order[np];
+    return np;
   }, []);
 
   // Create the audio element once.
@@ -203,9 +208,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         const saved = savedSessionRef.current;
         savedSessionRef.current = null;
         if (saved && saved.queue.length) {
-          orderRef.current = saved.order;
-          const pos = saved.order.indexOf(saved.index);
-          const np = pos >= 0 && pos + 1 < saved.order.length ? saved.order[pos + 1] : saved.order[0];
+          userQRef.current = saved.userQ;
+          const np = saved.index + 1 < saved.queue.length ? saved.index + 1 : 0;
           scrobbled.current.clear();
           setQueue(saved.queue);
           setIndex(np);
@@ -226,7 +230,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         audio.pause();
         audio.src = "";
         scrobbled.current.clear();
-        orderRef.current = [];
+        userQRef.current = [];
+        contextOriginalRef.current = [];
         setQueue([]);
         setIndex(0);
         setPlaying(false);
@@ -346,10 +351,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         // the current track stays at its index so the <audio> never reloads.
         const keepsCurrent = !!curId && tQueue[indexRef.current] === curId;
         if (resolved.length && keepsCurrent && tPos == null && tPlaying == null) {
-          orderRef.current = Array.from({ length: resolved.length }, (_, i) => i);
+          userQRef.current = new Array(resolved.length).fill(false);
+          contextOriginalRef.current = resolved;
           setQueue(resolved);
         } else if (resolved.length) {
-          orderRef.current = Array.from({ length: resolved.length }, (_, i) => i);
+          userQRef.current = new Array(resolved.length).fill(false);
+          contextOriginalRef.current = resolved;
           scrobbled.current.clear();
           pendingSeekRef.current = (tPos ?? 0) / 1000;
           setQueue(resolved);
@@ -468,10 +475,25 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   // ---- Playback controls ----------------------------------------------------
   const playQueue = useCallback(
-    (tracks: Track[], start = 0) => {
+    (tracks: Track[], start = 0, forceShuffle = false) => {
       if (!tracks.length) return;
+      const useShuffle = forceShuffle || shuffle;
+      if (forceShuffle && !shuffle) setShuffle(true);
+      // Build the actual play order: with shuffle on, the chosen track plays first
+      // and the rest follow in random order. The queue IS the play order.
+      let q: Track[];
+      let startIdx: number;
+      if (useShuffle && tracks.length > 1) {
+        const rest = shuffleInPlace(tracks.filter((_, i) => i !== start));
+        q = [tracks[start], ...rest];
+        startIdx = 0;
+      } else {
+        q = [...tracks];
+        startIdx = start;
+      }
       if (memberNow()) {
-        sendCommand({ queue: tracks.map((t) => t.id), index: start, positionMs: 0, playing: true });
+        // Hand the host a queue already in play order (shuffled if requested).
+        sendCommand({ queue: q.map((t) => t.id), index: startIdx, positionMs: 0, playing: true });
         return;
       }
       // Manually choosing music exits any listen-along session.
@@ -482,18 +504,18 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       }
       chorusAutoStopRef.current = false;
       scrobbled.current.clear();
-      orderRef.current = shuffle
-        ? shuffledOrder(tracks.length, start)
-        : Array.from({ length: tracks.length }, (_, i) => i);
-      setQueue(tracks);
-      setIndex(start);
+      // A fresh context fully replaces the previous queue (incl. any manual queue).
+      contextOriginalRef.current = [...tracks];
+      userQRef.current = new Array(q.length).fill(false);
+      setQueue(q);
+      setIndex(startIdx);
       // Auto-start a chorus whenever fresh playback begins (host), unless already in one.
       if (!chorusRef.current) {
         api
           .post<ChorusState>("/api/chorus/start", {
             mode: "open",
-            queue: tracks.map((t) => t.id),
-            index: start,
+            queue: q.map((t) => t.id),
+            index: startIdx,
             positionMs: 0,
             playing: true,
           })
@@ -507,6 +529,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       }
     },
     [shuffle, memberNow, sendCommand, startChorusLoop],
+  );
+
+  const shuffleAndPlay = useCallback(
+    (tracks: Track[]) => {
+      if (!tracks.length) return;
+      playQueue(tracks, Math.floor(Math.random() * tracks.length), true);
+    },
+    [playQueue],
   );
 
   const toggle = useCallback(() => {
@@ -575,20 +605,43 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  const toggleShuffle = useCallback(() => {
-    setShuffle((s) => {
-      const ns = !s;
-      const n = queueRef.current.length;
-      orderRef.current = ns
-        ? shuffledOrder(n, indexRef.current)
-        : Array.from({ length: n }, (_, i) => i);
-      return ns;
-    });
+  // Reorder only the UPCOMING CONTEXT (keep the current track + user queue). On:
+  // shuffle it; off: restore its original order. Current keeps playing.
+  const applyShuffle = useCallback((on: boolean) => {
+    const q = queueRef.current;
+    const uq = userQRef.current;
+    const idx = indexRef.current;
+    if (q.length <= 1) return;
+    const upcomingUser: Track[] = [];
+    const upcomingContext: Track[] = [];
+    for (let i = idx + 1; i < q.length; i++) (uq[i] ? upcomingUser : upcomingContext).push(q[i]);
+    if (upcomingContext.length > 1) {
+      if (on) shuffleInPlace(upcomingContext);
+      else {
+        const orig = new Map(contextOriginalRef.current.map((t, i) => [t.id, i]));
+        upcomingContext.sort((a, b) => (orig.get(a.id) ?? 1e9) - (orig.get(b.id) ?? 1e9));
+      }
+    }
+    const newQ = [...q.slice(0, idx + 1), ...upcomingUser, ...upcomingContext];
+    userQRef.current = [
+      ...uq.slice(0, idx + 1),
+      ...upcomingUser.map(() => true),
+      ...upcomingContext.map(() => false),
+    ];
+    setQueue(newQ);
   }, []);
+
+  const toggleShuffle = useCallback(() => {
+    const ns = !shuffle;
+    setShuffle(ns);
+    applyShuffle(ns);
+  }, [shuffle, applyShuffle]);
 
   const coverFor = useCallback((t: Track) => coverUrl(t.id), []);
 
   // --- Queue editing ---------------------------------------------------------
+  // Add to the user queue: after the current track and any already-queued songs,
+  // before the rest of the context.
   const addToQueue = useCallback(
     (t: Track) => {
       if (memberNow()) {
@@ -598,18 +651,23 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       }
       setQueue((q) => {
         if (!q.length) {
-          orderRef.current = [0];
+          userQRef.current = [false];
+          contextOriginalRef.current = [t];
           scrobbled.current.clear();
           setIndex(0);
           return [t];
         }
-        orderRef.current = [...orderRef.current, q.length];
-        return [...q, t];
+        const uq = userQRef.current;
+        let at = indexRef.current + 1;
+        while (at < q.length && uq[at]) at++;
+        userQRef.current = [...uq.slice(0, at), true, ...uq.slice(at)];
+        return [...q.slice(0, at), t, ...q.slice(at)];
       });
     },
     [memberNow, sendCommand],
   );
 
+  // Play next: jump to the front of the user queue (right after the current track).
   const playNext = useCallback(
     (t: Track) => {
       if (memberNow()) {
@@ -622,17 +680,16 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       }
       setQueue((q) => {
         if (!q.length) {
-          orderRef.current = [0];
+          userQRef.current = [false];
+          contextOriginalRef.current = [t];
           scrobbled.current.clear();
           setIndex(0);
           return [t];
         }
-        const newIdx = q.length;
-        const order = orderRef.current;
-        const pos = order.indexOf(indexRef.current);
-        const insertAt = pos < 0 ? order.length : pos + 1;
-        orderRef.current = [...order.slice(0, insertAt), newIdx, ...order.slice(insertAt)];
-        return [...q, t];
+        const at = indexRef.current + 1;
+        const uq = userQRef.current;
+        userQRef.current = [...uq.slice(0, at), true, ...uq.slice(at)];
+        return [...q.slice(0, at), t, ...q.slice(at)];
       });
     },
     [memberNow, sendCommand],
@@ -652,9 +709,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         if (i < 0 || i >= q.length) return q;
         if (i === indexRef.current) return q; // don't yank the playing track
         const nq = q.filter((_, k) => k !== i);
-        orderRef.current = orderRef.current
-          .filter((idx) => idx !== i)
-          .map((idx) => (idx > i ? idx - 1 : idx));
+        userQRef.current = userQRef.current.filter((_, k) => k !== i);
         if (indexRef.current > i) setIndex((n) => n - 1);
         return nq;
       });
@@ -672,6 +727,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       if (i >= 0 && i < queueRef.current.length) setIndex(i);
     },
     [memberNow, sendCommand],
+  );
+
+  const isUserQueued = useCallback(
+    (i: number) => !isChorusMember && !!userQRef.current[i],
+    [isChorusMember],
   );
 
   // --- Presence heartbeat ----------------------------------------------------
@@ -717,7 +777,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       savedSessionRef.current = {
         queue: queueRef.current,
         index: indexRef.current,
-        order: orderRef.current,
+        userQ: userQRef.current,
       };
       restoreAfterCurrentRef.current = false;
       setListenHost({ id: userId, name });
@@ -756,7 +816,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const targetSec = Math.max(0, targetMs / 1000);
       if (currentIdRef.current !== act.trackId) {
         scrobbled.current.clear();
-        orderRef.current = [0];
+        userQRef.current = [false];
         setQueue([act.track]);
         setIndex(0);
         const onReady = () => {
@@ -881,6 +941,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         shuffle,
         lyrics,
         playQueue,
+        shuffleAndPlay,
         toggle,
         next,
         prev,
@@ -893,6 +954,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         playNext,
         removeFromQueue,
         playAt,
+        isUserQueued,
         listeningAlong: listenHost !== null,
         listenHostName: listenHost?.name ?? null,
         listenHostId: listenHost?.id ?? null,

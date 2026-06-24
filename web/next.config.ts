@@ -5,11 +5,12 @@ const nextConfig: NextConfig = {
   output: "standalone",
   reactStrictMode: true,
   experimental: {
-    // Next 15.5 caps the body of proxied (rewritten) requests at 10MB by default,
+    // Next caps the body of proxied (rewritten) requests at 10MB by default,
     // which truncates large lossless audio uploads going through the /api proxy
     // below (the backend then sees a short body → socket hang up → 500). Raise it
     // to match the API's own 2GB multer limit so full songs upload intact.
-    middlewareClientMaxBodySize: "2gb",
+    // (Renamed from middlewareClientMaxBodySize in Next 16 when middleware→proxy.)
+    proxyClientMaxBodySize: "2gb",
   },
   // Same-origin API proxy. Lets the browser call /api/* on whatever host/scheme
   // serves the web app (e.g. https://music.agniv.site/api/...) and forwards it

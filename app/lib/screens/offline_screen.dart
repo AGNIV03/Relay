@@ -127,6 +127,14 @@ class OfflinePlaylistScreen extends StatelessWidget {
                     : () => context.read<PlayerModel>().playQueue(tracks),
               ),
               const SizedBox(width: 10),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.shuffle, size: 18),
+                label: const Text('Shuffle'),
+                onPressed: tracks.isEmpty
+                    ? null
+                    : () => context.read<PlayerModel>().shuffleAndPlay(tracks),
+              ),
+              const SizedBox(width: 10),
               Text('${tracks.length} songs', style: const TextStyle(color: kMuted)),
             ]),
           ),

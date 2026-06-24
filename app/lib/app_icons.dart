@@ -32,6 +32,7 @@ class LucideIcons {
   static const IconData moreVertical = Symbols.more_vert;
   static const IconData check = Symbols.check;
   static const IconData checkCircle = Symbols.check_circle;
+  static const IconData circle = Symbols.circle; // unchecked selection marker
   static const IconData listPlus = Symbols.playlist_add;
   static const IconData heart = Symbols.favorite; // use Icon(..., fill: 1) when liked
   static const IconData lyrics = Symbols.music_note; // note icon for the lyrics toggle

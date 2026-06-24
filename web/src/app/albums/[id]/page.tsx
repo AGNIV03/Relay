@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { Play, Disc3 } from "lucide-react";
+import { Play, Disc3, Shuffle } from "lucide-react";
 import { api, albumCoverUrl } from "@/lib/api";
 import { usePlayer } from "@/context/PlayerContext";
 import { TrackList } from "@/components/TrackList";
@@ -51,12 +51,23 @@ export default function AlbumPage() {
             {album.year ? ` · ${album.year}` : ""} · {tracks.length} tracks ·{" "}
             {fmtDurationLong(totalDur)}
           </div>
-          <button
-            onClick={() => player.playQueue(tracks, 0)}
-            className="mt-4 flex items-center gap-2 rounded-full bg-[var(--accent)] px-6 py-2 text-sm font-medium text-[var(--accent-ink)] hover:brightness-110"
-          >
-            <Play size={16} /> Play
-          </button>
+          <div className="mt-4 flex items-center justify-center gap-3 sm:justify-start">
+            <button
+              onClick={() => player.playQueue(tracks, 0)}
+              disabled={tracks.length === 0}
+              className="flex items-center gap-2 rounded-full bg-[var(--accent)] px-6 py-2 text-sm font-medium text-[var(--accent-ink)] hover:brightness-110 disabled:opacity-40"
+            >
+              <Play size={16} /> Play
+            </button>
+            <button
+              onClick={() => player.shuffleAndPlay(tracks)}
+              disabled={tracks.length === 0}
+              title="Shuffle play"
+              className="flex items-center gap-2 rounded-full border border-[var(--border)] px-5 py-2 text-sm font-medium hover:bg-[var(--panel-2)] disabled:opacity-40"
+            >
+              <Shuffle size={16} /> Shuffle
+            </button>
+          </div>
         </div>
       </div>
 

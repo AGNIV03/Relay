@@ -7,5 +7,8 @@ data/
 .env
 .git
 *.log
-app/build
-app/.dart_tool
+# The Flutter app is not part of either Docker image (server/web only); excluding
+# it keeps the build context small (it dominated the ~880MB context otherwise).
+app/
+# Generated Prisma client (the image runs `prisma generate` itself).
+server/src/generated

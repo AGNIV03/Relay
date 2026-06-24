@@ -26,6 +26,10 @@ class TrackTable extends StatefulWidget {
   final Map<String, String?>? addedAtById; // playlist add dates (else uses createdAt)
   final bool showUploadedBy;
   final void Function(Track)? onRemove; // playlist: remove-from-playlist button
+  // Multi-select (Songs page): long-press/right-click selects; while any row is
+  // selected a click toggles selection instead of starting playback.
+  final Set<String> selectedIds;
+  final void Function(Track)? onSelectToggle;
   const TrackTable({
     super.key,
     required this.tracks,
@@ -33,6 +37,8 @@ class TrackTable extends StatefulWidget {
     this.addedAtById,
     this.showUploadedBy = true,
     this.onRemove,
+    this.selectedIds = const {},
+    this.onSelectToggle,
   });
 
   @override
@@ -169,6 +175,8 @@ class _TrackTableState extends State<TrackTable> {
               showUploadedBy: widget.showUploadedBy,
               actionsWidth: actionsW,
               onRemove: widget.onRemove,
+              selectedIds: widget.selectedIds,
+              onSelectToggle: widget.onSelectToggle,
             ),
           ),
         ),
@@ -192,6 +200,8 @@ class _TrackRow extends StatefulWidget {
   final bool showUploadedBy;
   final double actionsWidth;
   final void Function(Track)? onRemove;
+  final Set<String> selectedIds;
+  final void Function(Track)? onSelectToggle;
   const _TrackRow({
     required this.tracks,
     required this.index,
@@ -200,6 +210,8 @@ class _TrackRow extends StatefulWidget {
     required this.actionsWidth,
     this.onChanged,
     this.onRemove,
+    this.selectedIds = const {},
+    this.onSelectToggle,
   });
   @override
   State<_TrackRow> createState() => _TrackRowState();
@@ -243,24 +255,36 @@ class _TrackRowState extends State<_TrackRow> {
     final downloads = context.watch<DownloadManager>();
     final t = widget.tracks[widget.index];
     final isCurrent = player.current?.id == t.id;
+    final selectable = widget.onSelectToggle != null;
+    final selectionMode = selectable && widget.selectedIds.isNotEmpty;
+    final isSelected = widget.selectedIds.contains(t.id);
 
     return MouseRegion(
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
       child: GestureDetector(
-        onTap: () => player.playQueue(widget.tracks, start: widget.index),
+        onTap: selectionMode
+            ? () => widget.onSelectToggle!(t)
+            : () => player.playQueue(widget.tracks, start: widget.index),
+        onLongPress: selectable ? () => widget.onSelectToggle!(t) : null,
+        onSecondaryTap: selectable ? () => widget.onSelectToggle!(t) : null,
         child: Container(
-          color: isCurrent || _hover ? kPanel2 : Colors.transparent,
+          color: isSelected
+              ? kAccent.withValues(alpha: 0.18)
+              : (isCurrent || _hover ? kPanel2 : Colors.transparent),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
           child: Row(
             children: [
               SizedBox(
                 width: 32,
                 child: Center(
-                  child: isCurrent && player.playing
-                      ? const Icon(LucideIcons.music2, size: 15, color: kAccent)
-                      : Text('${widget.index + 1}',
-                          style: const TextStyle(color: kMuted, fontSize: 13)),
+                  child: selectionMode
+                      ? Icon(isSelected ? LucideIcons.checkCircle : LucideIcons.circle,
+                          size: 17, color: isSelected ? kAccent : kMuted)
+                      : isCurrent && player.playing
+                          ? const Icon(LucideIcons.music2, size: 15, color: kAccent)
+                          : Text('${widget.index + 1}',
+                              style: const TextStyle(color: kMuted, fontSize: 13)),
                 ),
               ),
               const SizedBox(width: 12),

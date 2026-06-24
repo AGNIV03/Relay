@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform;
+import 'dart:math' show Random;
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:just_audio_background/just_audio_background.dart';
@@ -16,11 +17,36 @@ import 'models.dart';
 class PlayerModel extends ChangeNotifier {
   final Api api;
   final DownloadManager downloads;
-  final AudioPlayer _player = AudioPlayer();
+  // Tuned buffering: start playback sooner (lower bufferForPlayback) so the gap
+  // between tracks and on first play is shorter, while keeping a healthy buffer to
+  // ride out network jitter. androidLoadControl applies on Android (ExoPlayer);
+  // desktop media_kit ignores it and uses its own buffer + playlist prefetch
+  // (enabled in main.dart).
+  final AudioPlayer _player = AudioPlayer(
+    audioLoadConfiguration: const AudioLoadConfiguration(
+      androidLoadControl: AndroidLoadControl(
+        minBufferDuration: Duration(seconds: 20),
+        maxBufferDuration: Duration(seconds: 60),
+        bufferForPlaybackDuration: Duration(milliseconds: 1200),
+        bufferForPlaybackAfterRebufferDuration: Duration(seconds: 3),
+      ),
+    ),
+  );
 
   List<Track> _queue = [];
   ConcatenatingAudioSource? _source; // kept so we can add/insert into the queue
   int _index = 0;
+  bool _shuffle = false;
+  // Two-layer queue (Spotify-style). The audio engine plays one flat list
+  // (_queue); _userQ[i] marks whether _queue[i] is a USER-queued item — added via
+  // "Play next" / "Add to queue" (true) — or part of the CONTEXT you started from,
+  // i.e. the playlist/album/songs list (false). User-queue items sit right after
+  // the current track and play before the context resumes. The flag travels with
+  // its entry through every insert/remove, so the two sections stay correct with
+  // no duplicates. _contextOriginal keeps the context's unshuffled order so
+  // turning shuffle off can restore it.
+  final List<bool> _userQ = [];
+  List<Track> _contextOriginal = [];
   bool _scrobbled = false;
   Lyrics? _lyrics;
   String? _lyricsForId; // track whose lyrics are currently loaded
@@ -216,6 +242,34 @@ class PlayerModel extends ChangeNotifier {
     );
   }
 
+  // Insert/remove that keep _queue, _userQ and the audio source in lockstep.
+  Future<void> _insertEntry(int at, Track t, bool userQueued) async {
+    _queue.insert(at, t);
+    _userQ.insert(at, userQueued);
+    await _source!.insert(at, _sourceFor(t));
+  }
+
+  Future<void> _removeEntry(int at) async {
+    _queue.removeAt(at);
+    _userQ.removeAt(at);
+    await _source!.removeAt(at);
+  }
+
+  /// First index after the current track that belongs to the CONTEXT — i.e. just
+  /// past the contiguous block of user-queued items. New "Add to queue" songs go
+  /// here so the manual queue stays in FIFO order ahead of the context.
+  int _userQueueEnd() {
+    var at = _index + 1;
+    while (at < _queue.length && at < _userQ.length && _userQ[at]) {
+      at++;
+    }
+    return at;
+  }
+
+  /// Whether the upcoming entry at [i] is a manually-queued item (vs context).
+  bool isUserQueuedAt(int i) =>
+      !isChorusMember && i >= 0 && i < _userQ.length && i < _queue.length && _userQ[i];
+
   Future<void> playQueue(List<Track> tracks, {int start = 0}) async {
     if (tracks.isEmpty) return;
     // A silent chorus member: changing the song is a remote command to the host.
@@ -236,14 +290,32 @@ class PlayerModel extends ChangeNotifier {
     }
     _restoreAfterCurrent = false;
     _chorusAutoStop = false; // a fresh play re-enables auto-start
-    _queue = List.of(tracks);
-    _index = start;
+    // A fresh context fully REPLACES the previous queue (incl. any manual queue).
+    _contextOriginal = List.of(tracks);
+    // With shuffle on, the chosen track plays first and the rest follow in a
+    // random order. We reorder the queue itself (not just_audio's shuffle mode)
+    // so the visible queue is the real play order and chorus members match.
+    if (_shuffle && tracks.length > 1) {
+      final first = tracks[start];
+      final rest = [
+        for (var i = 0; i < tracks.length; i++)
+          if (i != start) tracks[i]
+      ]..shuffle();
+      _queue = [first, ...rest];
+      _index = 0;
+    } else {
+      _queue = List.of(tracks);
+      _index = start;
+    }
+    _userQ
+      ..clear()
+      ..addAll(List.filled(_queue.length, false)); // all context, no manual queue
     _scrobbled = false;
     _loadLyrics();
     notifyListeners();
     try {
-      _source = ConcatenatingAudioSource(children: tracks.map(_sourceFor).toList());
-      await _player.setAudioSource(_source!, initialIndex: start);
+      _source = ConcatenatingAudioSource(children: _queue.map(_sourceFor).toList());
+      await _player.setAudioSource(_source!, initialIndex: _index);
       await _player.play();
       _saveSession();
       if (isChorusHost) {
@@ -256,20 +328,21 @@ class PlayerModel extends ChangeNotifier {
     }
   }
 
-  /// Append a track to the end of the queue (starts playback if idle).
+  /// Add to the user queue: plays after the current track and any already-queued
+  /// songs, but before the rest of the context resumes.
   Future<void> addToQueue(Track t) async {
     if (isChorusMember) {
       _sendCommand(queue: [...chorus!.queueIds, t.id], index: chorus!.index);
       return;
     }
     if (_source == null || _queue.isEmpty) return playQueue([t]);
-    _queue.add(t);
-    await _source!.add(_sourceFor(t));
+    await _insertEntry(_userQueueEnd(), t, true);
     notifyListeners();
     _broadcastChorus();
   }
 
-  /// Insert a track right after the current one.
+  /// Play next: jumps to the front of the user queue (right after the current
+  /// track), ahead of anything already queued.
   Future<void> playNext(Track t) async {
     if (isChorusMember) {
       final ids = [...chorus!.queueIds];
@@ -279,9 +352,7 @@ class PlayerModel extends ChangeNotifier {
       return;
     }
     if (_source == null || _queue.isEmpty) return playQueue([t]);
-    final at = (_index + 1).clamp(0, _queue.length);
-    _queue.insert(at, t);
-    await _source!.insert(at, _sourceFor(t));
+    await _insertEntry(_index + 1, t, true);
     notifyListeners();
     _broadcastChorus();
   }
@@ -295,8 +366,7 @@ class PlayerModel extends ChangeNotifier {
       return;
     }
     if (_source == null || index <= _index || index >= _queue.length) return;
-    _queue.removeAt(index);
-    await _source!.removeAt(index);
+    await _removeEntry(index);
     notifyListeners();
     _broadcastChorus();
   }
@@ -365,6 +435,10 @@ class PlayerModel extends ChangeNotifier {
     if (targetMs < 0) targetMs = 0;
     if (current?.id != a.track!.id) {
       _queue = [a.track!];
+      _userQ
+        ..clear()
+        ..add(false);
+      _contextOriginal = [a.track!];
       _index = 0;
       _scrobbled = false;
       _loadLyrics();
@@ -395,6 +469,8 @@ class PlayerModel extends ChangeNotifier {
       await _player.stop();
     } catch (_) {}
     _queue = [];
+    _userQ.clear();
+    _contextOriginal = [];
     _index = 0;
     _source = null;
     _scrobbled = false;
@@ -423,6 +499,8 @@ class PlayerModel extends ChangeNotifier {
       await _player.stop();
     } catch (_) {}
     _queue = [];
+    _userQ.clear();
+    _contextOriginal = [];
     _index = 0;
     _source = null;
     _scrobbled = false;
@@ -555,16 +633,22 @@ class PlayerModel extends ChangeNotifier {
         // remove upcoming) with no explicit seek or play/pause → reconcile the
         // upcoming items in place WITHOUT restarting the current song. Anything
         // else (song change, explicit seek/play) → rebuild the source.
-        final keepsCurrent = curId != null &&
-            _index >= 0 &&
-            _index < tQueue.length &&
-            tQueue[_index] == curId;
-        if (keepsCurrent && _source != null && tPos == null && tPlaying == null) {
+        // A queue EDIT that keeps the current track (add to queue / play next /
+        // remove upcoming) with no explicit seek or play/pause → reconcile just
+        // the upcoming items WITHOUT restarting the current song. Anything else
+        // (song change, explicit seek/play) → rebuild the source.
+        final keepsCurrent =
+            curId != null && _source != null && tQueue.contains(curId) && tPos == null && tPlaying == null;
+        if (keepsCurrent) {
           await _reconcileUpcoming(tQueue, c);
         } else {
           final resolved = await _resolveTracks(tQueue, c);
           if (resolved.isNotEmpty) {
             _queue = resolved;
+            _userQ
+              ..clear()
+              ..addAll(List.filled(_queue.length, false));
+            _contextOriginal = List.of(_queue);
             _index = (tIndex ?? 0).clamp(0, _queue.length - 1);
             _scrobbled = false;
             _loadLyrics();
@@ -593,37 +677,24 @@ class PlayerModel extends ChangeNotifier {
     _broadcastChorus();
   }
 
-  /// Host: edit the UPCOMING portion of the queue/source to match [newIds]
-  /// without disturbing the currently-playing track (positions <= _index are
-  /// left untouched, so playback continues seamlessly).
+  /// Host: replace the UPCOMING portion of the queue with [newIds] (everything
+  /// after the current track), leaving the current track playing untouched. We
+  /// rebuild the whole upcoming region rather than diffing it in place — that's
+  /// gapless AND can't duplicate entries (the old in-place diff could leave a
+  /// moved track in place *and* re-insert it).
   Future<void> _reconcileUpcoming(List<String> newIds, ChorusState c) async {
-    final src = _source;
-    if (src == null) return;
-    // Drop upcoming items that are no longer present (scan from the end down).
-    for (var i = _queue.length - 1; i > _index; i--) {
-      if (!newIds.contains(_queue[i].id)) {
-        _queue.removeAt(i);
-        await src.removeAt(i);
-      }
+    if (_source == null) return;
+    final curId = current?.id;
+    final ci = curId == null ? -1 : newIds.indexOf(curId);
+    final desired = ci >= 0 ? newIds.sublist(ci + 1) : newIds;
+    // Drop everything after the current track.
+    while (_queue.length > _index + 1) {
+      await _removeEntry(_queue.length - 1);
     }
-    // Insert/append upcoming items so the order matches newIds after the current.
-    for (var p = _index + 1; p < newIds.length; p++) {
-      if (p < _queue.length && _queue[p].id == newIds[p]) continue;
-      final t = await _resolveOne(newIds[p], c);
-      if (t == null) continue;
-      if (p >= _queue.length) {
-        _queue.add(t);
-        await src.add(_sourceFor(t));
-      } else {
-        _queue.insert(p, t);
-        await src.insert(p, _sourceFor(t));
-      }
-    }
-    // Trim any trailing extras beyond newIds.
-    while (_queue.length > newIds.length && _queue.length - 1 > _index) {
-      final i = _queue.length - 1;
-      _queue.removeAt(i);
-      await src.removeAt(i);
+    // Re-add the desired upcoming order (member-driven items count as context).
+    for (final id in desired) {
+      final t = await _resolveOne(id, c);
+      if (t != null) await _insertEntry(_queue.length, t, false);
     }
   }
 
@@ -813,7 +884,7 @@ class PlayerModel extends ChangeNotifier {
 
   // ---- Repeat (off / all / one) + shuffle ----
   LoopMode get loopMode => _player.loopMode;
-  bool get shuffleEnabled => _player.shuffleModeEnabled;
+  bool get shuffleEnabled => _shuffle;
 
   Future<void> cycleRepeat() async {
     const order = [LoopMode.off, LoopMode.all, LoopMode.one];
@@ -822,11 +893,72 @@ class PlayerModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> toggleShuffle() async {
-    final enable = !_player.shuffleModeEnabled;
-    if (enable) await _player.shuffle(); // generate a fresh shuffle order
-    await _player.setShuffleModeEnabled(enable);
+  Future<void> toggleShuffle() => setShuffle(!_shuffle);
+
+  /// Turn shuffle on/off. Only the UPCOMING CONTEXT is reordered — the current
+  /// track keeps playing (gapless) and the user queue stays in place. Turning it
+  /// off restores the context's original order. Done by editing only the entries
+  /// after the current one, so it never disturbs playback or duplicates anything.
+  Future<void> setShuffle(bool on) async {
+    // A silent member can't reorder locally — ask the host to reshuffle.
+    if (isChorusMember) {
+      final q = chorus!.queue;
+      final i = chorus!.index;
+      if (q.length <= 1) return;
+      final cur = q[i];
+      final rest = [
+        for (var k = 0; k < q.length; k++)
+          if (k != i) q[k]
+      ]..shuffle();
+      final reordered = [cur, ...rest];
+      _sendCommand(queue: reordered.map((t) => t.id).toList(), index: 0);
+      return;
+    }
+    if (on == _shuffle) return;
+    _shuffle = on;
+    if (_queue.isEmpty || _source == null) {
+      notifyListeners();
+      return;
+    }
+    // Split the upcoming region into its user-queue and context parts.
+    final upcomingUser = <Track>[];
+    final upcomingContext = <Track>[];
+    for (var i = _index + 1; i < _queue.length; i++) {
+      (_userQ[i] ? upcomingUser : upcomingContext).add(_queue[i]);
+    }
+    if (upcomingContext.length > 1) {
+      if (on) {
+        upcomingContext.shuffle();
+      } else {
+        // Restore the context's original relative order.
+        final orig = <String, int>{
+          for (var i = 0; i < _contextOriginal.length; i++) _contextOriginal[i].id: i
+        };
+        upcomingContext.sort(
+            (a, b) => (orig[a.id] ?? 1 << 30).compareTo(orig[b.id] ?? 1 << 30));
+      }
+    }
+    // Rebuild only the upcoming region (everything after the current track):
+    // user queue first (FIFO), then the reordered context. Current keeps playing.
+    while (_queue.length > _index + 1) {
+      await _removeEntry(_queue.length - 1);
+    }
+    for (final t in upcomingUser) {
+      await _insertEntry(_queue.length, t, true);
+    }
+    for (final t in upcomingContext) {
+      await _insertEntry(_queue.length, t, false);
+    }
     notifyListeners();
+    _broadcastChorus();
+    _saveSession();
+  }
+
+  /// Shuffle a list and start playing immediately (used by "Shuffle" buttons).
+  Future<void> shuffleAndPlay(List<Track> tracks) async {
+    if (tracks.isEmpty) return;
+    _shuffle = true;
+    await playQueue(tracks, start: Random().nextInt(tracks.length));
   }
 
   // ---- Lyrics ----
@@ -849,16 +981,32 @@ class PlayerModel extends ChangeNotifier {
   }
 
   // ---- Stall recovery (cutout mitigation) ----
+  // Runs every 4s. Detects two failure modes that otherwise require a manual
+  // rewind/pause/play to recover, and reloads the stream automatically:
+  //   • ready + position frozen  → a silent mid-track cutout (recover after ~8s)
+  //   • buffering + position frozen → the stream stalled / connection dropped and
+  //     never resumes (recover after ~16s, allowing for genuinely slow networks)
   void _checkStall() {
     if (isChorusMember) return; // members have no local audio to watch
     final t = current;
     if (t == null || _recovering) return;
-    final st = _player.processingState;
     final isStreaming = downloads.localPath(t.id) == null;
-    if (_player.playing && isStreaming && st == ProcessingState.ready) {
-      if (_player.position == _lastPos) {
+    // Only watch while we believe playback should be advancing.
+    if (!_player.playing || !isStreaming) {
+      _frozenTicks = 0;
+      _lastPos = _player.position;
+      return;
+    }
+    final st = _player.processingState;
+    final progressing = _player.position != _lastPos;
+    if (st == ProcessingState.ready || st == ProcessingState.buffering) {
+      if (!progressing) {
         _frozenTicks++;
-        if (_frozenTicks >= 2) _recoverStream();
+        final limit = st == ProcessingState.buffering ? 4 : 2; // ~16s vs ~8s
+        if (_frozenTicks >= limit) {
+          _recoverStream();
+          return;
+        }
       } else {
         _frozenTicks = 0;
       }
@@ -895,6 +1043,7 @@ class PlayerModel extends ChangeNotifier {
         _kSession,
         jsonEncode({
           'queue': _queue.map((t) => t.toJson()).toList(),
+          'userQ': _userQ,
           'index': _index,
           'position': _player.position.inMilliseconds,
         }),
@@ -912,6 +1061,17 @@ class PlayerModel extends ChangeNotifier {
       final tracks = (data['queue'] as List).map((e) => Track.fromJson(e)).toList();
       if (tracks.isEmpty) return;
       _queue = tracks;
+      final savedFlags = (data['userQ'] as List?)?.cast<bool>();
+      _userQ
+        ..clear()
+        ..addAll(savedFlags != null && savedFlags.length == _queue.length
+            ? savedFlags
+            : List.filled(_queue.length, false));
+      // The context for restore is the non-user-queued tracks, in queue order.
+      _contextOriginal = [
+        for (var i = 0; i < _queue.length; i++)
+          if (!_userQ[i]) _queue[i]
+      ];
       _index = (data['index'] as int?) ?? 0;
       if (_index < 0 || _index >= _queue.length) _index = 0;
       final posMs = (data['position'] as int?) ?? 0;

@@ -58,12 +58,25 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
                             style: const TextStyle(color: kMuted),
                           ),
                           const SizedBox(height: 12),
-                          FilledButton.icon(
-                            icon: const Icon(Icons.play_arrow),
-                            label: const Text('Play'),
-                            onPressed: tracks.isEmpty
-                                ? null
-                                : () => context.read<PlayerModel>().playQueue(tracks),
+                          Wrap(
+                            spacing: 10,
+                            runSpacing: 8,
+                            children: [
+                              FilledButton.icon(
+                                icon: const Icon(Icons.play_arrow),
+                                label: const Text('Play'),
+                                onPressed: tracks.isEmpty
+                                    ? null
+                                    : () => context.read<PlayerModel>().playQueue(tracks),
+                              ),
+                              OutlinedButton.icon(
+                                icon: const Icon(Icons.shuffle, size: 18),
+                                label: const Text('Shuffle'),
+                                onPressed: tracks.isEmpty
+                                    ? null
+                                    : () => context.read<PlayerModel>().shuffleAndPlay(tracks),
+                              ),
+                            ],
                           ),
                         ],
                       ),

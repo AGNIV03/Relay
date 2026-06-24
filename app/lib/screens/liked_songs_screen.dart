@@ -83,6 +83,14 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
                     onPressed: () => context.read<PlayerModel>().playQueue(tracks),
                   ),
                   const SizedBox(width: 10),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.shuffle, size: 18),
+                    label: const Text('Shuffle'),
+                    onPressed: tracks.isEmpty
+                        ? null
+                        : () => context.read<PlayerModel>().shuffleAndPlay(tracks),
+                  ),
+                  const SizedBox(width: 10),
                   if (downloads.supported)
                     OutlinedButton.icon(
                       icon: Icon(allDown ? LucideIcons.checkCircle : LucideIcons.download,

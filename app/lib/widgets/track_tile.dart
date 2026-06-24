@@ -18,6 +18,10 @@ class TrackTile extends StatelessWidget {
   final bool showUploader;
   final bool showDownload; // show an inline download/remove toggle button
   final VoidCallback? onChanged; // called after a destructive change (e.g. delete)
+  // Multi-select: when [onSelectToggle] is given, long-press selects; while any
+  // row is selected a tap toggles selection instead of starting playback.
+  final Set<String> selectedIds;
+  final void Function(Track)? onSelectToggle;
 
   const TrackTile({
     super.key,
@@ -27,6 +31,8 @@ class TrackTile extends StatelessWidget {
     this.showUploader = false,
     this.showDownload = false,
     this.onChanged,
+    this.selectedIds = const {},
+    this.onSelectToggle,
   });
 
   @override
@@ -36,18 +42,33 @@ class TrackTile extends StatelessWidget {
     final downloads = context.watch<DownloadManager>();
     final track = tracks[index];
     final isCurrent = player.current?.id == track.id;
+    final selectable = onSelectToggle != null;
+    final selectionMode = selectable && selectedIds.isNotEmpty;
+    final isSelected = selectedIds.contains(track.id);
 
     return ListTile(
-      leading: showCover
-          ? Cover(url: api.trackCoverUrl(track.id), trackId: track.id, size: 44)
-          : SizedBox(
-              width: 28,
+      selected: isSelected,
+      selectedTileColor: kPanel2,
+      leading: selectionMode
+          ? SizedBox(
+              width: 44,
               child: Center(
-                child: isCurrent && player.playing
-                    ? const Icon(LucideIcons.music2, size: 15, color: kAccent)
-                    : Text("${index + 1}", style: const TextStyle(color: kMuted)),
+                child: Icon(
+                  isSelected ? LucideIcons.checkCircle : LucideIcons.circle,
+                  color: isSelected ? kAccent : kMuted,
+                ),
               ),
-            ),
+            )
+          : showCover
+              ? Cover(url: api.trackCoverUrl(track.id), trackId: track.id, size: 44)
+              : SizedBox(
+                  width: 28,
+                  child: Center(
+                    child: isCurrent && player.playing
+                        ? const Icon(LucideIcons.music2, size: 15, color: kAccent)
+                        : Text("${index + 1}", style: const TextStyle(color: kMuted)),
+                  ),
+                ),
       title: Text(
         track.title,
         maxLines: 1,
@@ -61,20 +82,26 @@ class TrackTile extends StatelessWidget {
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          LikeButton(trackId: track.id, size: 18),
-          if (showDownload && downloads.supported)
-            _downloadButton(context, track, downloads)
-          else if (downloads.isDownloading(track.id))
-            const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-          else if (downloads.isDownloaded(track.id))
-            const Icon(LucideIcons.checkCircle, size: 17, color: kAccent),
-          TrackMenu(track: track, onChanged: onChanged),
-        ],
-      ),
-      onTap: () => player.playQueue(tracks, start: index),
+      trailing: selectionMode
+          ? null
+          : Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                LikeButton(trackId: track.id, size: 18),
+                if (showDownload && downloads.supported)
+                  _downloadButton(context, track, downloads)
+                else if (downloads.isDownloading(track.id))
+                  const SizedBox(
+                      width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                else if (downloads.isDownloaded(track.id))
+                  const Icon(LucideIcons.checkCircle, size: 17, color: kAccent),
+                TrackMenu(track: track, onChanged: onChanged),
+              ],
+            ),
+      onTap: selectionMode
+          ? () => onSelectToggle!(track)
+          : () => player.playQueue(tracks, start: index),
+      onLongPress: selectable ? () => onSelectToggle!(track) : null,
     );
   }
 

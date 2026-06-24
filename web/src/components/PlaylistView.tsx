@@ -181,10 +181,7 @@ export function PlaylistView({
           <Play size={26} className="translate-x-[1px]" fill="currentColor" />
         </button>
         <button
-          onClick={() => {
-            if (!player.shuffle) player.toggleShuffle();
-            player.playQueue(tracks, 0);
-          }}
+          onClick={() => player.shuffleAndPlay(tracks)}
           disabled={tracks.length === 0}
           className="text-[var(--muted)] transition hover:text-white disabled:opacity-40"
           title="Shuffle play"

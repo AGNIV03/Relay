@@ -194,6 +194,40 @@ router.post("/:id/tracks", async (req, res) => {
   }
 });
 
+/** POST /api/playlists/:id/tracks/bulk { trackIds } — append many tracks at once,
+ *  appended in the given order; tracks already in the playlist are skipped. */
+router.post("/:id/tracks/bulk", async (req, res) => {
+  const parsed = z.object({ trackIds: z.array(z.string()).min(1).max(2000) }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Invalid input" });
+
+  const playlist = await prisma.playlist.findFirst({
+    where: accessibleWhere(req.params.id, req.user!.id),
+  });
+  if (!playlist) return res.status(404).json({ error: "Not found" });
+
+  const last = await prisma.playlistTrack.findFirst({
+    where: { playlistId: playlist.id },
+    orderBy: { position: "desc" },
+  });
+  let position = (last?.position ?? -1) + 1;
+
+  let added = 0;
+  for (const trackId of parsed.data.trackIds) {
+    try {
+      await prisma.playlistTrack.create({
+        data: { playlistId: playlist.id, trackId, position },
+      });
+      position++;
+      added++;
+    } catch {
+      // Unique [playlistId, trackId] violation (already in playlist) or a bad
+      // track id → skip it and keep going.
+    }
+  }
+  if (added > 0) refreshAutoCollage(playlist.id, playlist.coverCustom);
+  res.status(201).json({ added });
+});
+
 /** DELETE /api/playlists/:id/tracks/:trackId */
 router.delete("/:id/tracks/:trackId", async (req, res) => {
   const playlist = await prisma.playlist.findFirst({

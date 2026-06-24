@@ -1,5 +1,5 @@
 # ─── Build stage ───
-FROM node:24-alpine AS build
+FROM node:26-alpine AS build
 WORKDIR /app/web
 COPY web/package*.json ./
 RUN npm install
@@ -10,7 +10,7 @@ ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 RUN npm run build
 
 # ─── Runtime stage ───
-FROM node:24-alpine AS runtime
+FROM node:26-alpine AS runtime
 WORKDIR /app/web
 ENV NODE_ENV=production
 ENV PORT=3000
