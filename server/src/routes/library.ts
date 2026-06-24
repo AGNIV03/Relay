@@ -5,18 +5,8 @@ import path from "node:path";
 import fs from "node:fs";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
-import { fetchAndStoreLyrics, ingestFile } from "../services/scanner.js";
-import { translateText } from "../services/translate.service.js";
+import { fetchAndStoreLyrics, ingestFile, translateAndStore } from "../services/scanner.js";
 import { env } from "../lib/env.js";
-
-/** Strip LRC timestamp/metadata tags to plain lines for translation. */
-function lrcToPlain(lrc: string): string {
-  return lrc
-    .split("\n")
-    .map((l) => l.replace(/\[[^\]]*\]/g, "").trim())
-    .filter((l) => l.length > 0)
-    .join("\n");
-}
 
 const router = Router();
 router.use(requireAuth);
@@ -299,26 +289,7 @@ router.get("/tracks/:id/lyrics/translation", async (req, res) => {
     track = await prisma.track.findUnique({ where: { id: req.params.id } });
   }
   if (track && !track.lyricsTransChecked) {
-    const src =
-      track.lyricsPlain?.trim() || (track.lyricsSynced ? lrcToPlain(track.lyricsSynced) : "");
-    if (!src) {
-      await prisma.track.update({ where: { id: track.id }, data: { lyricsTransChecked: true } });
-    } else {
-      try {
-        const r = await translateText(src, "en");
-        const english = r.lang === "en" || !r.text;
-        await prisma.track.update({
-          where: { id: track.id },
-          data: {
-            lyricsLang: r.lang,
-            lyricsTranslated: english ? null : r.text,
-            lyricsTransChecked: true,
-          },
-        });
-      } catch {
-        /* leave unchecked so it retries on the next request */
-      }
-    }
+    await translateAndStore(track.id).catch(() => {});
     track = await prisma.track.findUnique({ where: { id: req.params.id } });
   }
   res.json({ lang: track?.lyricsLang ?? null, translated: track?.lyricsTranslated ?? null });

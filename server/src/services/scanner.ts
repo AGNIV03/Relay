@@ -5,6 +5,7 @@ import { prisma } from "../lib/prisma.js";
 import { env } from "../lib/env.js";
 import { fetchLyrics, lrcToPlain } from "./lyrics.service.js";
 import { translateText } from "./translate.service.js";
+import { fetchMusixmatchTranslated } from "./musixmatch.service.js";
 
 const AUDIO_EXT = new Set([".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".wma"]);
 
@@ -96,32 +97,64 @@ export async function fetchAndStoreLyrics(trackId: string): Promise<void> {
     });
   }
 
-  // 2. Translate them to English (once). Source lines are taken from the SYNCED
-  //    lyrics when available so the translation aligns line-by-line with the
-  //    karaoke view; otherwise from the plain text. Stored so it's instant later.
-  if (checked && !t.lyricsTransChecked) {
-    const src = synced ? lrcToPlain(synced) : (plain?.trim() ?? "");
-    if (!src) {
+  // 2. Translate them to English (once), stored so it's instant later.
+  if (checked) await translateAndStore(trackId);
+}
+
+/**
+ * Produce + persist the English translation for a track (once). Tries Musixmatch's
+ * human/crowd translation first — it comes matched line-by-line to a synced (LRC)
+ * subtitle, so when found we adopt THAT subtitle as the lyrics and store the
+ * translation aligned to it (this is the "matched pair" that keeps the karaoke
+ * sync + line-by-line view intact). If Musixmatch has no translation for the song,
+ * we fall back to machine-translating the existing lyrics (Google), exactly as
+ * before. Best-effort; on a transient failure we leave it unchecked to retry.
+ */
+export async function translateAndStore(trackId: string): Promise<void> {
+  const t = await prisma.track.findUnique({
+    where: { id: trackId },
+    include: { artist: true },
+  });
+  if (!t || t.lyricsTransChecked || !t.lyricsChecked) return;
+
+  // 1. Musixmatch matched pair (human translation, perfectly line-aligned).
+  if (t.artist?.name && t.title) {
+    const mxm = await fetchMusixmatchTranslated(t.artist.name, t.title).catch(() => null);
+    if (mxm && mxm.translatedText.trim()) {
       await prisma.track.update({
         where: { id: trackId },
-        data: { lyricsTransChecked: true },
+        data: {
+          lyricsSynced: mxm.syncedLrc,
+          lyricsPlain: lrcToPlain(mxm.syncedLrc),
+          lyricsTranslated: mxm.translatedText,
+          lyricsLang: mxm.lang ?? t.lyricsLang,
+          lyricsTransChecked: true,
+        },
       });
-    } else {
-      try {
-        const r = await translateText(src, "en");
-        const english = r.lang === "en" || !r.text;
-        await prisma.track.update({
-          where: { id: trackId },
-          data: {
-            lyricsLang: r.lang,
-            lyricsTranslated: english ? null : r.text,
-            lyricsTransChecked: true,
-          },
-        });
-      } catch {
-        /* leave unchecked so it retries on the next request */
-      }
+      return;
     }
+  }
+
+  // 2. Fallback: Google MT of whatever lyrics we already have (source taken from
+  //    the synced lyrics so it aligns line-by-line; else the plain text).
+  const src = t.lyricsSynced ? lrcToPlain(t.lyricsSynced) : (t.lyricsPlain?.trim() ?? "");
+  if (!src) {
+    await prisma.track.update({ where: { id: trackId }, data: { lyricsTransChecked: true } });
+    return;
+  }
+  try {
+    const r = await translateText(src, "en");
+    const english = r.lang === "en" || !r.text;
+    await prisma.track.update({
+      where: { id: trackId },
+      data: {
+        lyricsLang: r.lang,
+        lyricsTranslated: english ? null : r.text,
+        lyricsTransChecked: true,
+      },
+    });
+  } catch {
+    /* transient — leave unchecked so it retries on the next request */
   }
 }
 
