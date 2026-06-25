@@ -1005,16 +1005,38 @@ class PlayerModel extends ChangeNotifier {
   //     never resumes (recover after ~16s, allowing for genuinely slow networks)
   void _checkStall() {
     if (isChorusMember) return; // members have no local audio to watch
+    if (listenHostId != null) return; // playback is host-driven while following
     final t = current;
     if (t == null || _recovering) return;
     final isStreaming = downloads.localPath(t.id) == null;
-    // Only watch while we believe playback should be advancing.
-    if (!_player.playing || !isStreaming) {
+    if (!isStreaming) {
       _frozenTicks = 0;
       _lastPos = _player.position;
       return;
     }
     final st = _player.processingState;
+
+    // HARD STOP: a dropped/failed stream surfaces on the desktop (media_kit)
+    // backend as `idle` with the track still loaded — playback just dies and never
+    // resumes (this is THE bug: switch-track / rewind+play was the only way back).
+    // The user hasn't paused here (a pause stays `ready`; a finish/stop empties the
+    // queue, so `current` would be null), so idle == a dead stream → reload it.
+    if (st == ProcessingState.idle) {
+      _frozenTicks++;
+      if (_frozenTicks >= 2) {
+        _recoverStream();
+        return;
+      }
+      _lastPos = _player.position;
+      return;
+    }
+
+    // SILENT CUTOUT / SLOW STALL: still "playing" but the position is frozen.
+    if (!_player.playing) {
+      _frozenTicks = 0;
+      _lastPos = _player.position;
+      return;
+    }
     final progressing = _player.position != _lastPos;
     if (st == ProcessingState.ready || st == ProcessingState.buffering) {
       if (!progressing) {
@@ -1037,7 +1059,9 @@ class PlayerModel extends ChangeNotifier {
     if (_recovering || _queue.isEmpty) return;
     _recovering = true;
     _frozenTicks = 0;
-    final at = _player.position;
+    // On an errored/idle backend the live position can read 0; fall back to the
+    // last position we observed so we resume at the cutout, not the track start.
+    final at = _player.position > _lastPos ? _player.position : _lastPos;
     final idx = _index;
     debugPrint('player: stream stalled — recovering at $at');
     try {

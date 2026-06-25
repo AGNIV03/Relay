@@ -94,10 +94,17 @@ app.use(
 
 async function main() {
   await ensureFirstAdmin();
-  app.listen(env.port, () => {
+  const server = app.listen(env.port, () => {
     console.log(`[server] listening on http://localhost:${env.port}`);
     console.log(`[server] music path: ${env.musicPath}`);
   });
+  // Audio is streamed over long-lived connections that the client paces to
+  // playback (it reads ahead, then idles). Node's default 5-minute requestTimeout
+  // would abort such a connection mid-track; disable it so streams aren't cut.
+  // Keep-alive is also lengthened so reused sockets aren't dropped between reads.
+  server.requestTimeout = 0;
+  server.keepAliveTimeout = 120_000;
+  server.headersTimeout = 0;
 }
 
 main().catch((e) => {
