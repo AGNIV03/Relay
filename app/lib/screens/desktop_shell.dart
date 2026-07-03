@@ -210,7 +210,15 @@ class _DesktopShellState extends State<DesktopShell> {
         children: [
           _Sidebar(
             index: _index,
-            onSelect: (i) => setState(() => _index = i),
+            onSelect: (i) {
+              setState(() {
+                _index = i;
+                _showLyrics = false; // lyrics overlay shouldn't linger over a new page
+              });
+              // Only one thing in the main area: selecting a section shows its root,
+              // closing any detail (e.g. a playlist page) left open in that tab.
+              _navKeys[i].currentState?.popUntil((r) => r.isFirst);
+            },
             onOpen: _openInTab,
             onOpenProfile: _openProfile,
           ),

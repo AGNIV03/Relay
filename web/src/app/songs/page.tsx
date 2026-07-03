@@ -202,6 +202,12 @@ export default function SongsPage() {
         <BulkBar ids={[...selected]} onClear={clearSel} onChanged={() => load(q)} />
       )}
 
+      {tracks.length > 0 && selected.size === 0 && (
+        <p className="mb-2 text-xs italic text-[var(--muted)]">
+          Click and hold or right click to select multiple tracks
+        </p>
+      )}
+
       {loading ? (
         <div className="text-[var(--muted)]">Loading…</div>
       ) : tracks.length === 0 ? (
@@ -237,6 +243,10 @@ export default function SongsPage() {
                 return (
                   <tr
                     key={t.id}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      toggleSel(t.id);
+                    }}
                     className={`group border-b border-[var(--border)]/50 hover:bg-[var(--panel-2)] ${
                       selected.has(t.id) ? "bg-[var(--panel-2)]" : isCurrent ? "bg-[var(--panel-2)]" : ""
                     }`}

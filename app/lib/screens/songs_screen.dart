@@ -315,6 +315,14 @@ class _SongsScreenState extends State<SongsScreen> {
             ],
           ),
         ),
+        if (_isDesktop && _tracks.isNotEmpty && _selected.isEmpty)
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Text(
+              'Click and hold or right click to select multiple tracks',
+              style: TextStyle(color: kMuted, fontSize: 12, fontStyle: FontStyle.italic),
+            ),
+          ),
         if (_selected.isNotEmpty) _selectionBar(),
         Expanded(
           child: _loading
