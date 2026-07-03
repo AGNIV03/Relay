@@ -181,10 +181,12 @@ export function PlaylistView({
           <Play size={26} className="translate-x-[1px]" fill="currentColor" />
         </button>
         <button
-          onClick={() => player.shuffleAndPlay(tracks)}
+          onClick={player.toggleShuffle}
           disabled={tracks.length === 0}
-          className="text-[var(--muted)] transition hover:text-white disabled:opacity-40"
-          title="Shuffle play"
+          className={`transition hover:text-white disabled:opacity-40 ${
+            player.shuffle ? "text-[var(--accent)]" : "text-[var(--muted)]"
+          }`}
+          title={player.shuffle ? "Shuffle: on" : "Shuffle: off"}
         >
           <Shuffle size={22} />
         </button>

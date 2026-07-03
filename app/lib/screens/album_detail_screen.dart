@@ -69,12 +69,18 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
                                     ? null
                                     : () => context.read<PlayerModel>().playQueue(tracks),
                               ),
-                              OutlinedButton.icon(
-                                icon: const Icon(Icons.shuffle, size: 18),
-                                label: const Text('Shuffle'),
-                                onPressed: tracks.isEmpty
-                                    ? null
-                                    : () => context.read<PlayerModel>().shuffleAndPlay(tracks),
+                              Consumer<PlayerModel>(
+                                builder: (context, player, _) => OutlinedButton.icon(
+                                  icon: Icon(Icons.shuffle,
+                                      size: 18, color: player.shuffleEnabled ? kAccent : null),
+                                  label: const Text('Shuffle'),
+                                  style: player.shuffleEnabled
+                                      ? OutlinedButton.styleFrom(
+                                          foregroundColor: kAccent,
+                                          side: const BorderSide(color: kAccent))
+                                      : null,
+                                  onPressed: player.toggleShuffle,
+                                ),
                               ),
                             ],
                           ),

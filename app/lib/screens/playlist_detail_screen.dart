@@ -375,10 +375,19 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                         onPressed: () => context.read<PlayerModel>().playQueue(tracks),
                       ),
                       const SizedBox(width: 10),
-                      OutlinedButton.icon(
-                        icon: const Icon(LucideIcons.shuffle, size: 18),
-                        label: const Text('Shuffle'),
-                        onPressed: () => context.read<PlayerModel>().shuffleAndPlay(tracks),
+                      // Shuffle is an on/off toggle (Spotify-style): it sets the mode,
+                      // and the Play button above honours it. Highlighted when on.
+                      Consumer<PlayerModel>(
+                        builder: (context, player, _) => OutlinedButton.icon(
+                          icon: Icon(LucideIcons.shuffle,
+                              size: 18, color: player.shuffleEnabled ? kAccent : null),
+                          label: const Text('Shuffle'),
+                          style: player.shuffleEnabled
+                              ? OutlinedButton.styleFrom(
+                                  foregroundColor: kAccent, side: const BorderSide(color: kAccent))
+                              : null,
+                          onPressed: player.toggleShuffle,
+                        ),
                       ),
                       const SizedBox(width: 10),
                       if (downloads.supported)

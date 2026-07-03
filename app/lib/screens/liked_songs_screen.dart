@@ -83,12 +83,17 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
                     onPressed: () => context.read<PlayerModel>().playQueue(tracks),
                   ),
                   const SizedBox(width: 10),
-                  OutlinedButton.icon(
-                    icon: const Icon(Icons.shuffle, size: 18),
-                    label: const Text('Shuffle'),
-                    onPressed: tracks.isEmpty
-                        ? null
-                        : () => context.read<PlayerModel>().shuffleAndPlay(tracks),
+                  Consumer<PlayerModel>(
+                    builder: (context, player, _) => OutlinedButton.icon(
+                      icon: Icon(Icons.shuffle,
+                          size: 18, color: player.shuffleEnabled ? kAccent : null),
+                      label: const Text('Shuffle'),
+                      style: player.shuffleEnabled
+                          ? OutlinedButton.styleFrom(
+                              foregroundColor: kAccent, side: const BorderSide(color: kAccent))
+                          : null,
+                      onPressed: player.toggleShuffle,
+                    ),
                   ),
                   const SizedBox(width: 10),
                   if (downloads.supported)
