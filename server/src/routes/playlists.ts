@@ -61,6 +61,30 @@ router.get("/", async (req, res) => {
   res.json(ranked);
 });
 
+/** GET /api/playlists/public — all public "curated" playlists (any owner), shown
+ *  in every user's Home "Curated playlists" section. Registered before /:id. */
+router.get("/public", async (_req, res) => {
+  const playlists = await prisma.playlist.findMany({
+    where: { isPublic: true },
+    include: {
+      _count: { select: { tracks: true } },
+      user: { select: { username: true } },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 40,
+  });
+  res.json(
+    playlists.map((pl) => ({
+      id: pl.id,
+      name: pl.name,
+      coverPath: pl.coverPath,
+      trackCount: pl._count.tracks,
+      ownerName: pl.user.username,
+      isPublic: true,
+    })),
+  );
+});
+
 /** GET /api/playlists/:id — playlist with ordered tracks. Any signed-in user may
  *  VIEW any playlist (they're already listed on public profiles in this sharing
  *  app); the `owned` flag gates edit controls. Mutations stay owner/collaborator-only. */
@@ -96,13 +120,16 @@ router.post("/", async (req, res) => {
   res.status(201).json(playlist);
 });
 
-/** PATCH /api/playlists/:id { name } — rename (owner only) */
+/** PATCH /api/playlists/:id { name?, isPublic? } — rename / toggle public (owner only) */
 router.patch("/:id", async (req, res) => {
-  const parsed = z.object({ name: z.string().min(1).max(120) }).safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: "Invalid input" });
+  const parsed = z
+    .object({ name: z.string().min(1).max(120).optional(), isPublic: z.boolean().optional() })
+    .safeParse(req.body);
+  if (!parsed.success || (parsed.data.name === undefined && parsed.data.isPublic === undefined))
+    return res.status(400).json({ error: "Invalid input" });
   const result = await prisma.playlist.updateMany({
     where: { id: req.params.id, userId: req.user!.id },
-    data: { name: parsed.data.name },
+    data: parsed.data,
   });
   if (result.count === 0) return res.status(404).json({ error: "Not found" });
   res.json({ ok: true });

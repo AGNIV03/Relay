@@ -165,28 +165,100 @@ router.get("/tracks/by-ids", async (req, res) => {
 
 /** POST /api/library/scrobble { trackId } — record a play (drives stats + recently/most played) */
 router.post("/scrobble", async (req, res) => {
-  const parsed = z.object({ trackId: z.string() }).safeParse(req.body);
+  const parsed = z
+    .object({ trackId: z.string(), playlistId: z.string().optional() })
+    .safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid input" });
-  await prisma.playHistory.create({ data: { userId: req.user!.id, trackId: parsed.data.trackId } });
+  // playlistId records the playback context so Recently Played can show the
+  // playlist instead of its individual tracks. Verify it exists (FK) — ignore if not.
+  let playlistId: string | null = parsed.data.playlistId ?? null;
+  if (playlistId) {
+    const exists = await prisma.playlist.count({ where: { id: playlistId } });
+    if (!exists) playlistId = null;
+  }
+  await prisma.playHistory.create({
+    data: { userId: req.user!.id, trackId: parsed.data.trackId, playlistId },
+  });
   res.status(204).end();
 });
 
-/** GET /api/library/recently-played — distinct tracks, most recent first */
+/** GET /api/library/recently-played — most-recent-first mix of tracks and
+ *  playlists. A track played from a playlist collapses into that playlist entry
+ *  (deduped) instead of showing the individual songs; standalone plays show the
+ *  track. Items: {type:'track', track} | {type:'playlist', playlist}. */
 router.get("/recently-played", async (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 12, 50);
-  const groups = await prisma.playHistory.groupBy({
-    by: ["trackId"],
+  // Legacy shape (Track[]) for older app builds that don't pass ?grouped=1.
+  if (req.query.grouped !== "1") {
+    const groups = await prisma.playHistory.groupBy({
+      by: ["trackId"],
+      where: { userId: req.user!.id },
+      _max: { playedAt: true },
+      orderBy: { _max: { playedAt: "desc" } },
+      take: limit,
+    });
+    const tracks = await prisma.track.findMany({
+      where: { id: { in: groups.map((g) => g.trackId) } },
+      include: { artist: true, album: true },
+    });
+    const byId = new Map(tracks.map((t) => [t.id, t]));
+    return res.json(groups.map((g) => byId.get(g.trackId)).filter(Boolean));
+  }
+  const rows = await prisma.playHistory.findMany({
     where: { userId: req.user!.id },
-    _max: { playedAt: true },
-    orderBy: { _max: { playedAt: "desc" } },
-    take: limit,
+    orderBy: { playedAt: "desc" },
+    select: { trackId: true, playlistId: true },
+    take: 500,
   });
-  const tracks = await prisma.track.findMany({
-    where: { id: { in: groups.map((g) => g.trackId) } },
-    include: { artist: true, album: true },
-  });
-  const byId = new Map(tracks.map((t) => [t.id, t]));
-  res.json(groups.map((g) => byId.get(g.trackId)).filter(Boolean));
+  const seenTracks = new Set<string>();
+  const seenPlaylists = new Set<string>();
+  const order: Array<{ kind: "track" | "playlist"; id: string }> = [];
+  for (const r of rows) {
+    if (order.length >= limit) break;
+    if (r.playlistId) {
+      if (seenPlaylists.has(r.playlistId)) continue;
+      seenPlaylists.add(r.playlistId);
+      order.push({ kind: "playlist", id: r.playlistId });
+    } else {
+      if (seenTracks.has(r.trackId)) continue;
+      seenTracks.add(r.trackId);
+      order.push({ kind: "track", id: r.trackId });
+    }
+  }
+  const [tracks, playlists] = await Promise.all([
+    prisma.track.findMany({
+      where: { id: { in: order.filter((o) => o.kind === "track").map((o) => o.id) } },
+      include: { artist: true, album: true },
+    }),
+    prisma.playlist.findMany({
+      where: { id: { in: order.filter((o) => o.kind === "playlist").map((o) => o.id) } },
+      include: { _count: { select: { tracks: true } }, user: { select: { username: true } } },
+    }),
+  ]);
+  const tById = new Map(tracks.map((t) => [t.id, t]));
+  const pById = new Map(playlists.map((p) => [p.id, p]));
+  const items = order
+    .map((o) => {
+      if (o.kind === "track") {
+        const t = tById.get(o.id);
+        return t ? { type: "track" as const, track: t } : null;
+      }
+      const p = pById.get(o.id);
+      return p
+        ? {
+            type: "playlist" as const,
+            playlist: {
+              id: p.id,
+              name: p.name,
+              coverPath: p.coverPath,
+              ownerName: p.user.username,
+              trackCount: p._count.tracks,
+            },
+          }
+        : null;
+    })
+    .filter(Boolean);
+  res.json(items);
 });
 
 /** GET /api/library/most-played — top tracks by play count */

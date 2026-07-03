@@ -120,11 +120,16 @@ model Playlist {
   // user-uploaded image (coverCustom = true, never auto-regenerated).
   coverPath   String?
   coverCustom Boolean         @default(false)
+  // When true the playlist is a public "curated" playlist: it shows in every
+  // user's Home "Curated playlists" section, attributed to its owner.
+  isPublic    Boolean         @default(false)
   createdAt   DateTime        @default(now())
 
   collaborators PlaylistCollaborator[]
+  playHistory   PlayHistory[]
 
   @@index([userId])
+  @@index([isPublic])
 }
 
 // Other users granted edit/view access to a playlist (besides the owner).
@@ -159,10 +164,15 @@ model PlayHistory {
   user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   trackId  String
   track    Track    @relation(fields: [trackId], references: [id], onDelete: Cascade)
+  // The playlist this track was played from (if any), so the Recently Played row
+  // can collapse a run of plays into the playlist instead of individual songs.
+  playlistId String?
+  playlist   Playlist? @relation(fields: [playlistId], references: [id], onDelete: SetNull)
   playedAt DateTime @default(now())
 
   @@index([userId, playedAt])
   @@index([userId, trackId])
+  @@index([playlistId])
 }
 
 model Setting {
