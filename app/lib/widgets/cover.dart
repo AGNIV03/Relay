@@ -17,6 +17,11 @@ class Cover extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Decode at the display's PHYSICAL pixel size (logical size × devicePixelRatio)
+    // so covers are crisp on high-DPI / scaled displays — without decoding the full
+    // multi-MB source (which would be slow). A small margin keeps it sharp.
+    final dpr = MediaQuery.maybeOf(context)?.devicePixelRatio ?? 2.0;
+    final px = (size * dpr * 1.15).ceil();
     final localCover = trackId != null
         ? context.read<DownloadManager>().localCoverPath(trackId!)
         : null;
@@ -25,11 +30,12 @@ class Cover extends StatelessWidget {
       child = Image.file(
         File(localCover),
         fit: BoxFit.cover,
+        cacheWidth: px,
         errorBuilder: (context, error, stack) =>
-            url != null ? _network(url!) : _fallback(),
+            url != null ? _network(url!, px) : _fallback(),
       );
     } else if (url != null) {
-      child = _network(url!);
+      child = _network(url!, px);
     } else {
       child = _fallback();
     }
@@ -41,9 +47,13 @@ class Cover extends StatelessWidget {
 
   // Disk + memory cached so scrolling lists / reopening the queue don't re-fetch
   // every cover from the network each time (they were uncached Image.network).
-  Widget _network(String u) => CachedNetworkImage(
+  // [px] = target decode width in physical pixels (see build) for crisp thumbnails.
+  Widget _network(String u, int px) => CachedNetworkImage(
         imageUrl: u,
         fit: BoxFit.cover,
+        memCacheWidth: px,
+        memCacheHeight: px,
+        filterQuality: FilterQuality.medium,
         fadeInDuration: const Duration(milliseconds: 120),
         placeholder: (context, _) => Container(color: kPanel2),
         errorWidget: (context, _, __) => _fallback(),
