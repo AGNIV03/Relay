@@ -381,9 +381,11 @@ class Api {
   Future<List<Playlist>> playlists() async =>
       (await _get('/api/playlists') as List).map((e) => Playlist.fromJson(e)).toList();
   Future<Playlist> playlist(String id) async => Playlist.fromJson(await _get('/api/playlists/$id'));
-  Future<void> createPlaylist(String name) async {
-    await _send('POST', '/api/playlists', body: {'name': name});
+  /// Create a playlist and return its id (so callers can add tracks straight away).
+  Future<String> createPlaylist(String name) async {
+    final j = await _send('POST', '/api/playlists', body: {'name': name});
     notifyPlaylistsChanged();
+    return (j as Map<String, dynamic>)['id'] as String;
   }
 
   Future<void> renamePlaylist(String id, String name) async {

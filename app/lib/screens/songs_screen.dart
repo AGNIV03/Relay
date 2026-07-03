@@ -101,10 +101,33 @@ class _SongsScreenState extends State<SongsScreen> {
               child: Text('Add ${ids.length} song${ids.length == 1 ? '' : 's'} to playlist',
                   style: const TextStyle(fontWeight: FontWeight.bold)),
             ),
+            ListTile(
+              leading: const Icon(LucideIcons.plus, size: 18, color: kAccent),
+              title: const Text('New playlist…', style: TextStyle(color: kAccent)),
+              onTap: () async {
+                Navigator.pop(ctx);
+                final name = await promptPlaylistName(context);
+                if (name == null) return;
+                String msg;
+                try {
+                  final id = await api.createPlaylist(name);
+                  final added = await api.addManyToPlaylist(id, ids);
+                  msg = 'Created "$name" · added $added';
+                } catch (_) {
+                  msg = "Couldn't create playlist";
+                }
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+                  );
+                  _clearSelection();
+                }
+              },
+            ),
             if (playlists.isEmpty)
               const Padding(
                 padding: EdgeInsets.all(16),
-                child: Text('No playlists yet', style: TextStyle(color: kMuted)),
+                child: Text('No other playlists yet', style: TextStyle(color: kMuted)),
               ),
             ...playlists.map((pl) => ListTile(
                   leading: const Icon(LucideIcons.listMusic, size: 18),

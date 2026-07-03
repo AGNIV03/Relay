@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { MoreHorizontal, ListEnd, ListPlus, Trash2 } from "lucide-react";
+import { MoreHorizontal, ListEnd, ListPlus, Trash2, Plus } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
 import { usePlayer } from "@/context/PlayerContext";
 import { useAuth } from "@/context/AuthContext";
@@ -99,6 +99,21 @@ export function AddToPlaylist({
     setTimeout(() => setOpen(false), 900);
   }
 
+  // Create a new playlist and drop this track straight into it.
+  async function createAndAdd() {
+    const name = window.prompt("New playlist name")?.trim();
+    if (!name) return;
+    try {
+      const pl = await api.post<Playlist>("/api/playlists", { name });
+      await api.post(`/api/playlists/${pl.id}/tracks`, { trackId });
+      setResult({ id: "new", text: "✓ Created & added" });
+      window.dispatchEvent(new Event("playlists-changed"));
+    } catch {
+      setResult({ id: "new", text: "Couldn’t create" });
+    }
+    setTimeout(() => setOpen(false), 900);
+  }
+
   return (
     <>
       <button
@@ -141,8 +156,14 @@ export function AddToPlaylist({
               </>
             )}
             <div className="px-3 py-1 text-xs uppercase text-[var(--muted)]">Add to playlist</div>
+            <button
+              onClick={createAndAdd}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-[var(--accent)] hover:bg-[var(--panel)]"
+            >
+              <Plus size={14} /> {result?.id === "new" ? result.text : "New playlist…"}
+            </button>
             {playlists.length === 0 && (
-              <div className="px-3 py-2 text-xs text-[var(--muted)]">No playlists yet</div>
+              <div className="px-3 py-2 text-xs text-[var(--muted)]">No other playlists yet</div>
             )}
             {playlists.map((pl) => (
               <button

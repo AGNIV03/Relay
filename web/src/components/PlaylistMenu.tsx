@@ -179,6 +179,7 @@ function CollaboratorsModal({ playlistId, onClose }: { playlistId: string; onClo
   const [collabIds, setCollabIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
+  const [q, setQ] = useState("");
 
   async function load() {
     const [friends, info] = await Promise.all([
@@ -221,8 +222,19 @@ function CollaboratorsModal({ playlistId, onClose }: { playlistId: string; onClo
       ) : users.length === 0 ? (
         <div className="py-4 text-sm text-[var(--muted)]">No other users to add.</div>
       ) : (
-        <div className="max-h-72 space-y-1 overflow-y-auto">
-          {users.map((u) => {
+        <>
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search people…"
+            className="mb-2 w-full rounded-lg border border-[var(--border)] bg-[var(--panel-2)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+          />
+          <div className="max-h-72 space-y-1 overflow-y-auto">
+            {users.filter((u) => u.username.toLowerCase().includes(q.trim().toLowerCase())).length ===
+              0 && <div className="py-3 text-center text-sm text-[var(--muted)]">No matches</div>}
+            {users
+              .filter((u) => u.username.toLowerCase().includes(q.trim().toLowerCase()))
+              .map((u) => {
             const isCollab = collabIds.has(u.id);
             return (
               <div key={u.id} className="flex items-center gap-3 rounded-lg px-2 py-1.5">
@@ -252,7 +264,8 @@ function CollaboratorsModal({ playlistId, onClose }: { playlistId: string; onClo
               </div>
             );
           })}
-        </div>
+          </div>
+        </>
       )}
     </Modal>
   );

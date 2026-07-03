@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ListPlus, Trash2, X } from "lucide-react";
+import { ListPlus, Trash2, X, Plus } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Playlist } from "@/lib/types";
 
@@ -55,6 +55,29 @@ export function BulkBar({
     }
   }
 
+  async function createAndAdd() {
+    const name = window.prompt("New playlist name")?.trim();
+    if (!name) return;
+    setBusy(true);
+    try {
+      const pl = await api.post<{ id: string }>("/api/playlists", { name });
+      const r = await api.post<{ added: number }>(`/api/playlists/${pl.id}/tracks/bulk`, {
+        trackIds: ids,
+      });
+      setNote(`Created “${name}” · added ${r.added}`);
+      window.dispatchEvent(new Event("playlists-changed"));
+      setTimeout(() => {
+        setMenuOpen(false);
+        setNote(null);
+        onClear();
+      }, 1000);
+    } catch {
+      setNote("Couldn’t create");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function del() {
     if (!confirm(`Delete ${ids.length} song${ids.length === 1 ? "" : "s"} permanently? This removes the files from the server.`))
       return;
@@ -88,8 +111,17 @@ export function BulkBar({
         {menuOpen && (
           <div className="absolute left-0 top-full z-50 mt-1 max-h-[50vh] w-56 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--panel-2)] py-1 shadow-xl">
             {note && <div className="px-3 py-2 text-xs text-[var(--accent)]">{note}</div>}
+            {!note && (
+              <button
+                onClick={createAndAdd}
+                disabled={busy}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-[var(--accent)] hover:bg-[var(--panel)] disabled:opacity-50"
+              >
+                <Plus size={15} /> New playlist…
+              </button>
+            )}
             {!note && playlists.length === 0 && (
-              <div className="px-3 py-2 text-xs text-[var(--muted)]">No playlists yet</div>
+              <div className="px-3 py-2 text-xs text-[var(--muted)]">No other playlists yet</div>
             )}
             {!note &&
               playlists.map((pl) => (

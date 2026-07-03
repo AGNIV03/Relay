@@ -10,6 +10,32 @@ import '../theme.dart';
 import 'cover.dart';
 import 'like_button.dart';
 
+/// Shared "New playlist" name dialog. Returns the trimmed name, or null if
+/// cancelled/empty. Used by the add-to-playlist sheets (single + bulk select).
+Future<String?> promptPlaylistName(BuildContext context) async {
+  final controller = TextEditingController();
+  final name = await showDialog<String>(
+    context: context,
+    builder: (dctx) => AlertDialog(
+      backgroundColor: kPanel,
+      title: const Text('New playlist'),
+      content: TextField(
+        controller: controller,
+        autofocus: true,
+        decoration: const InputDecoration(hintText: 'Playlist name'),
+        onSubmitted: (v) => Navigator.pop(dctx, v.trim()),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(dctx), child: const Text('Cancel')),
+        FilledButton(
+            onPressed: () => Navigator.pop(dctx, controller.text.trim()),
+            child: const Text('Create')),
+      ],
+    ),
+  );
+  return (name != null && name.isNotEmpty) ? name : null;
+}
+
 /// A single track row. Tapping plays [tracks] starting at [index].
 class TrackTile extends StatelessWidget {
   final List<Track> tracks;
@@ -288,10 +314,32 @@ class TrackMenu extends StatelessWidget {
               padding: EdgeInsets.all(16),
               child: Text("Add to playlist", style: TextStyle(fontWeight: FontWeight.bold)),
             ),
+            ListTile(
+              leading: const Icon(LucideIcons.plus, size: 18, color: kAccent),
+              title: const Text("New playlist…", style: TextStyle(color: kAccent)),
+              onTap: () async {
+                Navigator.pop(ctx); // close the sheet, then prompt
+                final name = await promptPlaylistName(context);
+                if (name == null || name.isEmpty) return;
+                String msg;
+                try {
+                  final id = await api.createPlaylist(name);
+                  await api.addToPlaylist(id, track.id);
+                  msg = 'Created "$name" & added';
+                } catch (_) {
+                  msg = "Couldn't create playlist";
+                }
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+                  );
+                }
+              },
+            ),
             if (playlists.isEmpty)
               const Padding(
                 padding: EdgeInsets.all(16),
-                child: Text("No playlists yet", style: TextStyle(color: kMuted)),
+                child: Text("No other playlists yet", style: TextStyle(color: kMuted)),
               ),
             ...playlists.map((pl) => ListTile(
                   leading: const Icon(LucideIcons.listMusic, size: 18),

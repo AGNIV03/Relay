@@ -227,6 +227,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     final api = context.read<Api>();
     List<Friend> users = [];
     Set<String> collabIds = {};
+    String query = '';
     try {
       users = await api.friends();
       final info = await api.playlistCollaborators(widget.playlistId);
@@ -243,9 +244,24 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
             width: 360,
             child: users.isEmpty
                 ? const Text('No other users to add.', style: TextStyle(color: kMuted))
-                : ListView(
-                    shrinkWrap: true,
-                    children: users.map((u) {
+                : Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextField(
+                        autofocus: true,
+                        decoration: const InputDecoration(
+                            hintText: 'Search people…', isDense: true),
+                        onChanged: (v) => setLocal(() => query = v),
+                      ),
+                      const SizedBox(height: 8),
+                      Flexible(
+                        child: ListView(
+                          shrinkWrap: true,
+                          children: users
+                              .where((u) => u.username
+                                  .toLowerCase()
+                                  .contains(query.trim().toLowerCase()))
+                              .map((u) {
                       final isCollab = collabIds.contains(u.id);
                       return ListTile(
                         dense: true,
@@ -274,7 +290,10 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                           },
                         ),
                       );
-                    }).toList(),
+                            }).toList(),
+                        ),
+                      ),
+                    ],
                   ),
           ),
           actions: [
