@@ -10,6 +10,7 @@ import '../player.dart';
 import '../theme.dart';
 import '../widgets/cover.dart';
 import 'album_detail_screen.dart';
+import 'playlist_detail_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -19,9 +20,10 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   WrappedStats? _stats;
-  List<Track> _recent = [];
+  List<RecentItem> _recent = [];
   List<Track> _most = [];
   List<Album> _added = [];
+  List<PlaylistRef> _curated = [];
   bool _loading = true;
 
   @override
@@ -40,16 +42,18 @@ class _HomeScreenState extends State<HomeScreen> {
           topArtists: [],
           topGenres: [],
           topTracks: [])),
-      api.recentlyPlayed().catchError((_) => <Track>[]),
+      api.recentlyPlayedGrouped().catchError((_) => <RecentItem>[]),
       api.mostPlayed().catchError((_) => <Track>[]),
       api.recentAlbums().catchError((_) => <Album>[]),
+      api.curatedPlaylists().catchError((_) => <PlaylistRef>[]),
     ]);
     if (!mounted) return;
     setState(() {
       _stats = results[0] as WrappedStats;
-      _recent = results[1] as List<Track>;
+      _recent = results[1] as List<RecentItem>;
       _most = results[2] as List<Track>;
       _added = results[3] as List<Album>;
+      _curated = results[4] as List<PlaylistRef>;
       _loading = false;
     });
   }
@@ -75,9 +79,15 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: 22),
           ],
 
+          if (_curated.isNotEmpty) ...[
+            const _Header(icon: LucideIcons.listMusic, text: "Curated playlists"),
+            _PlaylistRow(playlists: _curated),
+            const SizedBox(height: 22),
+          ],
+
           if (_recent.isNotEmpty) ...[
             const _Header(icon: LucideIcons.clock, text: "Recently played"),
-            _TrackRow(tracks: _recent),
+            _RecentRow(items: _recent),
             const SizedBox(height: 22),
           ],
 
@@ -191,6 +201,96 @@ class _TrackRow extends StatelessWidget {
                 Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
                 Text(t.playCount != null ? "${t.playCount} plays" : t.artistName,
                     maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, color: kMuted)),
+              ]),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// A horizontal row of playlist cards ("Curated playlists"; also used for the
+/// playlist entries inside grouped Recently Played). Shows "by <owner>".
+class _PlaylistCard extends StatelessWidget {
+  final PlaylistRef pl;
+  const _PlaylistCard({required this.pl});
+  @override
+  Widget build(BuildContext context) {
+    final api = context.read<Api>();
+    return GestureDetector(
+      onTap: () => Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => PlaylistDetailScreen(playlistId: pl.id, name: pl.name)),
+      ),
+      child: SizedBox(
+        width: 124,
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Cover(url: api.playlistCoverUrl(pl.id), size: 124, radius: 12),
+          const SizedBox(height: 6),
+          Text(pl.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+          Text("by ${pl.ownerName}",
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 11, color: kMuted)),
+        ]),
+      ),
+    );
+  }
+}
+
+class _PlaylistRow extends StatelessWidget {
+  final List<PlaylistRef> playlists;
+  const _PlaylistRow({required this.playlists});
+  @override
+  Widget build(BuildContext context) => _ArrowScroller(
+        height: 184,
+        builder: (controller) => ListView.separated(
+          controller: controller,
+          scrollDirection: Axis.horizontal,
+          itemCount: playlists.length,
+          separatorBuilder: (_, _) => const SizedBox(width: 10),
+          itemBuilder: (_, i) => _PlaylistCard(pl: playlists[i]),
+        ),
+      );
+}
+
+/// Recently played row: a track plays on tap; a playlist opens on tap.
+class _RecentRow extends StatelessWidget {
+  final List<RecentItem> items;
+  const _RecentRow({required this.items});
+  @override
+  Widget build(BuildContext context) {
+    final api = context.read<Api>();
+    final player = context.read<PlayerModel>();
+    return _ArrowScroller(
+      height: 184,
+      builder: (controller) => ListView.separated(
+        controller: controller,
+        scrollDirection: Axis.horizontal,
+        itemCount: items.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 10),
+        itemBuilder: (_, i) {
+          final it = items[i];
+          if (it.playlist != null) return _PlaylistCard(pl: it.playlist!);
+          final t = it.track!;
+          return GestureDetector(
+            onTap: () => player.playQueue([t]),
+            child: SizedBox(
+              width: 124,
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Cover(url: api.trackCoverUrl(t.id), size: 124, radius: 12),
+                const SizedBox(height: 6),
+                Text(t.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+                Text(t.artistName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 11, color: kMuted)),
               ]),
             ),
           );

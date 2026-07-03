@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -272,16 +273,21 @@ class _Sidebar extends StatefulWidget {
 
 class _SidebarState extends State<_Sidebar> {
   List<Playlist> _playlists = [];
+  Timer? _sync;
 
   @override
   void initState() {
     super.initState();
     _loadPlaylists();
     playlistsChanged.addListener(_loadPlaylists); // refresh on create/delete/rename
+    // Poll so playlists created on another device (phone) appear here within
+    // seconds without a manual refresh, and vice-versa.
+    _sync = Timer.periodic(const Duration(seconds: 8), (_) => _loadPlaylists());
   }
 
   @override
   void dispose() {
+    _sync?.cancel();
     playlistsChanged.removeListener(_loadPlaylists);
     super.dispose();
   }

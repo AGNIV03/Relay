@@ -227,11 +227,33 @@ class Api {
   }
 
   // ---- Playback history / personal stats ----
-  Future<void> scrobble(String trackId) =>
-      _send('POST', '/api/library/scrobble', body: {'trackId': trackId});
+  Future<void> scrobble(String trackId, {String? playlistId}) => _send(
+        'POST',
+        '/api/library/scrobble',
+        body: {'trackId': trackId, if (playlistId != null) 'playlistId': playlistId},
+      );
 
   Future<List<Track>> recentlyPlayed() async =>
       (await _get('/api/library/recently-played') as List).map((e) => Track.fromJson(e)).toList();
+
+  /// Grouped Recently Played: a mix of tracks and playlists (a playlist play
+  /// collapses into the playlist instead of its individual songs).
+  Future<List<RecentItem>> recentlyPlayedGrouped() async =>
+      (await _get('/api/library/recently-played?grouped=1') as List)
+          .map((e) => RecentItem.fromJson(e as Map<String, dynamic>))
+          .toList();
+
+  /// Public "curated" playlists (any owner) for the Home section.
+  Future<List<PlaylistRef>> curatedPlaylists() async =>
+      (await _get('/api/playlists/public') as List)
+          .map((e) => PlaylistRef.fromJson(e as Map<String, dynamic>))
+          .toList();
+
+  /// Toggle a playlist public/private (owner only).
+  Future<void> setPlaylistPublic(String id, bool isPublic) async {
+    await _send('PATCH', '/api/playlists/$id', body: {'isPublic': isPublic});
+    notifyPlaylistsChanged();
+  }
 
   Future<List<Track>> mostPlayed() async =>
       (await _get('/api/library/most-played') as List).map((e) => Track.fromJson(e)).toList();

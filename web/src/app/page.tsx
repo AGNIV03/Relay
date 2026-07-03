@@ -1,27 +1,30 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Clock, Music2, Disc3, ListMusic, Sparkles } from "lucide-react";
+import { Clock, Music2, Disc3, ListMusic, Sparkles, Star } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { AlbumCard } from "@/components/AlbumCard";
 import { TrackCards } from "@/components/TrackCards";
-import type { Album, Track, WrappedStats } from "@/lib/types";
+import { PlaylistCards, RecentCards } from "@/components/HomeRows";
+import type { Album, PlaylistRef, RecentItem, Track, WrappedStats } from "@/lib/types";
 
 export default function HomePage() {
   const { user } = useAuth();
   const [stats, setStats] = useState<WrappedStats | null>(null);
-  const [recent, setRecent] = useState<Track[]>([]);
+  const [recent, setRecent] = useState<RecentItem[]>([]);
   const [most, setMost] = useState<Track[]>([]);
   const [added, setAdded] = useState<Album[]>([]);
+  const [curated, setCurated] = useState<PlaylistRef[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     Promise.allSettled([
       api.get<WrappedStats>("/api/library/stats/me").then(setStats),
-      api.get<Track[]>("/api/library/recently-played").then(setRecent),
+      api.get<RecentItem[]>("/api/library/recently-played?grouped=1").then(setRecent),
       api.get<Track[]>("/api/library/most-played").then(setMost),
       api.get<Album[]>("/api/library/albums?recent=1").then(setAdded),
+      api.get<PlaylistRef[]>("/api/playlists/public").then(setCurated),
     ]).finally(() => setLoading(false));
   }, []);
 
@@ -71,9 +74,15 @@ export default function HomePage() {
         </section>
       )}
 
+      {curated.length > 0 && (
+        <Section icon={<Star size={18} />} title="Curated playlists">
+          <PlaylistCards playlists={curated} />
+        </Section>
+      )}
+
       {recent.length > 0 && (
         <Section icon={<Clock size={18} />} title="Recently played">
-          <TrackCards tracks={recent} />
+          <RecentCards items={recent} />
         </Section>
       )}
 

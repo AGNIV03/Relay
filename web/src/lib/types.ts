@@ -128,7 +128,22 @@ export interface Playlist {
   ownerName?: string;
   collaborators?: UserRef[];
   collaboratorCount?: number;
+  isPublic?: boolean; // public "curated" playlist
 }
+
+/** Lightweight playlist reference for the Home "Curated" + Recently Played rows. */
+export interface PlaylistRef {
+  id: string;
+  name: string;
+  ownerName: string;
+  coverPath?: string | null;
+  trackCount?: number;
+}
+
+/** One grouped Recently Played entry: a track, or a playlist that was played. */
+export type RecentItem =
+  | { type: "track"; track: Track }
+  | { type: "playlist"; playlist: PlaylistRef };
 
 export interface UserProfile {
   id: string;

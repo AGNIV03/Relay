@@ -36,6 +36,9 @@ class PlayerModel extends ChangeNotifier {
   List<Track> _queue = [];
   ConcatenatingAudioSource? _source; // kept so we can add/insert into the queue
   int _index = 0;
+  // The playlist this queue was started from (null if not from a playlist), sent
+  // on scrobble so Recently Played can group by playlist.
+  String? _playlistContext;
   bool _shuffle = false;
   // Two-layer queue (Spotify-style). The audio engine plays one flat list
   // (_queue); _userQ[i] marks whether _queue[i] is a USER-queued item — added via
@@ -129,7 +132,7 @@ class PlayerModel extends ChangeNotifier {
     _player.positionStream.listen((pos) {
       if (!_scrobbled && pos.inSeconds >= 5 && current != null) {
         _scrobbled = true;
-        api.scrobble(current!.id).catchError((_) {});
+        api.scrobble(current!.id, playlistId: _playlistContext).catchError((_) {});
       }
       notifyListeners();
     });
@@ -270,8 +273,9 @@ class PlayerModel extends ChangeNotifier {
   bool isUserQueuedAt(int i) =>
       !isChorusMember && i >= 0 && i < _userQ.length && i < _queue.length && _userQ[i];
 
-  Future<void> playQueue(List<Track> tracks, {int start = 0}) async {
+  Future<void> playQueue(List<Track> tracks, {int start = 0, String? playlistId}) async {
     if (tracks.isEmpty) return;
+    _playlistContext = playlistId;
     // A silent chorus member: changing the song is a remote command to the host.
     if (isChorusMember) {
       _sendCommand(

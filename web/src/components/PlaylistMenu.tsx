@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { MoreHorizontal, Pencil, Users, Trash2, LogOut, X, Check, Plus } from "lucide-react";
+import { MoreHorizontal, Pencil, Users, Trash2, LogOut, X, Check, Plus, Globe, Lock } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import type { Friend, UserRef } from "@/lib/types";
@@ -12,12 +12,14 @@ export function PlaylistMenu({
   playlistId,
   name,
   owned,
+  isPublic,
   onChanged,
   onDeleted,
 }: {
   playlistId: string;
   name: string;
   owned: boolean;
+  isPublic?: boolean;
   onChanged: () => void;
   onDeleted: () => void;
 }) {
@@ -26,7 +28,16 @@ export function PlaylistMenu({
   const [renaming, setRenaming] = useState(false);
   const [newName, setNewName] = useState(name);
   const [collabOpen, setCollabOpen] = useState(false);
+  const [pub, setPub] = useState(!!isPublic);
   const ref = useRef<HTMLDivElement>(null);
+
+  async function togglePublic() {
+    const next = !pub;
+    setPub(next);
+    setOpen(false);
+    await api.patch(`/api/playlists/${playlistId}`, { isPublic: next }).catch(() => setPub(!next));
+    onChanged();
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -90,6 +101,12 @@ export function PlaylistMenu({
                 className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[var(--panel)]"
               >
                 <Users size={15} /> Manage collaborators
+              </button>
+              <button
+                onClick={togglePublic}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[var(--panel)]"
+              >
+                {pub ? <Lock size={15} /> : <Globe size={15} />} {pub ? "Make private" : "Make public"}
               </button>
               <div className="my-1 border-t border-[var(--border)]" />
               <button

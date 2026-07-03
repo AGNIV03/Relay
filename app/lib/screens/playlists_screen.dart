@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../api.dart';
@@ -18,16 +19,20 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
   late Future<List<Playlist>> _future;
   final _searchController = TextEditingController();
   String _q = '';
+  Timer? _sync;
 
   @override
   void initState() {
     super.initState();
     _load();
     playlistsChanged.addListener(_reload); // refresh when a playlist is created/deleted elsewhere
+    // Poll for cross-device sync (a playlist created on another device appears here).
+    _sync = Timer.periodic(const Duration(seconds: 8), (_) => _reload());
   }
 
   @override
   void dispose() {
+    _sync?.cancel();
     _searchController.dispose();
     playlistsChanged.removeListener(_reload);
     super.dispose();

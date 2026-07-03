@@ -21,7 +21,19 @@ export function Sidebar() {
   const [plOpen, setPlOpen] = useState(true);
 
   useEffect(() => {
-    api.get<Playlist[]>("/api/playlists").then(setPlaylists).catch(() => {});
+    const load = () => api.get<Playlist[]>("/api/playlists").then(setPlaylists).catch(() => {});
+    load();
+    // Near-instant cross-device sync: poll, refresh on focus, and react to local
+    // create events — so a playlist made on another device shows within seconds.
+    const interval = setInterval(load, 8000);
+    const onFocus = () => load();
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("playlists-changed", load);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("playlists-changed", load);
+    };
   }, [pathname]);
 
   const itemCls = (active: boolean) =>

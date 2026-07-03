@@ -23,6 +23,7 @@ export function PlaylistView({
   playlistId,
   onRemove,
   owned,
+  isPublic,
   subtitle,
   onChanged,
   onDeleted,
@@ -34,6 +35,7 @@ export function PlaylistView({
   playlistId?: string; // when set, the hero cover is the editable playlist collage
   onRemove?: (trackId: string) => void;
   owned?: boolean; // playlist ownership (gates the rename/delete/collaborators menu)
+  isPublic?: boolean; // public/curated state (for the make-public toggle)
   subtitle?: string; // e.g. "Shared by Agniv" / "2 collaborators"
   onChanged?: () => void; // reload after rename/collaborator change
   onDeleted?: () => void; // navigate away after delete/leave
@@ -173,7 +175,7 @@ export function PlaylistView({
       {/* Action bar */}
       <div className="flex items-center gap-4 px-6 py-4 md:px-10">
         <button
-          onClick={() => player.playQueue(tracks, 0)}
+          onClick={() => player.playQueue(tracks, 0, false, playlistId)}
           disabled={tracks.length === 0}
           className="flex h-14 w-14 items-center justify-center rounded-full bg-[var(--accent)] text-[var(--accent-ink)] shadow-lg transition hover:scale-105 disabled:opacity-40"
           title="Play"
@@ -195,6 +197,7 @@ export function PlaylistView({
             playlistId={playlistId}
             name={name}
             owned={owned ?? true}
+            isPublic={isPublic}
             onChanged={onChanged}
             onDeleted={onDeleted}
           />

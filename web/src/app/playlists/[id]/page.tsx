@@ -39,6 +39,7 @@ export default function PlaylistPage() {
       playlistId={id}
       onRemove={removeTrack}
       owned={playlist.owned ?? true}
+      isPublic={playlist.isPublic}
       subtitle={subtitle}
       onChanged={load}
       onDeleted={() => router.push("/playlists")}

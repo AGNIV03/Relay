@@ -25,8 +25,9 @@ interface PlayerState {
   repeat: RepeatMode;
   shuffle: boolean;
   lyrics: Lyrics | null;
-  /** Play a list of tracks starting at `start`. */
-  playQueue: (tracks: Track[], start?: number) => void;
+  /** Play a list of tracks starting at `start`. Pass `playlistId` when playing a
+   *  playlist so Recently Played can group by playlist. */
+  playQueue: (tracks: Track[], start?: number, forceShuffle?: boolean, playlistId?: string) => void;
   /** Shuffle a list and start playing immediately (regardless of the toggle). */
   shuffleAndPlay: (tracks: Track[]) => void;
   toggle: () => void;
@@ -93,6 +94,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [shuffle, setShuffle] = useState(false);
   const [lyrics, setLyrics] = useState<Lyrics | null>(null);
   const scrobbled = useRef<Set<string>>(new Set());
+  const playlistContextRef = useRef<string | null>(null); // playlist the queue was started from
   const [listenHost, setListenHost] = useState<{ id: string; name: string } | null>(null);
   const [chorus, setChorus] = useState<ChorusState | null>(null);
   const chorusRef = useRef<ChorusState | null>(null);
@@ -191,7 +193,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const t = queueRef.current[indexRef.current];
       if (t && audio.currentTime > 5 && !scrobbled.current.has(t.id)) {
         scrobbled.current.add(t.id);
-        api.post("/api/library/scrobble", { trackId: t.id }).catch(() => {});
+        api
+          .post("/api/library/scrobble", {
+            trackId: t.id,
+            ...(playlistContextRef.current ? { playlistId: playlistContextRef.current } : {}),
+          })
+          .catch(() => {});
       }
     };
     const onMeta = () => {
@@ -477,8 +484,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   // ---- Playback controls ----------------------------------------------------
   const playQueue = useCallback(
-    (tracks: Track[], start = 0, forceShuffle = false) => {
+    (tracks: Track[], start = 0, forceShuffle = false, playlistId?: string) => {
       if (!tracks.length) return;
+      playlistContextRef.current = playlistId ?? null;
       const useShuffle = forceShuffle || shuffle;
       if (forceShuffle && !shuffle) setShuffle(true);
       // Build the actual play order: with shuffle on, the chosen track plays first

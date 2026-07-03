@@ -162,6 +162,7 @@ class Playlist {
   final int collaboratorCount;
   final List<UserRef> collaborators; // populated by GET /:id (empty in list view)
   final Map<String, String?> addedAt; // trackId -> when it was added to this playlist
+  final bool isPublic; // public "curated" playlist (shows in everyone's Home)
 
   Playlist({
     required this.id,
@@ -173,6 +174,7 @@ class Playlist {
     this.collaboratorCount = 0,
     this.collaborators = const [],
     this.addedAt = const {},
+    this.isPublic = false,
   });
 
   factory Playlist.fromJson(Map<String, dynamic> j) => Playlist(
@@ -196,6 +198,43 @@ class Playlist {
           for (final pt in (j['tracks'] as List? ?? []))
             if (pt['track']?['id'] != null) pt['track']['id'] as String: pt['addedAt'] as String?,
         },
+        isPublic: j['isPublic'] as bool? ?? false,
+      );
+}
+
+/// Lightweight public/curated playlist reference (Home "Curated playlists" +
+/// grouped Recently Played). Not a full [Playlist] (no track list).
+class PlaylistRef {
+  final String id;
+  final String name;
+  final String ownerName;
+  final String? coverPath;
+  final int trackCount;
+  PlaylistRef({
+    required this.id,
+    required this.name,
+    required this.ownerName,
+    this.coverPath,
+    this.trackCount = 0,
+  });
+  factory PlaylistRef.fromJson(Map<String, dynamic> j) => PlaylistRef(
+        id: j['id'] as String,
+        name: j['name'] as String,
+        ownerName: (j['ownerName'] ?? j['owner']?['username'] ?? '?') as String,
+        coverPath: j['coverPath'] as String?,
+        trackCount: (j['trackCount'] ?? j['_count']?['tracks'] ?? 0) as int,
+      );
+}
+
+/// One entry in the grouped Recently Played feed: either a track or a playlist
+/// (a track played from a playlist collapses into the playlist).
+class RecentItem {
+  final Track? track;
+  final PlaylistRef? playlist;
+  RecentItem({this.track, this.playlist});
+  factory RecentItem.fromJson(Map<String, dynamic> j) => RecentItem(
+        track: j['type'] == 'track' ? Track.fromJson(j['track']) : null,
+        playlist: j['type'] == 'playlist' ? PlaylistRef.fromJson(j['playlist']) : null,
       );
 }
 

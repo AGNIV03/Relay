@@ -28,6 +28,9 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   late Future<Playlist> _future;
   late String _name;
   Playlist? _pl;
+  bool? _publicOverride; // reflects a public/private toggle before a reload
+
+  bool get _isPublicNow => _publicOverride ?? _pl?.isPublic ?? false;
   int _coverVer = 0; // bumps to refresh the cover image after a change
 
   @override
@@ -190,6 +193,22 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     } catch (_) {}
   }
 
+  Future<void> _togglePublic() async {
+    final next = !_isPublicNow;
+    try {
+      await context.read<Api>().setPlaylistPublic(widget.playlistId, next);
+      if (mounted) {
+        setState(() => _publicOverride = next);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(next
+              ? 'Playlist is now public — it shows in everyone\'s Curated playlists'
+              : 'Playlist is now private'),
+          duration: const Duration(seconds: 2),
+        ));
+      }
+    } catch (_) {}
+  }
+
   Future<void> _confirmDelete() async {
     final api = context.read<Api>();
     final ok = await showDialog<bool>(
@@ -327,6 +346,9 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                 case 'collab':
                   _manageCollaborators();
                   break;
+                case 'public':
+                  _togglePublic();
+                  break;
                 case 'delete':
                   _confirmDelete();
                   break;
@@ -336,15 +358,15 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
               }
             },
             itemBuilder: (_) => owned
-                ? const [
-                    PopupMenuItem(
+                ? [
+                    const PopupMenuItem(
                         value: 'rename',
                         child: Row(children: [
                           Icon(LucideIcons.settings, size: 16),
                           SizedBox(width: 10),
                           Text('Rename')
                         ])),
-                    PopupMenuItem(
+                    const PopupMenuItem(
                         value: 'collab',
                         child: Row(children: [
                           Icon(LucideIcons.users, size: 16),
@@ -352,6 +374,14 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                           Text('Manage collaborators')
                         ])),
                     PopupMenuItem(
+                        value: 'public',
+                        child: Row(children: [
+                          Icon(_isPublicNow ? Icons.lock_outline : Icons.public,
+                              size: 16, color: kAccent),
+                          const SizedBox(width: 10),
+                          Text(_isPublicNow ? 'Make private' : 'Make public'),
+                        ])),
+                    const PopupMenuItem(
                         value: 'delete',
                         child: Row(children: [
                           Icon(LucideIcons.trash2, size: 16, color: Color(0xFFEF4444)),
@@ -391,7 +421,9 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                       FilledButton.icon(
                         icon: const Icon(Icons.play_arrow),
                         label: const Text('Play'),
-                        onPressed: () => context.read<PlayerModel>().playQueue(tracks),
+                        onPressed: () => context
+                            .read<PlayerModel>()
+                            .playQueue(tracks, playlistId: widget.playlistId),
                       ),
                       const SizedBox(width: 10),
                       // Shuffle is an on/off toggle (Spotify-style): it sets the mode,
