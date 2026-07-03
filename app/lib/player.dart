@@ -371,6 +371,32 @@ class PlayerModel extends ChangeNotifier {
     _broadcastChorus();
   }
 
+  /// Reorder an upcoming queue item (drag-to-reorder). Both indices must be after
+  /// the current track; the userQ flag travels with the entry so the two queue
+  /// sections stay correct.
+  Future<void> moveInQueue(int from, int to) async {
+    if (isChorusMember) {
+      final ci = chorus!.index;
+      if (from <= ci || to <= ci) return;
+      final ids = [...chorus!.queueIds];
+      if (from < 0 || from >= ids.length || to < 0 || to >= ids.length || from == to) return;
+      final id = ids.removeAt(from);
+      ids.insert(to, id);
+      _sendCommand(queue: ids, index: ci);
+      return;
+    }
+    if (_source == null) return;
+    if (from <= _index || to <= _index) return;
+    if (from < 0 || from >= _queue.length || to < 0 || to >= _queue.length || from == to) return;
+    final t = _queue.removeAt(from);
+    final f = _userQ.removeAt(from);
+    _queue.insert(to, t);
+    _userQ.insert(to, f);
+    await _source!.move(from, to);
+    notifyListeners();
+    _broadcastChorus();
+  }
+
   /// Jump to a specific track in the queue.
   Future<void> playAt(int index) async {
     if (isChorusMember) {

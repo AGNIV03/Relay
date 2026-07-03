@@ -1,12 +1,15 @@
 "use client";
 
+import { useRef } from "react";
 import { X, Play, Music, GripVertical } from "lucide-react";
 import { usePlayer } from "@/context/PlayerContext";
 import { fmtTime } from "@/lib/format";
 
-/** Slide-over queue: now playing + upcoming tracks, click to jump, ✕ to remove. */
+/** Slide-over queue: now playing + upcoming tracks, click to jump, ✕ to remove,
+ *  drag the grip to reorder. */
 export function QueueView({ onClose }: { onClose: () => void }) {
   const p = usePlayer();
+  const dragFrom = useRef<number | null>(null);
   const upcoming = p.queue
     .map((t, i) => ({ t, i }))
     .filter(({ i }) => i > p.index);
@@ -15,8 +18,18 @@ export function QueueView({ onClose }: { onClose: () => void }) {
   const nextUp = upcoming.filter(({ i }) => !p.isUserQueued(i));
 
   const row = ({ t, i }: { t: (typeof upcoming)[number]["t"]; i: number }) => (
-    <div key={`${t.id}-${i}`} className="group flex items-center gap-3 px-4 py-2 hover:bg-[var(--panel-2)]">
-      <GripVertical size={14} className="shrink-0 text-[var(--muted)]/40" />
+    <div
+      key={`${t.id}-${i}`}
+      draggable
+      onDragStart={() => (dragFrom.current = i)}
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={() => {
+        if (dragFrom.current !== null && dragFrom.current !== i) p.moveInQueue(dragFrom.current, i);
+        dragFrom.current = null;
+      }}
+      className="group flex items-center gap-3 px-4 py-2 hover:bg-[var(--panel-2)]"
+    >
+      <GripVertical size={14} className="shrink-0 cursor-grab text-[var(--muted)]/40" />
       <div className="min-w-0 flex-1 cursor-pointer" onClick={() => p.playAt(i)} title="Play">
         <div className="truncate text-sm font-medium">{t.title}</div>
         <div className="truncate text-xs text-[var(--muted)]">{t.artist?.name}</div>

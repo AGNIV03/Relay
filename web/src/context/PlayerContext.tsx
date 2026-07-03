@@ -43,6 +43,8 @@ interface PlayerState {
   playNext: (t: Track) => void;
   /** Remove the track at queue position `i`. */
   removeFromQueue: (i: number) => void;
+  /** Reorder an upcoming queue item (drag-to-reorder); both indices after current. */
+  moveInQueue: (from: number, to: number) => void;
   /** Jump to queue position `i`. */
   playAt: (i: number) => void;
   /** Whether the upcoming queue item at index `i` was manually queued (vs context). */
@@ -788,6 +790,34 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     [memberNow, sendCommand],
   );
 
+  const moveInQueue = useCallback(
+    (from: number, to: number) => {
+      if (memberNow()) {
+        const c = chorusRef.current!;
+        if (from <= c.index || to <= c.index || from >= c.queueIds.length || to >= c.queueIds.length)
+          return;
+        const ids = [...c.queueIds];
+        const [id] = ids.splice(from, 1);
+        ids.splice(to, 0, id);
+        sendCommand({ queue: ids, index: c.index });
+        return;
+      }
+      setQueue((q) => {
+        const cur = indexRef.current;
+        if (from <= cur || to <= cur || from >= q.length || to >= q.length || from === to) return q;
+        const nq = [...q];
+        const [t] = nq.splice(from, 1);
+        nq.splice(to, 0, t);
+        const uq = [...userQRef.current];
+        const [f] = uq.splice(from, 1);
+        uq.splice(to, 0, f);
+        userQRef.current = uq;
+        return nq;
+      });
+    },
+    [memberNow, sendCommand],
+  );
+
   const playAt = useCallback(
     (i: number) => {
       if (memberNow()) {
@@ -1024,6 +1054,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         addToQueue,
         playNext,
         removeFromQueue,
+        moveInQueue,
         playAt,
         isUserQueued,
         listeningAlong: listenHost !== null,

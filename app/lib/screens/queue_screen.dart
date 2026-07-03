@@ -19,7 +19,8 @@ class QueuePanel extends StatelessWidget {
     final q = player.queue;
     final idx = player.index;
 
-    Widget tile(Track t, {bool current = false, int? removeAt}) => ListTile(
+    Widget tile(Track t, {bool current = false, int? removeAt, Key? key}) => ListTile(
+          key: key,
           leading: Cover(url: api.trackCoverUrl(t.id), size: 44),
           title: Text(t.title,
               maxLines: 1,
@@ -52,6 +53,22 @@ class QueuePanel extends StatelessWidget {
           child: Text(label, style: const TextStyle(color: kMuted, fontSize: 11, letterSpacing: 1)),
         );
 
+    // A drag-to-reorder list for one queue section (indices are contiguous global
+    // positions). Drag the handle to change play order.
+    Widget reorderSection(List<int> section) => ReorderableListView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: section.length,
+          itemBuilder: (context, li) {
+            final gi = section[li];
+            return tile(q[gi], removeAt: gi, key: ValueKey('q_${q[gi].id}_$gi'));
+          },
+          onReorder: (oldIndex, newIndex) {
+            if (newIndex > oldIndex) newIndex -= 1;
+            player.moveInQueue(section[oldIndex], section[newIndex]);
+          },
+        );
+
     return ListView(
       children: [
         const Padding(
@@ -62,11 +79,11 @@ class QueuePanel extends StatelessWidget {
         tile(q[idx], current: true),
         if (inQueue.isNotEmpty) ...[
           header('NEXT IN QUEUE'),
-          for (final i in inQueue) tile(q[i], removeAt: i),
+          reorderSection(inQueue),
         ],
         if (fromContext.isNotEmpty) ...[
           header('NEXT UP'),
-          for (final i in fromContext) tile(q[i], removeAt: i),
+          reorderSection(fromContext),
         ],
       ],
     );
