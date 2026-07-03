@@ -1151,7 +1151,10 @@ class PlayerModel extends ChangeNotifier {
         initialPosition: Duration(milliseconds: posMs),
         preload: false,
       );
-      // Do NOT auto-play — leave it paused so the user can resume.
+      // Always start paused on (re)launch, even if the last session was playing —
+      // the user resumes explicitly. Pause defensively in case a backend would
+      // otherwise auto-start on setAudioSource.
+      await _player.pause();
     } catch (e) {
       debugPrint('restore failed: $e');
     }

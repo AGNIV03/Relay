@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Play, Music } from "lucide-react";
+import { useRef, useState } from "react";
+import { Play, Music, ChevronLeft, ChevronRight } from "lucide-react";
 import { coverUrl } from "@/lib/api";
 import { usePlayer } from "@/context/PlayerContext";
 import type { Track } from "@/lib/types";
@@ -43,12 +43,24 @@ function Card({ tracks, i }: { tracks: Track[]; i: number }) {
 }
 
 export function TrackCards({ tracks }: { tracks: Track[] }) {
+  const scroller = useRef<HTMLDivElement>(null);
   if (!tracks.length) return null;
+  const scroll = (dir: number) =>
+    scroller.current?.scrollBy({ left: dir * 400, behavior: "smooth" });
+  const arrow = "absolute top-1/2 z-10 hidden h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full bg-[var(--panel-2)] text-[var(--text)] shadow-lg ring-1 ring-[var(--border)] transition hover:bg-[var(--panel)] group-hover/row:flex";
   return (
-    <div className="flex gap-3 overflow-x-auto pb-2">
-      {tracks.map((_, i) => (
-        <Card key={tracks[i].id} tracks={tracks} i={i} />
-      ))}
+    <div className="group/row relative">
+      <button onClick={() => scroll(-1)} className={`${arrow} left-0 -translate-x-1`} title="Scroll left">
+        <ChevronLeft size={18} />
+      </button>
+      <div ref={scroller} className="flex gap-3 overflow-x-auto pb-2">
+        {tracks.map((_, i) => (
+          <Card key={tracks[i].id} tracks={tracks} i={i} />
+        ))}
+      </div>
+      <button onClick={() => scroll(1)} className={`${arrow} right-0 translate-x-1`} title="Scroll right">
+        <ChevronRight size={18} />
+      </button>
     </div>
   );
 }

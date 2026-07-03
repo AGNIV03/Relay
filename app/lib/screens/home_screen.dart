@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import '../app_icons.dart';
 import 'package:provider/provider.dart';
@@ -170,9 +172,10 @@ class _TrackRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final api = context.read<Api>();
     final player = context.read<PlayerModel>();
-    return SizedBox(
+    return _ArrowScroller(
       height: 178,
-      child: ListView.separated(
+      builder: (controller) => ListView.separated(
+        controller: controller,
         scrollDirection: Axis.horizontal,
         itemCount: tracks.length,
         separatorBuilder: (_, _) => const SizedBox(width: 10),
@@ -203,9 +206,10 @@ class _AlbumRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final api = context.read<Api>();
-    return SizedBox(
+    return _ArrowScroller(
       height: 178,
-      child: ListView.separated(
+      builder: (controller) => ListView.separated(
+        controller: controller,
         scrollDirection: Axis.horizontal,
         itemCount: albums.length,
         separatorBuilder: (_, _) => const SizedBox(width: 10),
@@ -225,6 +229,74 @@ class _AlbumRow extends StatelessWidget {
             ),
           );
         },
+      ),
+    );
+  }
+}
+
+/// Wraps a horizontal list with left/right scroll-arrow buttons (desktop only —
+/// touch platforms just swipe). The [builder] gets the ScrollController to attach.
+class _ArrowScroller extends StatefulWidget {
+  final double height;
+  final Widget Function(ScrollController) builder;
+  const _ArrowScroller({required this.height, required this.builder});
+  @override
+  State<_ArrowScroller> createState() => _ArrowScrollerState();
+}
+
+class _ArrowScrollerState extends State<_ArrowScroller> {
+  final _controller = ScrollController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _scrollBy(double delta) {
+    if (!_controller.hasClients) return;
+    final target = (_controller.offset + delta).clamp(0.0, _controller.position.maxScrollExtent);
+    _controller.animateTo(target,
+        duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+  }
+
+  bool get _isDesktop =>
+      !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+
+  Widget _arrow(IconData icon, VoidCallback onTap) => Material(
+        color: kPanel2,
+        shape: const CircleBorder(),
+        elevation: 4,
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onTap,
+          child: Padding(padding: const EdgeInsets.all(6), child: Icon(icon, size: 20)),
+        ),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_isDesktop) {
+      return SizedBox(height: widget.height, child: widget.builder(_controller));
+    }
+    return SizedBox(
+      height: widget.height,
+      child: Stack(
+        children: [
+          Positioned.fill(child: widget.builder(_controller)),
+          Positioned(
+            left: 0,
+            top: 0,
+            bottom: 0,
+            child: Center(child: _arrow(Icons.chevron_left, () => _scrollBy(-420))),
+          ),
+          Positioned(
+            right: 0,
+            top: 0,
+            bottom: 0,
+            child: Center(child: _arrow(Icons.chevron_right, () => _scrollBy(420))),
+          ),
+        ],
       ),
     );
   }
