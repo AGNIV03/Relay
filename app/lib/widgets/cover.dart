@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../downloads.dart';
@@ -38,10 +39,14 @@ class Cover extends StatelessWidget {
     );
   }
 
-  Widget _network(String u) => Image.network(
-        u,
+  // Disk + memory cached so scrolling lists / reopening the queue don't re-fetch
+  // every cover from the network each time (they were uncached Image.network).
+  Widget _network(String u) => CachedNetworkImage(
+        imageUrl: u,
         fit: BoxFit.cover,
-        errorBuilder: (context, error, stack) => _fallback(),
+        fadeInDuration: const Duration(milliseconds: 120),
+        placeholder: (context, _) => Container(color: kPanel2),
+        errorWidget: (context, _, __) => _fallback(),
       );
 
   Widget _fallback() => Container(

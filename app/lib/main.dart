@@ -31,6 +31,11 @@ Future<void> main() async {
       // switch near-instantly instead of stalling for seconds while the next
       // stream is opened.
       JustAudioMediaKit.prefetchPlaylist = true;
+      // Buffer the ENTIRE track ahead (libmpv demuxer cache). Once a song is
+      // loaded it's held in memory, so short network hiccups mid-track no longer
+      // interrupt playback (YouTube/Spotify-style preload). 256MB comfortably
+      // holds a full lossless/hi-res FLAC; only used on desktop (one player).
+      JustAudioMediaKit.bufferSize = 256 * 1024 * 1024;
       JustAudioMediaKit.ensureInitialized(
         windows: true,
         linux: true,

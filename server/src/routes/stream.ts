@@ -23,7 +23,9 @@ router.get("/album/:albumId/cover", requireAuth, async (req, res) => {
   const album = await prisma.album.findUnique({ where: { id: String(req.params.albumId) } });
   if (!album?.coverPath) return res.status(404).end();
   const { env } = await import("../lib/env.js");
-  res.sendFile(path.resolve(env.dataPath, album.coverPath));
+  // Covers are effectively immutable per album/track id — let clients cache them
+  // for a week so scrolling lists / reopening panels don't refetch every image.
+  res.sendFile(path.resolve(env.dataPath, album.coverPath), { maxAge: "7d" });
 });
 
 /**
@@ -92,7 +94,7 @@ router.get("/:trackId/cover", requireAuth, async (req, res) => {
   const coverPath = track?.album?.coverPath;
   if (!coverPath) return res.status(404).end();
   const { env } = await import("../lib/env.js");
-  res.sendFile(path.resolve(env.dataPath, coverPath));
+  res.sendFile(path.resolve(env.dataPath, coverPath), { maxAge: "7d" });
 });
 
 export default router;

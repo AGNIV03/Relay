@@ -14,6 +14,10 @@ dependencies:
   # Networking
   http: ^1.2.2
 
+  # Disk-cached network images (album/track covers) — avoids re-downloading
+  # every cover while scrolling lists or reopening the queue panel.
+  cached_network_image: ^3.4.1
+
   # Audio playback + background controls (Android / iOS / macOS / web)
   just_audio: ^0.9.42
   just_audio_background: ^0.0.1-beta.13
