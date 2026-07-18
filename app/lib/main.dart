@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -9,6 +10,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'api.dart';
 import 'app_state.dart';
+import 'auto_browse.dart';
 import 'downloads.dart';
 import 'player.dart';
 import 'theme.dart';
@@ -20,6 +22,20 @@ bool get _isDesktop => !kIsWeb && (Platform.isWindows || Platform.isLinux || Pla
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Android Auto: register the media-browser callbacks SYNCHRONOUSLY, before any
+  // `await` below. A cold AA launch runs main() when it binds the media-browser
+  // service and queries the library almost immediately — registering here (rather
+  // than after our async init, or lazily via PlayerModel) guarantees the browse
+  // tree is served instead of an empty "No items". This same `api` instance is
+  // populated by api.load() below, so deeper nodes resolve once the token loads.
+  final api = Api(baseUrl: '');
+  final browse = AutoBrowse(api);
+  registerMediaBrowsing(
+    getChildren: browse.getChildren,
+    getMediaItem: browse.getMediaItem,
+    search: browse.searchItems,
+  );
 
   // Initialize the audio backend FIRST — before window_manager and before any
   // AudioPlayer is constructed. On desktop this registers the media_kit
@@ -70,11 +86,12 @@ Future<void> main() async {
     await _CloseToTray.instance.setup();
   }
 
-  final api = Api(baseUrl: '');
-  // Load saved server URL + tokens up front so a cold Android Auto launch (which
-  // starts the media-browser service without the UI) can serve the library tree.
+  // Load saved server URL + tokens (the `api` created above is shared with the
+  // media-browser callbacks) so a cold Android Auto launch can resolve deeper
+  // library nodes (Songs/Playlists/…) after the browse callbacks were registered.
   try {
     await api.load();
+    debugPrint('[AA] main: api.load done base=${api.baseUrl} loggedIn=${api.isLoggedIn}');
   } catch (e) {
     debugPrint('api.load failed: $e');
   }
@@ -86,7 +103,16 @@ Future<void> main() async {
     debugPrint('downloads init failed: $e');
   }
 
-  runApp(StreamApp(api: api, downloads: downloads));
+  // Create the player EAGERLY (not lazily via Provider) so its constructor
+  // re-registers browsing (incl. playFromMediaId) and restores the last session,
+  // so a cold Android Auto launch shows the last-played song + can start playback.
+  final player = PlayerModel(api, downloads);
+
+  // Token + player are ready now — tell Android Auto to re-query the library and
+  // the resume shelf, in case it received an empty result during the async init.
+  unawaited(refreshAndroidAutoBrowse());
+
+  runApp(StreamApp(api: api, downloads: downloads, player: player));
 }
 
 /// On desktop, the window-close button hides the window into the system tray
@@ -156,7 +182,9 @@ class _CloseToTray with WindowListener, TrayListener {
 class StreamApp extends StatelessWidget {
   final Api api;
   final DownloadManager downloads;
-  const StreamApp({super.key, required this.api, required this.downloads});
+  final PlayerModel player;
+  const StreamApp(
+      {super.key, required this.api, required this.downloads, required this.player});
 
   @override
   Widget build(BuildContext context) {
@@ -164,7 +192,9 @@ class StreamApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => AppState(api)..bootstrap()),
         ChangeNotifierProvider.value(value: downloads),
-        ChangeNotifierProvider(create: (_) => PlayerModel(api, downloads)),
+        // Provided as a value (created eagerly in main) so Android Auto media
+        // browsing is registered even when the UI never reads PlayerModel.
+        ChangeNotifierProvider.value(value: player),
         Provider.value(value: api),
       ],
       child: MaterialApp(

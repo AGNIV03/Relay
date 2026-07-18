@@ -60,6 +60,7 @@ class PlayerModel extends ChangeNotifier {
   Duration _lastPos = Duration.zero;
   int _frozenTicks = 0;
   bool _recovering = false;
+  bool _restored = false; // restoreSession() runs once (constructor + UI both call it)
 
   // ---- Listen along ----
   // The follower plays the host's music on THEIR OWN device, kept in sync.
@@ -163,6 +164,9 @@ class PlayerModel extends ChangeNotifier {
         search: browse.searchItems,
       );
     }
+    // Restore the last session on startup so a cold Android Auto launch shows the
+    // last-played song + position (paused) without opening the app first.
+    restoreSession();
   }
 
   /// Play an item chosen from a media browser (e.g. Android Auto): loads the
@@ -1046,11 +1050,24 @@ class PlayerModel extends ChangeNotifier {
     }
     final st = _player.processingState;
 
+    // Only a session we're actively trying to play can "stall". If we're not
+    // playing — a user pause, or a freshly restored session that was never started
+    // — there is nothing to recover. This guard MUST come before the idle branch
+    // below: the desktop (media_kit) backend reports a restored, paused,
+    // not-yet-played source as `idle`, which would otherwise be mistaken for a dead
+    // stream and "recovered" into playback a few seconds after launch (the auto-play
+    // bug). `.playing` reflects the user's play/pause intent, so a stream that dies
+    // mid-playback still reads playing == true and is recovered correctly.
+    if (!_player.playing) {
+      _frozenTicks = 0;
+      _lastPos = _player.position;
+      return;
+    }
+
     // HARD STOP: a dropped/failed stream surfaces on the desktop (media_kit)
     // backend as `idle` with the track still loaded — playback just dies and never
-    // resumes (this is THE bug: switch-track / rewind+play was the only way back).
-    // The user hasn't paused here (a pause stays `ready`; a finish/stop empties the
-    // queue, so `current` would be null), so idle == a dead stream → reload it.
+    // resumes (switch-track / rewind+play was the only way back). We're actively
+    // playing (guarded above), so idle == a dead stream → reload it.
     if (st == ProcessingState.idle) {
       _frozenTicks++;
       if (_frozenTicks >= 2) {
@@ -1062,11 +1079,6 @@ class PlayerModel extends ChangeNotifier {
     }
 
     // SILENT CUTOUT / SLOW STALL: still "playing" but the position is frozen.
-    if (!_player.playing) {
-      _frozenTicks = 0;
-      _lastPos = _player.position;
-      return;
-    }
     final progressing = _player.position != _lastPos;
     if (st == ProcessingState.ready || st == ProcessingState.buffering) {
       if (!progressing) {
@@ -1124,6 +1136,8 @@ class PlayerModel extends ChangeNotifier {
 
   /// Restore the last session paused at its saved position (call on startup).
   Future<void> restoreSession() async {
+    if (_restored) return; // idempotent: called from the constructor and the UI
+    _restored = true;
     try {
       final p = await SharedPreferences.getInstance();
       final raw = p.getString(_kSession);

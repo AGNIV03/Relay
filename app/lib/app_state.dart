@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'api.dart';
+import 'auto_browse.dart';
 import 'models.dart';
 
 /// Top-level auth/session state.
@@ -95,6 +98,9 @@ class AppState extends ChangeNotifier {
     user = await api.login(url, username, password);
     offline = false;
     _loadLiked();
+    // Now authed — push the library to any connected Android Auto head unit so its
+    // home fills in without needing an app restart.
+    unawaited(refreshAndroidAutoBrowse());
     notifyListeners();
   }
 

@@ -7,6 +7,7 @@ import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { fetchAndStoreLyrics, ingestFile, translateAndStore } from "../services/scanner.js";
 import { env } from "../lib/env.js";
+import { rankTracks } from "../lib/search.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -132,17 +133,34 @@ router.get("/tracks", async (req, res) => {
         ],
       }
     : {};
-  const [tracks, total] = await Promise.all([
-    prisma.track.findMany({
-      where,
-      orderBy: { title: "asc" },
-      skip: offset,
-      take: limit,
-      include: { artist: true, album: true, uploader: { select: { username: true } } },
-    }),
-    prisma.track.count({ where }),
-  ]);
-  res.json({ tracks, total, limit, offset });
+
+  // No query → the plain alphabetical, DB-paginated list (unchanged).
+  if (!q) {
+    const [tracks, total] = await Promise.all([
+      prisma.track.findMany({
+        where,
+        orderBy: { title: "asc" },
+        skip: offset,
+        take: limit,
+        include: { artist: true, album: true, uploader: { select: { username: true } } },
+      }),
+      prisma.track.count({ where }),
+    ]);
+    return res.json({ tracks, total, limit, offset });
+  }
+
+  // Query → rank by relevance (word-start beats mid-word substring) BEFORE
+  // paginating, so the best matches lead. Ranking is in-memory, so bound the
+  // candidate set; a personal library's match count for any real query is small.
+  const candidates = await prisma.track.findMany({
+    where,
+    orderBy: { title: "asc" },
+    take: 1000,
+    include: { artist: true, album: true, uploader: { select: { username: true } } },
+  });
+  const ranked = rankTracks(candidates, q);
+  const tracks = ranked.slice(offset, offset + limit);
+  res.json({ tracks, total: ranked.length, limit, offset });
 });
 
 /** GET /api/library/tracks/by-ids?ids=a,b,c — hydrate specific tracks, preserving

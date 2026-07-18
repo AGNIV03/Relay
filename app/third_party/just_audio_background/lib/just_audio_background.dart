@@ -43,6 +43,16 @@ void registerMediaBrowsing({
   _onBrowseSearch = search;
 }
 
+/// Tell MediaBrowser clients (Android Auto) that a browse node's children changed
+/// so they re-query it. Used after the API/library becomes ready on a cold launch,
+/// in case the client already got an empty result during startup.
+Future<void> notifyMediaBrowsingChanged([String parentMediaId = 'root']) async {
+  try {
+    // ignore: deprecated_member_use
+    await AudioServiceBackground.notifyChildrenChanged(parentMediaId);
+  } catch (_) {}
+}
+
 /// Provides the [init] method to initialise just_audio for background playback.
 class JustAudioBackground {
   /// Initialise just_audio for background playback. This should be called from

@@ -1,7 +1,37 @@
+import 'dart:io' show Platform;
+
+import 'package:flutter/foundation.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 
 import 'api.dart';
 import 'models.dart';
+
+/// Bust Android Auto's browse cache once the app/API is ready.
+///
+/// Android Auto caches browse results. On a cold launch its MediaBrowserService
+/// can query `root` during the isolate-startup race (before Dart attaches), get an
+/// empty list, and cache it — which is why the car showed "No items" until the app
+/// was opened by hand. A single notify can fire before AA has subscribed, so we
+/// re-notify every browse node a few times over the first several seconds; each one
+/// makes AA re-query and pick up the now-loaded library.
+Future<void> refreshAndroidAutoBrowse() async {
+  if (kIsWeb || !Platform.isAndroid) return;
+  const nodes = [
+    'root',
+    'recent',
+    'cat::liked',
+    'cat::recent',
+    'cat::most',
+    'cat::songs',
+    'cat::playlists',
+  ];
+  for (final delayMs in [0, 800, 2500, 6000]) {
+    await Future.delayed(Duration(milliseconds: delayMs));
+    for (final node in nodes) {
+      await notifyMediaBrowsingChanged(node);
+    }
+  }
+}
 
 /// Builds the media-browser tree (Android Auto / head units) from the library
 /// API and resolves a tapped item back to a playable track list.
@@ -28,11 +58,12 @@ class AutoBrowse {
     'android.media.browse.CONTENT_STYLE_PLAYABLE_HINT': 1,
   };
 
-  MediaItem _cat(String id, String title) => MediaItem(
+  MediaItem _cat(String id, String title, {Uri? art, Map<String, dynamic>? style}) => MediaItem(
         id: id,
         title: title,
         playable: false,
-        extras: _list,
+        artUri: art,
+        extras: style ?? _list,
       );
 
   MediaItem _trackItem(Track t, String ctx) => MediaItem(
@@ -47,14 +78,41 @@ class AutoBrowse {
 
   /// Children for a browse node.
   Future<List<MediaItem>> getChildren(String parentId) async {
+    debugPrint('[AA] getChildren("$parentId") base=${api.baseUrl} loggedIn=${api.isLoggedIn}');
+    // Android Auto's "resume"/recent shelf browses a separate root id ('recent').
+    if (parentId == 'recent') {
+      final tracks = await _tracksFor('recent');
+      return tracks.map((t) => _trackItem(t, 'recent')).toList();
+    }
     if (parentId == _root) {
-      return [
-        _cat('cat::songs', 'Songs'),
-        _cat('cat::playlists', 'Playlists'),
-        _cat('cat::liked', 'Liked Songs'),
-        _cat('cat::recent', 'Recently Played'),
-        _cat('cat::most', 'Most Played'),
+      // Spotify-style home. The first tiles are STATIC (no network), so the root
+      // is never empty even if Android Auto queries during the cold isolate-startup
+      // race or before the API token has loaded — that empty result is what AA
+      // caches and shows as "No items". Playlists are then added inline, best-effort;
+      // a fetch failure must never empty the home, so it's caught.
+      final items = <MediaItem>[
+        _cat('cat::liked', 'Liked Songs', style: _grid),
+        _cat('cat::recent', 'Recently Played', style: _grid),
+        _cat('cat::most', 'Most Played', style: _grid),
+        _cat('cat::songs', 'All Songs', style: _grid),
       ];
+      try {
+        final pls = await api.playlists();
+        for (final p in pls) {
+          items.add(MediaItem(
+            id: 'pl::${p.id}',
+            title: p.name,
+            playable: false,
+            artUri: Uri.parse(api.playlistCoverUrl(p.id)),
+            extras: _grid,
+          ));
+        }
+      } catch (e) {
+        debugPrint('[AA] root: playlists fetch failed, showing folder instead: $e');
+        items.add(_cat('cat::playlists', 'Playlists', style: _grid));
+      }
+      debugPrint('[AA] getChildren("root") -> ${items.length} items');
+      return items;
     }
     if (parentId == 'cat::playlists') {
       final pls = await api.playlists();
@@ -110,6 +168,7 @@ class AutoBrowse {
     final q = query.trim();
     if (q.isEmpty) return const [];
     final tracks = await api.tracks(q: q, limit: 50);
+    debugPrint('[AA] searchItems("$q") -> ${tracks.length} tracks (loggedIn=${api.isLoggedIn})');
     return tracks.map((t) => _trackItem(t, 'q:$q')).toList();
   }
 
