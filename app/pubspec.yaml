@@ -57,6 +57,13 @@ dependency_overrides:
     path: third_party/just_audio_background
   just_audio_media_kit:
     path: third_party/just_audio_media_kit
+  # Patched fork: (1) Android Auto browse requests that arrive before the Flutter
+  # engine attaches are held (result.detach) and replayed instead of answered
+  # empty — AA caches an empty root as a permanent "No items"; (2) the media
+  # session activates for any loaded state, so the restored last-session shows on
+  # the car's media card immediately on connect.
+  audio_service:
+    path: third_party/audio_service
 
 dev_dependencies:
   flutter_test:

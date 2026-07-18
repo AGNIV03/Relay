@@ -22,25 +22,75 @@ typedef BrowseChildrenFn = Future<List<MediaItem>> Function(String parentMediaId
 typedef BrowseItemFn = Future<MediaItem?> Function(String mediaId);
 typedef BrowsePlayFn = Future<void> Function(String mediaId);
 typedef BrowseSearchFn = Future<List<MediaItem>> Function(String query);
+typedef BrowseResumeFn = Future<void> Function();
 
 BrowseChildrenFn? _onBrowseChildren;
 BrowseItemFn? _onBrowseItem;
 BrowsePlayFn? _onBrowsePlay;
 BrowseSearchFn? _onBrowseSearch;
+BrowseResumeFn? _onBrowseResume;
 
 /// Register media-browser callbacks so clients like Android Auto can browse a
 /// library tree and start playback. Safe to call on any platform (only Android's
 /// MediaBrowserService actually invokes them). Call once the app/API is ready.
+/// [resume] handles a play command arriving BEFORE any real player exists (the
+/// car's resume card play button on a restored, never-loaded session).
 void registerMediaBrowsing({
   BrowseChildrenFn? getChildren,
   BrowseItemFn? getMediaItem,
   BrowsePlayFn? playFromMediaId,
   BrowseSearchFn? search,
+  BrowseResumeFn? resume,
 }) {
   _onBrowseChildren = getChildren;
   _onBrowseItem = getMediaItem;
   _onBrowsePlay = playFromMediaId;
   _onBrowseSearch = search;
+  _onBrowseResume = resume;
+}
+
+/// The switcher's initial inner handler. Pushing to its (public) subjects is
+/// how a restored-but-never-loaded session reaches the media session: the
+/// real _PlayerAudioHandler only exists after just_audio lazily creates its
+/// platform player on first load()/play(), so until then this handler is the
+/// only path to the platform side.
+final BaseAudioHandler _resumeStateHandler = BaseAudioHandler();
+
+/// Publish a restored (paused) session to the media session/notification and
+/// any connected car head unit — song metadata, queue, and saved position —
+/// WITHOUT loading the audio. Called by the app after restoring its last
+/// session on startup, so Android Auto's media card shows the last-played
+/// song with a play button instead of a dead "Tap to open" card. No-op once
+/// real playback has started (the player handler owns the streams then).
+void setMediaBrowsingNowPlaying({
+  required MediaItem item,
+  required List<MediaItem> queue,
+  required int index,
+  required Duration position,
+}) {
+  try {
+    _resumeStateHandler.queue.add(queue);
+    _resumeStateHandler.mediaItem.add(item);
+    _resumeStateHandler.playbackState.add(PlaybackState(
+      controls: [
+        MediaControl.skipToPrevious,
+        MediaControl.play,
+        MediaControl.skipToNext,
+      ],
+      systemActions: const {
+        MediaAction.seek,
+        MediaAction.seekForward,
+        MediaAction.seekBackward,
+      },
+      androidCompactActionIndices: const [0, 1, 2],
+      processingState: AudioProcessingState.ready,
+      playing: false,
+      updatePosition: position,
+      queueIndex: index,
+    ));
+  } catch (_) {
+    // JustAudioBackground.init hasn't run (non-Android backends) — ignore.
+  }
 }
 
 /// Tell MediaBrowser clients (Android Auto) that a browse node's children changed
@@ -114,6 +164,91 @@ class JustAudioBackground {
   }
 }
 
+/// Relay: THE Android Auto fix. Media-browser calls (browse/search/play-by-id)
+/// must be answerable BEFORE any just_audio platform player exists.
+/// SwitchAudioHandler's initial inner is a bare BaseAudioHandler (returns [] /
+/// null for everything), and the real _PlayerAudioHandler — which forwards to
+/// the app's registered browse callbacks — only becomes `inner` when just_audio
+/// lazily creates its platform player on the first load()/play(). A restored
+/// paused session (setAudioSource(preload: false)) never loads, so a car
+/// head-unit browsing at connect time always hit the bare handler and got an
+/// empty library ("No items"), and search only started working after the user
+/// manually played something. Forwarding at the switcher level answers browse
+/// requests regardless of player state.
+class _BrowseSwitchAudioHandler extends SwitchAudioHandler {
+  _BrowseSwitchAudioHandler(AudioHandler inner) : super(inner);
+
+  @override
+  Future<void> play() async {
+    // Real player exists → normal path. Otherwise this is the resume-card play
+    // button on a restored session: hand it to the app, which loads + plays.
+    if (inner is _PlayerAudioHandler) return super.play();
+    final fn = _onBrowseResume;
+    if (fn != null) {
+      try {
+        await fn();
+      } catch (_) {}
+    }
+  }
+
+  @override
+  Future<List<MediaItem>> getChildren(String parentMediaId,
+      [Map<String, dynamic>? options]) async {
+    final fn = _onBrowseChildren;
+    if (fn == null) return const [];
+    try {
+      return await fn(parentMediaId);
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  @override
+  Future<MediaItem?> getMediaItem(String mediaId) async {
+    final fn = _onBrowseItem;
+    if (fn == null) return null;
+    try {
+      return await fn(mediaId);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> playFromMediaId(String mediaId,
+      [Map<String, dynamic>? extras]) async {
+    final fn = _onBrowsePlay;
+    if (fn != null) {
+      try {
+        await fn(mediaId);
+      } catch (_) {}
+    }
+  }
+
+  @override
+  Future<List<MediaItem>> search(String query,
+      [Map<String, dynamic>? extras]) async {
+    final fn = _onBrowseSearch;
+    if (fn == null) return const [];
+    try {
+      return await fn(query);
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  @override
+  Future<void> playFromSearch(String query,
+      [Map<String, dynamic>? extras]) async {
+    final fn = _onBrowseSearch;
+    if (fn == null) return;
+    try {
+      final results = await fn(query);
+      if (results.isNotEmpty) await playFromMediaId(results.first.id, extras);
+    } catch (_) {}
+  }
+}
+
 class _JustAudioBackgroundPlugin extends JustAudioPlatform {
   static Future<void> setup({
     bool androidResumeOnClick = true,
@@ -136,7 +271,7 @@ class _JustAudioBackgroundPlugin extends JustAudioPlatform {
     _platform = JustAudioPlatform.instance;
     JustAudioPlatform.instance = _JustAudioBackgroundPlugin();
     _audioHandler = await AudioService.init(
-      builder: () => SwitchAudioHandler(BaseAudioHandler()),
+      builder: () => _BrowseSwitchAudioHandler(_resumeStateHandler),
       config: AudioServiceConfig(
         androidResumeOnClick: androidResumeOnClick,
         androidNotificationChannelId: androidNotificationChannelId,
@@ -754,6 +889,13 @@ class _PlayerAudioHandler extends BaseAudioHandler
         _justAudioEvent = _justAudioEvent.copyWith(
           processingState: ProcessingStateMessage.idle,
         );
+        // Relay: stop() is only used by full-teardown paths (queue finished,
+        // logout). Clear the queue + item so the idle broadcast below reads as
+        // truly idle (and not as a restored paused session — see the
+        // idle+mediaItem→ready mapping in _broadcastState) and the media
+        // notification/car card are dismissed.
+        mediaItem.add(null);
+        queue.add(<MediaItem>[]);
         _broadcastState();
         _playerCompleter = _ValueCompleter<AudioPlayerPlatform>();
         await _platform.disposePlayer(DisposePlayerRequest(id: player.id));
@@ -856,7 +998,13 @@ class _PlayerAudioHandler extends BaseAudioHandler
   }
 
   void _broadcastStateIfActive() {
-    if (_justAudioEvent.processingState != ProcessingStateMessage.idle) {
+    // Relay: also broadcast when a media item is set even though the player is
+    // still `idle` — i.e. a restored last-session that was never loaded
+    // (setAudioSource(preload: false) + pause). Without this no state reaches
+    // the platform side, the media session stays inactive, and Android Auto
+    // shows "Tap to open" instead of the resumable last-played card.
+    if (_justAudioEvent.processingState != ProcessingStateMessage.idle ||
+        mediaItem.nvalue != null) {
       _broadcastState();
     }
   }
@@ -882,16 +1030,22 @@ class _PlayerAudioHandler extends BaseAudioHandler
           .toList(),
       processingState: _justAudioEvent.errorCode != null
           ? AudioProcessingState.error
-          : const {
-                ProcessingStateMessage.idle: AudioProcessingState.idle,
-                ProcessingStateMessage.loading: AudioProcessingState.loading,
-                ProcessingStateMessage.buffering:
-                    AudioProcessingState.buffering,
-                ProcessingStateMessage.ready: AudioProcessingState.ready,
-                ProcessingStateMessage.completed:
-                    AudioProcessingState.completed,
-              }[_justAudioEvent.processingState] ??
-              AudioProcessingState.idle,
+          // Relay: a restored (set but never loaded) session reads `idle` in
+          // just_audio. Report `ready` while a media item is set so the session
+          // activates and the car/notification show a paused, resumable card.
+          : (_justAudioEvent.processingState == ProcessingStateMessage.idle &&
+                  mediaItem.nvalue != null)
+              ? AudioProcessingState.ready
+              : const {
+                    ProcessingStateMessage.idle: AudioProcessingState.idle,
+                    ProcessingStateMessage.loading: AudioProcessingState.loading,
+                    ProcessingStateMessage.buffering:
+                        AudioProcessingState.buffering,
+                    ProcessingStateMessage.ready: AudioProcessingState.ready,
+                    ProcessingStateMessage.completed:
+                        AudioProcessingState.completed,
+                  }[_justAudioEvent.processingState] ??
+                  AudioProcessingState.idle,
       playing: _playing &&
           !{ProcessingStateMessage.idle, ProcessingStateMessage.completed}
               .contains(_justAudioEvent.processingState),

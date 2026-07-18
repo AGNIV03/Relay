@@ -162,6 +162,10 @@ class PlayerModel extends ChangeNotifier {
         getMediaItem: browse.getMediaItem,
         playFromMediaId: playFromMediaId,
         search: browse.searchItems,
+        // Resume-card play on a restored session: load + play from the saved
+        // position (this lazily creates the platform player, after which the
+        // normal handler owns playback).
+        resume: () => _player.play(),
       );
     }
     // Restore the last session on startup so a cold Android Auto launch shows the
@@ -234,19 +238,18 @@ class PlayerModel extends ChangeNotifier {
     return ms < 0 ? 0 : ms;
   }
 
-  AudioSource _sourceFor(Track t) {
-    final local = downloads.localPath(t.id);
-    final uri = local != null ? Uri.file(local) : Uri.parse(api.streamUrl(t.id));
-    return AudioSource.uri(
-      uri,
-      tag: MediaItem(
+  MediaItem _mediaItemFor(Track t) => MediaItem(
         id: t.id,
         title: t.title,
         artist: t.artistName,
         album: t.albumTitle,
         artUri: Uri.parse(api.trackCoverUrl(t.id)),
-      ),
-    );
+      );
+
+  AudioSource _sourceFor(Track t) {
+    final local = downloads.localPath(t.id);
+    final uri = local != null ? Uri.file(local) : Uri.parse(api.streamUrl(t.id));
+    return AudioSource.uri(uri, tag: _mediaItemFor(t));
   }
 
   // Insert/remove that keep _queue, _userQ and the audio source in lockstep.
@@ -1141,7 +1144,10 @@ class PlayerModel extends ChangeNotifier {
     try {
       final p = await SharedPreferences.getInstance();
       final raw = p.getString(_kSession);
-      if (raw == null) return;
+      if (raw == null) {
+        debugPrint('[AA] restoreSession: no saved session');
+        return;
+      }
       final data = jsonDecode(raw) as Map<String, dynamic>;
       final tracks = (data['queue'] as List).map((e) => Track.fromJson(e)).toList();
       if (tracks.isEmpty) return;
@@ -1173,6 +1179,20 @@ class PlayerModel extends ChangeNotifier {
       // the user resumes explicitly. Pause defensively in case a backend would
       // otherwise auto-start on setAudioSource.
       await _player.pause();
+      // Android: publish the restored (paused) session to the media session so
+      // the notification and a connected car's media card show the last-played
+      // song + saved progress immediately — no audio is loaded until the user
+      // presses play. (just_audio's platform player doesn't exist yet with
+      // preload:false, so this is the only path that reaches the session.)
+      if (!kIsWeb && Platform.isAndroid) {
+        setMediaBrowsingNowPlaying(
+          item: _mediaItemFor(_queue[_index]),
+          queue: _queue.map(_mediaItemFor).toList(),
+          index: _index,
+          position: Duration(milliseconds: posMs),
+        );
+      }
+      debugPrint('[AA] restoreSession: restored ${_queue.length} tracks at index $_index (paused)');
     } catch (e) {
       debugPrint('restore failed: $e');
     }

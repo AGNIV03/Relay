@@ -109,8 +109,11 @@ Future<void> main() async {
   final player = PlayerModel(api, downloads);
 
   // Token + player are ready now — tell Android Auto to re-query the library and
-  // the resume shelf, in case it received an empty result during the async init.
+  // the resume shelf, in case it received an empty result during the async init,
+  // then keep nudging it periodically so a stale/empty cached root self-heals the
+  // moment the user views Relay in the car.
   unawaited(refreshAndroidAutoBrowse());
+  startAndroidAutoAutoRefresh();
 
   runApp(StreamApp(api: api, downloads: downloads, player: player));
 }
