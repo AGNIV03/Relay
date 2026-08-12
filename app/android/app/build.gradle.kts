@@ -17,7 +17,7 @@ if (keystorePropertiesFile.exists()) {
 }
 
 android {
-    namespace = "site.agniv.stream"
+    namespace = "site.agniv.relay"
     compileSdk = 36 // file_picker's flutter_plugin_android_lifecycle requires >= 36
     ndkVersion = flutter.ndkVersion
 
@@ -27,7 +27,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "site.agniv.stream"
+        applicationId = "site.agniv.relay"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -72,4 +72,11 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // Provides android.support.v4.media.* (MediaBrowserCompat / MediaControllerCompat)
+    // so MainActivity can dispatch voice "play X" (MEDIA_PLAY_FROM_SEARCH) to the
+    // audio_service media session. Same artifact the audio_service plugin uses.
+    implementation("androidx.media:media:1.7.0")
 }

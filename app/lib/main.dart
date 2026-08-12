@@ -60,7 +60,7 @@ Future<void> main() async {
       debugPrint('audio backend: media_kit initialized (desktop)');
     } else {
       await JustAudioBackground.init(
-        androidNotificationChannelId: 'site.agniv.stream.audio',
+        androidNotificationChannelId: 'site.agniv.relay.audio',
         androidNotificationChannelName: 'Relay playback',
         androidNotificationOngoing: true,
         androidNotificationIcon: 'drawable/ic_notification',

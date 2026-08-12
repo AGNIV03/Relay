@@ -32,6 +32,14 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- Voice assistants (Google Assistant / Gemini): "Hey Google, play X
+                 on Relay" launches the app with this intent + the spoken query.
+                 Handled in MainActivity, which forwards it to the media session's
+                 onPlayFromSearch (same path as in-car "play X"). -->
+            <intent-filter>
+                <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->

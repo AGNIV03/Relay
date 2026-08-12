@@ -262,7 +262,20 @@ class AutoBrowse {
   /// encodes the query so tapping a result plays the whole result list.
   Future<List<MediaItem>> searchItems(String query) async {
     final q = query.trim();
-    if (q.isEmpty) return const [];
+    // Empty query = "Hey Google, play some music (on Relay)" — the assistant
+    // wants us to just start playing. Resume the last session if there is one,
+    // else fall back to most-played. Tagged so tapping/playing loads the list.
+    if (q.isEmpty) {
+      final saved = await _savedSession();
+      if (saved != null) {
+        debugPrint('[AA] searchItems("") -> resume last session (${saved.tracks.length})');
+        // 'recent' context replays the saved queue starting at the saved index.
+        return [for (final t in saved.tracks) _trackItem(t, 'recent')];
+      }
+      final most = await _tracksFor('most');
+      debugPrint('[AA] searchItems("") -> most-played (${most.length})');
+      return most.map((t) => _trackItem(t, 'most')).toList();
+    }
     final tracks = await api.tracks(q: q, limit: 50);
     debugPrint('[AA] searchItems("$q") -> ${tracks.length} tracks (loggedIn=${api.isLoggedIn})');
     return tracks.map((t) => _trackItem(t, 'q:$q')).toList();
