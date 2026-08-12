@@ -171,6 +171,52 @@ keytool -genkeypair -v -keystore app/android/app/relay-release.jks -keyalg RSA -
 
 Keep the keystore + its password safe — you need the same key to ship updates.
 
+## Android Auto
+
+Relay is a full media browser app in the car. Once your phone is connected, Relay
+appears in the car's app list and behaves like any built-in media app.
+
+- **Browse** four tabs (Home, Playlists, Songs and Recents). Home leads with Liked
+  Songs and Most Played, then your playlists with cover art. Tapping an item plays
+  it with its whole context queued.
+- **Resume card** on connect: the media card shows your last played song with its
+  saved position, paused and ready. Press play to pick up from there. The last
+  session is restored from local storage so the card appears instantly and offline,
+  without opening the app on the phone first.
+- **Voice**: "play <song>" resolves through the media session and plays the best
+  ranked match. "Hey Google, play <song> on Relay" cold-launches the app via the
+  `MEDIA_PLAY_FROM_SEARCH` intent, which `MainActivity` forwards to the same
+  `onPlayFromSearch` path. An empty query resumes your recent music.
+- **Search** from the car queries your library ranked by relevance (word-start
+  matches beat mid-word substrings).
+
+**Implementation notes.** Browse, search and play-from-car are answered at the
+`SwitchAudioHandler` level in the patched `just_audio_background` fork, so they work
+before any just_audio player exists (a cold car connection, where the per-player
+handler has not been created yet). Cold-start browse requests that reach the native
+`MediaBrowserService` before the Flutter engine attaches are held (`result.detach()`)
+and replayed once the handler is ready, instead of being answered empty, which
+Android Auto would otherwise cache as a permanent "No items". These live in the
+patched forks under `app/third_party/audio_service` and
+`app/third_party/just_audio_background`.
+
+**Testing without a car.** Use the Desktop Head Unit (DHU) from the Android SDK. In
+the Android Auto app on the phone enable developer mode, then "Start head unit
+server". Forward the port and launch the DHU:
+
+```bash
+adb forward tcp:5277 tcp:5277
+"$ANDROID_SDK_ROOT/extras/google/auto/desktop-head-unit"
+```
+
+Watch the app's media-browser activity with `adb logcat -s RelayAA`. You can drive a
+voice "play" without speaking by firing the intent directly:
+
+```bash
+adb shell am start -a android.media.action.MEDIA_PLAY_FROM_SEARCH \
+  -n site.agniv.relay/.MainActivity --es query "your song"
+```
+
 ## Local development
 
 Run Postgres in Docker and the server on the host for hot-reload:

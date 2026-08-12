@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relay - self-hosted music streaming</title>
+<meta name="description" content="Relay is a self-hosted music streaming service. Host your own audio library on a server you control and stream to the web, Windows, Android and Android Auto.">
+<style>
+  :root{
+    --bg:#0a0a0b; --panel:#131316; --panel-2:#1d1d21; --border:#29292e;
+    --text:#f4f4f5; --muted:#a1a1aa; --accent:#22d3ee; --accent-2:#67e8f9; --accent-ink:#08272c;
+    --radius:14px; --maxw:1080px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--accent-2); text-decoration:none}
+  a:hover{text-decoration:underline}
+  h1,h2,h3{line-height:1.2; font-weight:700}
+  h2{font-size:1.7rem; margin:0 0 .6rem}
+  h3{font-size:1.15rem; margin:1.6rem 0 .4rem}
+  code,pre{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace}
+  code{background:var(--panel-2); border:1px solid var(--border); padding:.1em .4em; border-radius:6px; font-size:.86em; color:var(--accent-2)}
+  pre{background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:16px 18px; overflow-x:auto; font-size:.86rem; color:#e7e7ea}
+  pre code{background:none; border:none; padding:0; color:inherit}
+  .wrap{max-width:var(--maxw); margin:0 auto; padding:0 22px}
+
+  /* top nav */
+  header.nav{position:sticky; top:0; z-index:20; background:rgba(10,10,11,.82); backdrop-filter:blur(10px); border-bottom:1px solid var(--border)}
+  .nav-inner{max-width:var(--maxw); margin:0 auto; padding:12px 22px; display:flex; align-items:center; gap:14px}
+  .brand{display:flex; align-items:center; gap:10px; font-weight:700; letter-spacing:.2px}
+  .brand svg{width:26px; height:26px; flex:0 0 auto}
+  .nav-links{margin-left:auto; display:flex; gap:20px; align-items:center; font-size:.92rem}
+  .nav-links a{color:var(--muted)}
+  .nav-links a:hover{color:var(--text); text-decoration:none}
+  .btn{display:inline-flex; align-items:center; gap:8px; background:var(--accent); color:var(--accent-ink); font-weight:600; padding:9px 15px; border-radius:10px; border:0}
+  .btn:hover{background:var(--accent-2); text-decoration:none}
+  .btn.ghost{background:transparent; color:var(--text); border:1px solid var(--border)}
+  .btn.ghost:hover{border-color:var(--accent); color:var(--accent-2)}
+  @media(max-width:760px){ .nav-links a:not(.btn){display:none} }
+
+  /* hero */
+  .hero{padding:76px 0 40px; text-align:center; position:relative; overflow:hidden}
+  .hero::before{content:""; position:absolute; inset:-40% 0 auto 0; height:520px; background:radial-gradient(60% 60% at 50% 0,rgba(34,211,238,.16),transparent 70%); pointer-events:none}
+  .hero .logo{width:96px; height:96px; margin:0 auto 20px; display:block; filter:drop-shadow(0 8px 30px rgba(34,211,238,.35))}
+  .hero h1{font-size:clamp(2.2rem,6vw,3.4rem); margin:.1em 0 .2em; letter-spacing:-.02em}
+  .hero .tag{color:var(--muted); font-size:1.15rem; max-width:640px; margin:0 auto 28px}
+  .hero .cta{display:flex; gap:12px; justify-content:center; flex-wrap:wrap}
+  .pill{display:inline-flex; gap:8px; align-items:center; background:var(--panel); border:1px solid var(--border); color:var(--muted); padding:6px 13px; border-radius:999px; font-size:.82rem; margin-bottom:22px}
+  .pill b{color:var(--accent-2); font-weight:600}
+
+  section{padding:44px 0; border-top:1px solid var(--border)}
+  section:first-of-type{border-top:0}
+  .lead{color:var(--muted); max-width:760px}
+
+  .grid{display:grid; gap:16px; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); margin-top:22px}
+  .card{background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); padding:20px}
+  .card h3{margin:.1rem 0 .35rem; font-size:1.05rem}
+  .card p{margin:0; color:var(--muted); font-size:.94rem}
+  .card .ic{width:34px; height:34px; border-radius:9px; background:rgba(34,211,238,.12); display:flex; align-items:center; justify-content:center; margin-bottom:12px; color:var(--accent-2)}
+  .card .ic svg{width:19px; height:19px}
+
+  .callout{background:var(--panel); border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:10px; padding:14px 18px; margin:18px 0; color:var(--muted); font-size:.94rem}
+  .callout b{color:var(--text)}
+
+  .steps{counter-reset:s; margin:22px 0 0; padding:0; list-style:none}
+  .steps > li{position:relative; padding:0 0 22px 46px; border-left:1px solid var(--border); margin-left:14px}
+  .steps > li:last-child{border-left-color:transparent}
+  .steps > li::before{counter-increment:s; content:counter(s); position:absolute; left:-14px; top:-2px; width:28px; height:28px; border-radius:50%; background:var(--accent); color:var(--accent-ink); font-weight:700; font-size:.85rem; display:flex; align-items:center; justify-content:center}
+  .steps h3{margin:0 0 .3rem}
+
+  table{width:100%; border-collapse:collapse; margin-top:18px; font-size:.9rem; display:block; overflow-x:auto}
+  th,td{text-align:left; padding:10px 12px; border-bottom:1px solid var(--border); vertical-align:top}
+  th{color:var(--muted); font-weight:600; white-space:nowrap}
+  td code{white-space:nowrap}
+
+  /* android auto mockup */
+  .aa-shell{max-width:780px; margin:24px auto 0; background:#0d0d0f; border:1px solid var(--border); border-radius:16px; padding:10px; box-shadow:0 20px 60px rgba(0,0,0,.5)}
+  .aa-screen{background:var(--bg); border-radius:10px; overflow:hidden}
+  .aa-tabs{display:flex; gap:26px; padding:14px 20px; border-bottom:1px solid var(--border); font-size:.82rem; color:var(--muted)}
+  .aa-tabs .t{display:flex; flex-direction:column; align-items:center; gap:5px}
+  .aa-tabs .t.on{color:var(--accent-2)}
+  .aa-tabs .t svg{width:20px;height:20px}
+  .aa-tiles{display:grid; grid-template-columns:repeat(4,1fr); gap:14px; padding:20px}
+  .aa-tile figure{margin:0}
+  .aa-tile .art{aspect-ratio:1; border-radius:10px; border:1px solid var(--border)}
+  .aa-tile figcaption{font-size:.8rem; color:var(--text); margin-top:8px; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .art.liked{background:linear-gradient(145deg,#3a2a63,#22d3ee55)}
+  .art.recent{background:linear-gradient(145deg,#132c33,#0d0d0f)}
+  .art.most{background:linear-gradient(145deg,#1d1d21,#29434a)}
+  .art.pl{background:linear-gradient(145deg,#22d3ee33,#131316)}
+  .heart{width:100%; height:100%; display:flex; align-items:center; justify-content:center; color:#fff; opacity:.9}
+  .heart svg{width:34%; height:34%}
+  @media(max-width:620px){ .aa-tiles{grid-template-columns:repeat(2,1fr)} .aa-tabs{gap:16px} }
+
+  footer{border-top:1px solid var(--border); padding:34px 0; color:var(--muted); font-size:.9rem}
+  .foot-inner{display:flex; gap:16px; align-items:center; flex-wrap:wrap}
+  .foot-inner .brand{color:var(--text)}
+  .foot-links{margin-left:auto; display:flex; gap:18px}
+  .foot-links a{color:var(--muted)}
+  .muted{color:var(--muted)}
+  .tag-list{display:flex; flex-wrap:wrap; gap:8px; margin-top:10px}
+  .tag-list span{font-size:.8rem; color:var(--muted); background:var(--panel-2); border:1px solid var(--border); padding:4px 10px; border-radius:999px}
+</style>
+</head>
+<body>
+
+<!-- logo mark reused -->
+<template id="logo">
+  <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <path d="M20 24 L20 76 L54 50 Z" stroke="#22d3ee" stroke-width="8" stroke-linejoin="round"/>
+    <path d="M60 34 Q73 50 60 66" stroke="#22d3ee" stroke-width="8" stroke-linecap="round"/>
+    <path d="M74 25 Q92 50 74 75" stroke="#22d3ee" stroke-width="8" stroke-linecap="round"/>
+  </svg>
+</template>
+
+<header class="nav">
+  <div class="nav-inner">
+    <span class="brand">
+      <svg viewBox="0 0 100 100" fill="none"><path d="M20 24 L20 76 L54 50 Z" stroke="#22d3ee" stroke-width="8" stroke-linejoin="round"/><path d="M60 34 Q73 50 60 66" stroke="#22d3ee" stroke-width="8" stroke-linecap="round"/><path d="M74 25 Q92 50 74 75" stroke="#22d3ee" stroke-width="8" stroke-linecap="round"/></svg>
+      Relay
+    </span>
+    <nav class="nav-links">
+      <a href="#what">What it is</a>
+      <a href="#host">Host it</a>
+      <a href="#music">Music</a>
+      <a href="#users">Users</a>
+      <a href="#auto">Android Auto</a>
+      <a href="/policy">Privacy</a>
+      <a class="btn ghost" href="https://github.com/AGNIV03/Relay">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div class="hero">
+  <div class="wrap">
+    <svg class="logo" viewBox="0 0 100 100" fill="none"><path d="M20 24 L20 76 L54 50 Z" stroke="#22d3ee" stroke-width="8" stroke-linejoin="round"/><path d="M60 34 Q73 50 60 66" stroke="#22d3ee" stroke-width="8" stroke-linecap="round"/><path d="M74 25 Q92 50 74 75" stroke="#22d3ee" stroke-width="8" stroke-linecap="round"/></svg>
+    <div class="pill"><b>Self-hosted</b> your music, your server, your rules</div>
+    <h1>Relay</h1>
+    <p class="tag">Host your own music library on a box you control and stream it to the web, a Windows app, Android and Android Auto. Playlists, lyrics, friend activity, collaborative listening and offline downloads included.</p>
+    <div class="cta">
+      <a class="btn" href="#host">Start hosting</a>
+      <a class="btn ghost" href="https://github.com/AGNIV03/Relay">View on GitHub</a>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <section id="what">
+    <h2>What Relay is</h2>
+    <p class="lead">Relay is a personal music server and a set of clients for it, in the same spirit as Plex, Jellyfin or Nextcloud but built for music. You run the server, you point it at your own audio files and only you and the people you invite can reach it. There is no central Relay service, no catalog and no account owned by anyone but you. The app ships empty and plays only the music you host.</p>
+    <div class="grid">
+      <div class="card">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v12H4z"/><path d="M2 20h20"/></svg></div>
+        <h3>You own everything</h3>
+        <p>Your library, database and covers live on your server. Nothing is sent to a third party by the app.</p>
+      </div>
+      <div class="card">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/></svg></div>
+        <h3>Reach it anywhere</h3>
+        <p>Stream from a browser, a Windows desktop app, Android and Android Auto. Downloads play offline.</p>
+      </div>
+      <div class="card">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
+        <h3>Made for music</h3>
+        <p>Tag based library scan, embedded cover art, synced lyrics with translations, gapless queue, shuffle and repeat.</p>
+      </div>
+      <div class="card">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
+        <h3>Social, if you want</h3>
+        <p>Friend activity, listen along and Chorus collaborative sessions. All scoped to the people on your server.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="how">
+    <h2>How it works</h2>
+    <p class="lead">Relay is three parts that run together. A server holds your library and does the streaming. A web app is the admin panel and a browser player. Native apps talk to the same server directly.</p>
+    <div class="grid">
+      <div class="card"><h3>Server</h3><p>An Express and TypeScript API with a Postgres database. It scans your files, streams audio with seeking, transcodes on the fly and handles auth, playlists, likes and the social features.</p></div>
+      <div class="card"><h3>Web app</h3><p>A Next.js app that is both the admin interface and a full browser player. It also acts as the same origin proxy so a browser only ever talks to your own domain.</p></div>
+      <div class="card"><h3>Apps</h3><p>One Flutter codebase builds the Windows desktop app and the Android app. Background playback, lock screen controls, Android Auto and offline downloads are built in.</p></div>
+    </div>
+    <div class="callout">In a typical deployment a <b>Cloudflare Tunnel</b> is the only way in. It reaches the web container which proxies the API over an internal network. No database port and no API port is exposed to the public internet.</div>
+  </section>
+
+  <section id="host">
+    <h2>Host your own server</h2>
+    <p class="lead">Everything runs in containers. The only thing you install on the host is Docker. Clone the repo, set a few values and bring it up.</p>
+    <ol class="steps">
+      <li>
+        <h3>Get the code</h3>
+        <p>Clone the repository from GitHub onto the machine that will host your music.</p>
+        <pre><code>git clone https://github.com/AGNIV03/Relay.git
+cd Relay</code></pre>
+      </li>
+      <li>
+        <h3>Create your config</h3>
+        <p>Copy the example environment file and edit it. At minimum set <code>MUSIC_DIR</code> to the folder that holds your audio and set strong secrets.</p>
+        <pre><code>cp .env.example .env
+# then edit .env (see the Configuration table below)</code></pre>
+      </li>
+      <li>
+        <h3>Bring it up</h3>
+        <p>Build and start the containers. The database migrates itself on first start and the first admin account is created from your config.</p>
+        <pre><code>docker compose up -d --build</code></pre>
+      </li>
+      <li>
+        <h3>Scan your library</h3>
+        <p>Open the web app, sign in with the admin account, then trigger a library scan from the admin page. Your tracks, albums and cover art appear once the scan finishes.</p>
+      </li>
+    </ol>
+
+    <h3>Configuration</h3>
+    <p class="muted">The important values in <code>.env</code>.</p>
+    <table>
+      <tr><th>Value</th><th>What it does</th></tr>
+      <tr><td><code>MUSIC_DIR</code></td><td>Host folder with your audio. It is mounted into the server and in-app uploads also land here.</td></tr>
+      <tr><td><code>ADMIN_USERNAME</code><br><code>ADMIN_PASSWORD</code></td><td>The first admin, created on an empty database. A strong password is required in production.</td></tr>
+      <tr><td><code>POSTGRES_USER</code><br><code>POSTGRES_PASSWORD</code><br><code>POSTGRES_DB</code></td><td>Database name and credentials. Use a long random password.</td></tr>
+      <tr><td><code>DATABASE_URL</code></td><td>The server connection string for the database.</td></tr>
+      <tr><td><code>JWT_SECRET</code></td><td>A long random secret used to sign login tokens.</td></tr>
+      <tr><td><code>NEXT_PUBLIC_API_URL</code></td><td>The public address your apps and browser use. Your domain in production.</td></tr>
+      <tr><td><code>CORS_ORIGINS</code></td><td>Browser origins allowed to call the API across origins. Usually just your domain.</td></tr>
+    </table>
+  </section>
+
+  <section id="nodomain">
+    <h2>Using it without a domain</h2>
+    <p class="lead">A domain is optional. Relay works fine on a home network or over a private tunnel. Pick whichever fits you.</p>
+    <div class="grid">
+      <div class="card">
+        <h3>On your home network</h3>
+        <p>Run it on a machine at home and reach it by that machine's local address, for example <code>http://192.168.1.20:3000</code>. Set <code>NEXT_PUBLIC_API_URL</code> to that address. Good for listening on the same network.</p>
+      </div>
+      <div class="card">
+        <h3>On the same machine</h3>
+        <p>For a quick trial, run it and open <code>http://localhost:3000</code> in your browser. Nothing leaves the machine.</p>
+      </div>
+      <div class="card">
+        <h3>A free tunnel from anywhere</h3>
+        <p>A <b>Cloudflare Tunnel</b> gives you an address that works away from home without opening any ports on your router. This is the recommended way to reach your server on the go and it needs no static IP.</p>
+      </div>
+      <div class="card">
+        <h3>A private mesh</h3>
+        <p>A tool like <b>Tailscale</b> puts your phone and your server on the same private network. Reach the server by its mesh address with nothing exposed to the public internet.</p>
+      </div>
+    </div>
+    <div class="callout">The Android and Windows apps ask for a <b>server address</b> on their first screen. Enter whichever address you chose above, then your username and password. Because Relay is self-hosted there is no default address, each person points their app at their own server.</div>
+  </section>
+
+  <section id="music">
+    <h2>Adding and managing music</h2>
+    <p class="lead">Relay reads standard audio files and their tags. There are two ways to get music in.</p>
+    <h3>Drop files into your music folder</h3>
+    <p class="muted">Put audio into the folder you set as <code>MUSIC_DIR</code>, organised however you like. Then run a scan from the admin page. Relay reads the tags, pulls embedded cover art and builds the artist and album views. Rescans are incremental so later scans only pick up what changed.</p>
+    <h3>Upload from inside the app</h3>
+    <p class="muted">You can also upload tracks from the web app and the desktop app. Uploaded files land in your music folder and are added to the library. Large files upload in chunks so they are not blocked by size limits.</p>
+    <div class="tag-list">
+      <span>Reads tags and cover art</span><span>Incremental rescans</span><span>In-app uploads</span><span>Lyrics fetched at upload</span><span>On the fly transcoding</span>
+    </div>
+    <div class="callout"><b>A note on what you host.</b> Relay is a player for music you own or are licensed to use. It ships with no catalog and hosts nothing itself. What you put on your server and who you share it with is your responsibility.</div>
+  </section>
+
+  <section id="users">
+    <h2>Users and sharing</h2>
+    <p class="lead">The admin creates accounts. Everyone who signs in shares the same library and can build their own playlists, likes and profile.</p>
+    <div class="grid">
+      <div class="card"><h3>Accounts</h3><p>The first admin is created from your config. Admins manage users and trigger scans from the admin page. Passwords are stored hashed on your server.</p></div>
+      <div class="card"><h3>Playlists and likes</h3><p>Each user has their own Liked Songs and playlists. Playlists can have collaborators so a few people can build one together.</p></div>
+      <div class="card"><h3>Friend activity</h3><p>See who is online and what they are playing or last played. It updates in well under a second.</p></div>
+      <div class="card"><h3>Listen along and Chorus</h3><p>Play a friend's music on your own device kept in sync or run a Chorus session where several people control one shared queue.</p></div>
+    </div>
+    <div class="callout"><b>Everyone on a server can see shared content.</b> The music library is shared across all accounts on that server. Profiles, activity and public playlists are visible to other users on the same instance. Only invite people you are happy to share with. See the <a href="/policy">privacy notes</a> for detail.</div>
+  </section>
+
+  <section id="apps">
+    <h2>Apps</h2>
+    <p class="lead">One codebase, several places to listen.</p>
+    <div class="grid">
+      <div class="card"><h3>Browser</h3><p>A full player built into the web app. Nothing to install, works on any device with a browser.</p></div>
+      <div class="card"><h3>Windows</h3><p>A desktop app with background playback and media key controls. It keeps playing in the tray when you close the window.</p></div>
+      <div class="card"><h3>Android</h3><p>Background playback, lock screen and notification controls, Android Auto and offline downloads that play with no connection.</p></div>
+    </div>
+  </section>
+
+  <section id="auto">
+    <h2>Android Auto</h2>
+    <p class="lead">Relay is a full media app in the car. Connect your phone and Relay appears in the car's app list. The media card shows your last played song with its progress the moment you connect, so you can pick up where you left off without touching your phone.</p>
+
+    <div class="aa-shell" role="img" aria-label="Illustration of the Relay browse screen in Android Auto with four tabs and content tiles">
+      <div class="aa-screen">
+        <div class="aa-tabs">
+          <div class="t on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10l9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/></svg>Home</div>
+          <div class="t"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h10M4 18h10M18 12v7M18 12l3 1"/></svg>Playlists</div>
+          <div class="t"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>Songs</div>
+          <div class="t"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Recents</div>
+        </div>
+        <div class="aa-tiles">
+          <div class="aa-tile"><figure><div class="art liked"><div class="heart"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21s-7-4.6-10-9.3C.4 8.4 2 4.5 5.5 4.5 7.5 4.5 9 6 12 9c3-3 4.5-4.5 6.5-4.5 3.5 0 5.1 3.9 3.5 7.2C19 16.4 12 21 12 21z"/></svg></div></div><figcaption>Liked Songs</figcaption></figure></div>
+          <div class="aa-tile"><figure><div class="art most"></div><figcaption>Most Played</figcaption></figure></div>
+          <div class="aa-tile"><figure><div class="art pl"></div><figcaption>Road Trip</figcaption></figure></div>
+          <div class="aa-tile"><figure><div class="art recent"></div><figcaption>Late Night</figcaption></figure></div>
+        </div>
+      </div>
+    </div>
+    <p class="muted" style="text-align:center; margin-top:12px; font-size:.82rem">A stylised view of Relay's Android Auto home. Tiles are placeholders.</p>
+
+    <h3>What works in the car</h3>
+    <div class="grid">
+      <div class="card"><h3>Browse your library</h3><p>Four tabs, Home, Playlists, Songs and Recents. Home leads with Liked Songs and Most Played, then your playlists. Tap anything to play it with its full context queued.</p></div>
+      <div class="card"><h3>Resume on connect</h3><p>The media card shows the last song you played with its saved position, paused and ready. Press play and it picks up from there.</p></div>
+      <div class="card"><h3>Voice</h3><p>Say a command like "play Fireflies" while Relay is active and it searches your library and plays the best match. An empty request plays your recent music.</p></div>
+      <div class="card"><h3>Search</h3><p>Use the car's search to find a song by title, artist or album. Results are ranked so the closest match leads.</p></div>
+    </div>
+    <div class="callout"><b>Voice with a named app.</b> "Hey Google, play a song on Relay" works in the car and with the classic Google Assistant on the phone. On phones where Gemini is the assistant, music routing to third-party apps is limited by the assistant itself, which is outside the app's control.</div>
+  </section>
+
+  <section id="offline">
+    <h2>Offline and background</h2>
+    <p class="lead">Download songs and playlists to your device and they play with no connection, even when you are signed out. Playback keeps going in the background with lock screen and media key controls. The queue supports shuffle and repeat.</p>
+  </section>
+
+  <section id="security">
+    <h2>Security posture</h2>
+    <p class="lead">Relay is built to sit safely on the public internet behind a tunnel.</p>
+    <div class="grid">
+      <div class="card"><h3>One way in</h3><p>Container ports bind to loopback or are not published at all. The tunnel is the only ingress so nothing is reachable on the host's public address.</p></div>
+      <div class="card"><h3>Auth</h3><p>Short lived access tokens with refresh, passwords hashed with bcrypt and a refusal to seed a weak admin password in production.</p></div>
+      <div class="card"><h3>Rate limiting</h3><p>Login and refresh are rate limited to blunt brute force, on top of your tunnel provider, with a cap on held long-poll connections.</p></div>
+      <div class="card"><h3>Headers and CORS</h3><p>Security headers and a content security policy on the web app, with a default-deny cross-origin policy on the API.</p></div>
+    </div>
+  </section>
+
+  <section id="get">
+    <h2>Get Relay</h2>
+    <p class="lead">Relay is open source. The full code, build instructions and issue tracker live on GitHub.</p>
+    <div class="cta" style="justify-content:flex-start; margin-top:18px">
+      <a class="btn" href="https://github.com/AGNIV03/Relay">Open the repository</a>
+      <a class="btn ghost" href="#host">Read the hosting guide</a>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  <div class="wrap foot-inner">
+    <span class="brand">
+      <svg width="22" height="22" viewBox="0 0 100 100" fill="none"><path d="M20 24 L20 76 L54 50 Z" stroke="#22d3ee" stroke-width="8" stroke-linejoin="round"/><path d="M60 34 Q73 50 60 66" stroke="#22d3ee" stroke-width="8" stroke-linecap="round"/><path d="M74 25 Q92 50 74 75" stroke="#22d3ee" stroke-width="8" stroke-linecap="round"/></svg>
+      Relay
+    </span>
+    <span class="muted">Self-hosted music streaming.</span>
+    <span class="foot-links">
+      <a href="https://github.com/AGNIV03/Relay">GitHub</a>
+      <a href="/policy">Privacy</a>
+      <a href="#host">Host it</a>
+    </span>
+  </div>
+</footer>
+
+</body>
+</html>

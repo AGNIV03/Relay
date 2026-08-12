@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy - Relay</title>
+<meta name="description" content="Privacy policy for Relay. Relay is self-hosted, so your data lives only on the server you or your host runs. The app collects nothing centrally.">
+<style>
+  :root{
+    --bg:#0a0a0b; --panel:#131316; --panel-2:#1d1d21; --border:#29292e;
+    --text:#f4f4f5; --muted:#a1a1aa; --accent:#22d3ee; --accent-2:#67e8f9; --accent-ink:#08272c;
+    --maxw:820px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:var(--bg); color:var(--text); font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; -webkit-font-smoothing:antialiased}
+  a{color:var(--accent-2); text-decoration:none} a:hover{text-decoration:underline}
+  .wrap{max-width:var(--maxw); margin:0 auto; padding:0 22px}
+  header.nav{position:sticky; top:0; background:rgba(10,10,11,.82); backdrop-filter:blur(10px); border-bottom:1px solid var(--border)}
+  .nav-inner{max-width:var(--maxw); margin:0 auto; padding:12px 22px; display:flex; align-items:center; gap:12px}
+  .brand{display:flex; align-items:center; gap:10px; font-weight:700}
+  .brand svg{width:24px; height:24px}
+  .nav-inner .back{margin-left:auto; color:var(--muted); font-size:.9rem}
+  h1{font-size:2rem; margin:.2em 0 .1em}
+  h2{font-size:1.2rem; margin:2rem 0 .4rem}
+  .updated{color:var(--muted); font-size:.9rem; margin-bottom:8px}
+  p,li{color:#dcdce0}
+  .lead{color:var(--muted)}
+  .highlight{background:var(--panel); border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:10px; padding:16px 18px; margin:22px 0}
+  .highlight b{color:var(--text)}
+  ul{padding-left:20px} li{margin:.3rem 0}
+  code{background:var(--panel-2); border:1px solid var(--border); padding:.1em .4em; border-radius:6px; font-size:.86em; color:var(--accent-2)}
+  footer{border-top:1px solid var(--border); margin-top:40px; padding:26px 0; color:var(--muted); font-size:.9rem}
+  section{padding:6px 0}
+</style>
+</head>
+<body>
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="/" style="color:inherit">
+      <svg viewBox="0 0 100 100" fill="none"><path d="M20 24 L20 76 L54 50 Z" stroke="#22d3ee" stroke-width="8" stroke-linejoin="round"/><path d="M60 34 Q73 50 60 66" stroke="#22d3ee" stroke-width="8" stroke-linecap="round"/><path d="M74 25 Q92 50 74 75" stroke="#22d3ee" stroke-width="8" stroke-linecap="round"/></svg>
+      Relay
+    </a>
+    <a class="back" href="/">Back to docs</a>
+  </div>
+</header>
+
+<div class="wrap">
+  <h1>Privacy Policy</h1>
+  <p class="updated">Last updated: 11 August 2026</p>
+  <p class="lead">Relay is self-hosted software. This policy explains how your data is handled, which is different from a normal app because there is no central service run by the developer.</p>
+
+  <div class="highlight">
+    <b>The short version.</b> Relay stores your data only on the server that you or your host runs. The developer of Relay operates no servers, receives none of your data and cannot see your library, your account or your activity. Everyone who signs in to the same server can see the shared content on it.
+  </div>
+
+  <section>
+    <h2>Who runs the service</h2>
+    <p>Relay is a client for a server that you host. When you use Relay you connect to a server address that you enter yourself. That server is operated by you or by whoever set it up for you. It is not operated by the developer of the app. There is no shared Relay account and no central database.</p>
+  </section>
+
+  <section>
+    <h2>What data exists and where it lives</h2>
+    <p>All data stays on the server you connect to. That includes:</p>
+    <ul>
+      <li>Your account, meaning your username and your password stored as a secure hash.</li>
+      <li>Your music library, its tags and cover art.</li>
+      <li>Your playlists, your Liked Songs and your listening history.</li>
+      <li>Your profile and presence, meaning whether you are online and what you are playing.</li>
+    </ul>
+    <p>None of this is transmitted to the developer or to any Relay operated service, because none exists. If you stop using your server and delete it, that data is gone.</p>
+  </section>
+
+  <section>
+    <h2>What other people on your server can see</h2>
+    <p>Relay is designed for a shared server used by a small group. On a given server:</p>
+    <ul>
+      <li>The music library is shared. Everyone signed in to that server can browse and play the same tracks.</li>
+      <li>Profiles and activity are visible to other users on the same server, including whether you are online and what you are playing or last played.</li>
+      <li>Public playlists and playlists you collaborate on are visible to the people they are shared with.</li>
+    </ul>
+    <div class="highlight"><b>Only join or invite people you trust.</b> Because content is shared within a server, anyone with an account on that same server can see the shared library and your activity on it. Treat a Relay server like a shared room, not a private vault.</div>
+  </section>
+
+  <section>
+    <h2>Data the app sends off your server</h2>
+    <p>The app itself does not send your personal data to third parties. Two things are worth knowing:</p>
+    <ul>
+      <li>Your server may fetch lyrics and translations from external services when music is added, so that lyrics can be shown while you listen. This is a request made by your server, using the track information, not your personal data.</li>
+      <li>Streaming audio and cover art travels between your device and your own server over an encrypted connection.</li>
+    </ul>
+    <p>There are no advertising networks, no analytics trackers and no third-party data brokers in the app.</p>
+  </section>
+
+  <section>
+    <h2>Security</h2>
+    <p>Passwords are stored as bcrypt hashes, never in plain text. Access uses short lived tokens. A typical deployment sits behind a tunnel so the server is not directly exposed on the public internet. Login attempts are rate limited. The security of your specific server also depends on how you configure and run it.</p>
+  </section>
+
+  <section>
+    <h2>Your control</h2>
+    <p>Because you run the server, you are in control of your data. You can delete your account, remove tracks or shut down the server entirely. When the server is gone, so is the data on it. There is nothing held elsewhere to request or delete.</p>
+  </section>
+
+  <section>
+    <h2>Children</h2>
+    <p>Relay is a general purpose media player for content you host. It is not directed at children and collects no data centrally.</p>
+  </section>
+
+  <section>
+    <h2>Changes</h2>
+    <p>This policy may be updated as the app changes. The date at the top shows when it was last revised.</p>
+  </section>
+
+  <section>
+    <h2>Contact</h2>
+    <p>Relay is open source. Questions and issues can be raised on the project page at <a href="https://github.com/AGNIV03/Relay">github.com/AGNIV03/Relay</a>.</p>
+  </section>
+</div>
+
+<footer>
+  <div class="wrap">Relay is self-hosted. Your data lives on your server, not ours. <a href="/">Back to docs</a></div>
+</footer>
+</body>
+</html>
