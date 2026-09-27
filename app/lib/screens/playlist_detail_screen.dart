@@ -1,8 +1,10 @@
 import 'dart:io' show Platform;
+import 'dart:math' show Random;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../api.dart';
 import '../format.dart';
 import '../app_icons.dart';
@@ -33,11 +35,26 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   bool get _isPublicNow => _publicOverride ?? _pl?.isPublic ?? false;
   int _coverVer = 0; // bumps to refresh the cover image after a change
 
+  // Per-playlist shuffle preference (remembered): when on, pressing Play plays a
+  // shuffled order. This is separate from the global playback-controls shuffle and
+  // never reorders anything currently playing.
+  bool _shufflePref = false;
+  String get _shuffleKey => 'pl_shuffle_${widget.playlistId}';
+
   @override
   void initState() {
     super.initState();
     _name = widget.name;
     _load();
+    SharedPreferences.getInstance().then((p) {
+      if (mounted) setState(() => _shufflePref = p.getBool(_shuffleKey) ?? false);
+    });
+  }
+
+  Future<void> _toggleShufflePref() async {
+    setState(() => _shufflePref = !_shufflePref);
+    final p = await SharedPreferences.getInstance();
+    await p.setBool(_shuffleKey, _shufflePref);
   }
 
   void _load() {
@@ -97,13 +114,27 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
 
   Future<void> _uploadCover() async {
     final api = context.read<Api>();
-    final res = await FilePicker.platform.pickFiles(type: FileType.image);
-    final path = res?.files.single.path;
-    if (path == null) return;
+    final messenger = ScaffoldMessenger.of(context);
+    // withData so we reliably get bytes on Android (a picked image's path is
+    // often a content URI that MultipartFile.fromPath cannot read).
+    final res = await FilePicker.platform.pickFiles(type: FileType.image, withData: true);
+    final file = res?.files.singleOrNull;
+    if (file == null) return;
     try {
-      await api.uploadPlaylistCover(widget.playlistId, path);
+      if (file.bytes != null) {
+        await api.uploadPlaylistCoverBytes(widget.playlistId, file.bytes!, file.name);
+      } else if (file.path != null) {
+        await api.uploadPlaylistCover(widget.playlistId, file.path!);
+      } else {
+        throw 'No image data';
+      }
+      // Evict the currently-shown cover from the image cache and bump the version
+      // so the new image is fetched and displayed immediately.
+      await NetworkImage(api.playlistCoverUrl(widget.playlistId, _coverVer)).evict();
       if (mounted) setState(() => _coverVer++);
-    } catch (_) {}
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('Cover upload failed: $e')));
+    }
   }
 
   Widget _coverHeader(int trackCount, int totalSec) {
@@ -421,24 +452,29 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                       FilledButton.icon(
                         icon: const Icon(Icons.play_arrow),
                         label: const Text('Play'),
-                        onPressed: () => context
-                            .read<PlayerModel>()
-                            .playQueue(tracks, playlistId: widget.playlistId),
+                        onPressed: () => context.read<PlayerModel>().playQueue(
+                              tracks,
+                              playlistId: widget.playlistId,
+                              // Honour this playlist's remembered shuffle preference,
+                              // starting somewhere random so it feels shuffled.
+                              shuffle: _shufflePref,
+                              start: _shufflePref && tracks.length > 1
+                                  ? Random().nextInt(tracks.length)
+                                  : 0,
+                            ),
                       ),
                       const SizedBox(width: 10),
-                      // Shuffle is an on/off toggle (Spotify-style): it sets the mode,
-                      // and the Play button above honours it. Highlighted when on.
-                      Consumer<PlayerModel>(
-                        builder: (context, player, _) => OutlinedButton.icon(
-                          icon: Icon(LucideIcons.shuffle,
-                              size: 18, color: player.shuffleEnabled ? kAccent : null),
-                          label: const Text('Shuffle'),
-                          style: player.shuffleEnabled
-                              ? OutlinedButton.styleFrom(
-                                  foregroundColor: kAccent, side: const BorderSide(color: kAccent))
-                              : null,
-                          onPressed: player.toggleShuffle,
-                        ),
+                      // Per-playlist shuffle toggle (remembered). Highlighted when on.
+                      // Does not touch the global shuffle or anything already playing.
+                      OutlinedButton.icon(
+                        icon: Icon(LucideIcons.shuffle,
+                            size: 18, color: _shufflePref ? kAccent : null),
+                        label: const Text('Shuffle'),
+                        style: _shufflePref
+                            ? OutlinedButton.styleFrom(
+                                foregroundColor: kAccent, side: const BorderSide(color: kAccent))
+                            : null,
+                        onPressed: _toggleShufflePref,
                       ),
                       const SizedBox(width: 10),
                       if (downloads.supported)

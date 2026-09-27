@@ -25,78 +25,107 @@ class MiniPlayer extends StatelessWidget {
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
-      child: Material(
-        color: kPanel2,
-        borderRadius: BorderRadius.circular(14),
-        elevation: 8,
-        shadowColor: Colors.black54,
-        child: InkWell(
+      child: CustomPaint(
+        // Draw the progress as a stroke that follows the bubble's rounded border,
+        // so it curves cleanly around the corners instead of being a flat bar
+        // clipped at the bottom edge.
+        foregroundPainter: _BubbleProgressPainter(progress),
+        child: Material(
+          color: kPanel2,
           borderRadius: BorderRadius.circular(14),
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute(builder: (_) => const NowPlayingScreen()),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
-                child: Row(
-                  children: [
-                    Cover(url: api.trackCoverUrl(track.id), trackId: track.id, size: 42, radius: 8),
-                    const SizedBox(width: 11),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(track.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
-                          Text(track.artistName,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(color: kMuted, fontSize: 11.5)),
-                        ],
-                      ),
+          elevation: 8,
+          shadowColor: Colors.black54,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(14),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const NowPlayingScreen()),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+              child: Row(
+                children: [
+                  Cover(url: api.trackCoverUrl(track.id), trackId: track.id, size: 42, radius: 8),
+                  const SizedBox(width: 11),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(track.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
+                        Text(track.artistName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: kMuted, fontSize: 11.5)),
+                      ],
                     ),
-                    LikeButton(trackId: track.id, size: 20),
-                    IconButton(
-                      visualDensity: VisualDensity.compact,
-                      icon: const Icon(LucideIcons.skipBack, size: 20),
-                      onPressed: player.previous,
+                  ),
+                  LikeButton(trackId: track.id, size: 20),
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(LucideIcons.skipBack, size: 20),
+                    onPressed: player.previous,
+                  ),
+                  GestureDetector(
+                    onTap: player.toggle,
+                    child: Container(
+                      width: 38,
+                      height: 38,
+                      decoration: const BoxDecoration(color: kAccent, shape: BoxShape.circle),
+                      child: Icon(player.playing ? LucideIcons.pause : LucideIcons.play,
+                          size: 18, color: kAccentInk),
                     ),
-                    GestureDetector(
-                      onTap: player.toggle,
-                      child: Container(
-                        width: 38,
-                        height: 38,
-                        decoration: const BoxDecoration(color: kAccent, shape: BoxShape.circle),
-                        child: Icon(player.playing ? LucideIcons.pause : LucideIcons.play,
-                            size: 18, color: kAccentInk),
-                      ),
-                    ),
-                    IconButton(
-                      visualDensity: VisualDensity.compact,
-                      icon: const Icon(LucideIcons.skipForward, size: 20),
-                      onPressed: player.next,
-                    ),
-                  ],
-                ),
+                  ),
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(LucideIcons.skipForward, size: 20),
+                    onPressed: player.next,
+                  ),
+                ],
               ),
-              ClipRRect(
-                borderRadius: const BorderRadius.vertical(bottom: Radius.circular(14)),
-                child: LinearProgressIndicator(
-                  value: progress,
-                  minHeight: 2.5,
-                  backgroundColor: kBorder,
-                  color: kAccent,
-                ),
-              ),
-            ],
+            ),
           ),
         ),
       ),
     );
   }
+}
+
+/// Paints the playback progress as a stroke tracing the mini-player's rounded
+/// border (radius 14), starting at the top-left and running clockwise, so the
+/// progress follows the curve of the bubble.
+class _BubbleProgressPainter extends CustomPainter {
+  final double progress;
+  const _BubbleProgressPainter(this.progress);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const stroke = 2.5;
+    const radius = 14.0;
+    final r = RRect.fromRectAndRadius(
+      (Offset.zero & size).deflate(stroke / 2),
+      const Radius.circular(radius - stroke / 2),
+    );
+    final path = Path()..addRRect(r);
+    final bg = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke
+      ..color = kBorder;
+    canvas.drawPath(path, bg);
+    final p = progress.clamp(0.0, 1.0);
+    if (p <= 0) return;
+    final fg = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke
+      ..strokeCap = StrokeCap.round
+      ..color = kAccent;
+    for (final metric in path.computeMetrics()) {
+      canvas.drawPath(metric.extractPath(0, metric.length * p), fg);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _BubbleProgressPainter old) => old.progress != progress;
 }

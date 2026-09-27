@@ -48,6 +48,10 @@ class TrackTile extends StatelessWidget {
   // row is selected a tap toggles selection instead of starting playback.
   final Set<String> selectedIds;
   final void Function(Track)? onSelectToggle;
+  // If set, tapping plays THIS full list (locating the tapped track within it)
+  // instead of [tracks]. Used on the Songs page so playing a search result queues
+  // the whole library from that track rather than just the filtered results.
+  final List<Track>? queueContext;
 
   const TrackTile({
     super.key,
@@ -59,14 +63,27 @@ class TrackTile extends StatelessWidget {
     this.onChanged,
     this.selectedIds = const {},
     this.onSelectToggle,
+    this.queueContext,
   });
+
+  void _play(PlayerModel player) {
+    // Drop keyboard focus (e.g. the Songs search field) so it does not linger.
+    FocusManager.instance.primaryFocus?.unfocus();
+    final ctx = queueContext;
+    if (ctx != null) {
+      final i = ctx.indexWhere((t) => t.id == track.id);
+      if (i >= 0) return player.playQueue(ctx, start: i).ignore();
+    }
+    player.playQueue(tracks, start: index).ignore();
+  }
+
+  Track get track => tracks[index];
 
   @override
   Widget build(BuildContext context) {
     final api = context.read<Api>();
     final player = context.watch<PlayerModel>();
     final downloads = context.watch<DownloadManager>();
-    final track = tracks[index];
     final isCurrent = player.current?.id == track.id;
     final selectable = onSelectToggle != null;
     final selectionMode = selectable && selectedIds.isNotEmpty;
@@ -124,9 +141,7 @@ class TrackTile extends StatelessWidget {
                 TrackMenu(track: track, onChanged: onChanged),
               ],
             ),
-      onTap: selectionMode
-          ? () => onSelectToggle!(track)
-          : () => player.playQueue(tracks, start: index),
+      onTap: selectionMode ? () => onSelectToggle!(track) : () => _play(player),
       onLongPress: selectable ? () => onSelectToggle!(track) : null,
     );
   }
@@ -177,6 +192,9 @@ class TrackMenu extends StatelessWidget {
       icon: const Icon(LucideIcons.moreVertical, size: 18, color: kMuted),
       color: kPanel2,
       onSelected: (value) async {
+        // Drop keyboard focus so acting on a row does not reopen the search
+        // keyboard when the menu / sheet closes.
+        FocusManager.instance.primaryFocus?.unfocus();
         switch (value) {
           case 'next':
             await context.read<PlayerModel>().playNext(track);

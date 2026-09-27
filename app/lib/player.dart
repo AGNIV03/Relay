@@ -81,7 +81,6 @@ class PlayerModel extends ChangeNotifier {
   bool _chorusLooping = false; // long-poll loop running
   int _chorusVersion = 0; // long-poll cursor
   bool _applyingChorus = false; // guard while the host applies remote commands
-  bool _chorusAutoStop = false; // user stopped — don't auto-restart until next play
   bool _lastHostPlaying = false; // last broadcast play state (host)
   // Member-side position extrapolation (no local audio to read from).
   int _memberPosBaseMs = 0;
@@ -280,9 +279,13 @@ class PlayerModel extends ChangeNotifier {
   bool isUserQueuedAt(int i) =>
       !isChorusMember && i >= 0 && i < _userQ.length && i < _queue.length && _userQ[i];
 
-  Future<void> playQueue(List<Track> tracks, {int start = 0, String? playlistId}) async {
+  Future<void> playQueue(List<Track> tracks,
+      {int start = 0, String? playlistId, bool? shuffle}) async {
     if (tracks.isEmpty) return;
     _playlistContext = playlistId;
+    // `shuffle` overrides the global shuffle mode for THIS play only (used by the
+    // per-playlist shuffle toggle) without flipping the playback-controls shuffle.
+    final doShuffle = shuffle ?? _shuffle;
     // A silent chorus member: changing the song is a remote command to the host.
     if (isChorusMember) {
       _sendCommand(
@@ -300,13 +303,12 @@ class PlayerModel extends ChangeNotifier {
       listenHostName = null;
     }
     _restoreAfterCurrent = false;
-    _chorusAutoStop = false; // a fresh play re-enables auto-start
     // A fresh context fully REPLACES the previous queue (incl. any manual queue).
     _contextOriginal = List.of(tracks);
     // With shuffle on, the chosen track plays first and the rest follow in a
     // random order. We reorder the queue itself (not just_audio's shuffle mode)
     // so the visible queue is the real play order and chorus members match.
-    if (_shuffle && tracks.length > 1) {
+    if (doShuffle && tracks.length > 1) {
       final first = tracks[start];
       final rest = [
         for (var i = 0; i < tracks.length; i++)
@@ -329,11 +331,9 @@ class PlayerModel extends ChangeNotifier {
       await _player.setAudioSource(_source!, initialIndex: _index);
       await _player.play();
       _saveSession();
-      if (isChorusHost) {
-        _broadcastChorus();
-      } else {
-        _maybeAutoStartChorus();
-      }
+      // Chorus is opt-in: playback no longer auto-hosts a session. The user
+      // starts Chorus explicitly from its control.
+      if (isChorusHost) _broadcastChorus();
     } catch (e) {
       debugPrint('play error: $e');
     }
@@ -560,11 +560,6 @@ class PlayerModel extends ChangeNotifier {
   }
 
   // ---- Chorus ----
-  void _maybeAutoStartChorus() {
-    if (chorus != null || _chorusAutoStop || _queue.isEmpty) return;
-    startChorus('open'); // auto-host an open chorus whenever playback starts
-  }
-
   void _startChorusLoop() {
     if (_chorusLooping) return;
     _chorusLooping = true;
@@ -804,7 +799,6 @@ class PlayerModel extends ChangeNotifier {
   /// Start hosting a chorus from the current queue.
   Future<void> startChorus(String mode) async {
     if (_queue.isEmpty) return;
-    _chorusAutoStop = false;
     try {
       final c = await api.startChorus(
         mode,
@@ -840,7 +834,6 @@ class PlayerModel extends ChangeNotifier {
 
   Future<void> leaveChorusSession() async {
     final wasMember = isChorusMember;
-    _chorusAutoStop = true;
     await api.leaveChorus().catchError((_) {});
     chorus = null;
     _stopChorusLoop();

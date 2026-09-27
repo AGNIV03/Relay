@@ -470,6 +470,21 @@ class Api {
     if (res.statusCode >= 400) throw ApiException(_errorMessage(res));
   }
 
+  /// Upload a cover from raw bytes. More reliable than a file path on Android,
+  /// where the picked image is often only available as bytes.
+  Future<void> uploadPlaylistCoverBytes(String id, List<int> bytes, String filename,
+      {bool retry = true}) async {
+    final req = http.MultipartRequest('POST', _uri('/api/playlists/$id/cover'));
+    if (_access != null) req.headers['Authorization'] = 'Bearer $_access';
+    req.files.add(http.MultipartFile.fromBytes('cover', bytes, filename: filename));
+    final streamed = await req.send();
+    final res = await http.Response.fromStream(streamed);
+    if (res.statusCode == 401 && retry && await _tryRefresh()) {
+      return uploadPlaylistCoverBytes(id, bytes, filename, retry: false);
+    }
+    if (res.statusCode >= 400) throw ApiException(_errorMessage(res));
+  }
+
   // ---- Social / friends ----
   Future<void> postActivity(
           {String? trackId,

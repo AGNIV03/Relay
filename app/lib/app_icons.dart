@@ -23,6 +23,9 @@ class LucideIcons {
   static const IconData clock = Symbols.schedule;
   static const IconData sparkles = Symbols.auto_awesome;
   static const IconData chevronDown = Symbols.keyboard_arrow_down;
+  static const IconData arrowDownUp = Symbols.swap_vert; // sort toggle
+  static const IconData arrowUp = Symbols.arrow_upward; // ascending
+  static const IconData arrowDown = Symbols.arrow_downward; // descending
   static const IconData volume2 = Symbols.volume_up;
   static const IconData x = Symbols.close;
   static const IconData trash2 = Symbols.delete;

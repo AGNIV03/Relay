@@ -47,12 +47,35 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
           : Column(
               children: [
                 Expanded(
+                  // Gestures on the artwork: swipe down opens lyrics, swipe left /
+                  // right skip to the next / previous track. While lyrics show, the
+                  // pane scrolls freely; the lyrics button toggles back to the art.
                   child: _showLyrics
                       ? LyricsPane(player: player)
-                      : Center(
-                          child: Padding(
-                            padding: const EdgeInsets.all(28),
-                            child: Cover(url: api.trackCoverUrl(track.id), trackId: track.id, size: 300, radius: 18),
+                      : GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onHorizontalDragEnd: (d) {
+                            final v = d.primaryVelocity ?? 0;
+                            if (v <= -150) {
+                              player.next();
+                            } else if (v >= 150) {
+                              player.previous();
+                            }
+                          },
+                          onVerticalDragEnd: (d) {
+                            if ((d.primaryVelocity ?? 0) >= 150) {
+                              setState(() => _showLyrics = true);
+                            }
+                          },
+                          child: Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(28),
+                              child: Cover(
+                                  url: api.trackCoverUrl(track.id),
+                                  trackId: track.id,
+                                  size: 300,
+                                  radius: 18),
+                            ),
                           ),
                         ),
                 ),

@@ -50,6 +50,9 @@ class _RootScreenState extends State<_MobileRoot> {
   // pages push on top of this WITHIN the tab navigator, so the bottom nav +
   // mini-player below stay visible.
   Widget _tabRoot(int i) {
+    // SongsScreen provides its own Scaffold + AppBar (with the sort/upload/refresh
+    // icon actions next to the title), so it is not wrapped in the generic bar.
+    if (i == 1) return const SongsScreen();
     const pages = [HomeScreen(), SongsScreen(), PlaylistsScreen(), ProfileScreen()];
     return Scaffold(
       appBar: AppBar(title: Text(_titles[i])),

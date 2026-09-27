@@ -805,8 +805,19 @@ class _PlayerAudioHandler extends BaseAudioHandler
 
   @override
   Future<void> skipToPrevious() async {
+    // Relay: mirror the in-app previous button. More than 3s into the track ->
+    // restart it; otherwise go to the previous track, wrapping to the last.
+    // (The stock behaviour always jumped to the previous track, which differed
+    // from the in-app control.)
+    if (currentPosition.inSeconds > 3) {
+      await seek(Duration.zero);
+      return;
+    }
     if (hasPrevious) {
       await skipToQueueItem(previousIndex!);
+    } else {
+      final n = queue.nvalue?.length ?? 0;
+      if (n > 0) await skipToQueueItem(n - 1);
     }
   }
 

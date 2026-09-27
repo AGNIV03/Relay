@@ -16,64 +16,124 @@ class ProfileScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final user = context.watch<AppState>().user;
-    final initial = (user?.username.isNotEmpty ?? false) ? user!.username[0].toUpperCase() : '?';
+    final name = user?.username ?? '';
+    final initial = name.isNotEmpty ? name[0].toUpperCase() : '?';
+    final role = (user?.role ?? '').toUpperCase();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const SizedBox(height: 24),
-        Center(
-          child: Container(
-            width: 88,
-            height: 88,
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(colors: [kAccent, kAccent2]),
-              shape: BoxShape.circle,
-            ),
-            child: Center(
-              child: Text(initial,
-                  style: const TextStyle(
-                      fontSize: 36, fontWeight: FontWeight.bold, color: kAccentInk)),
-            ),
+        // Header card: avatar, name and a role chip.
+        Container(
+          margin: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: kPanel,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: kBorder),
           ),
+          child: Row(children: [
+            Container(
+              width: 64,
+              height: 64,
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(colors: [kAccent, kAccent2]),
+                shape: BoxShape.circle,
+              ),
+              child: Center(
+                child: Text(initial,
+                    style: const TextStyle(
+                        fontSize: 28, fontWeight: FontWeight.bold, color: kAccentInk)),
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                  if (role.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: kAccent.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(role,
+                          style: const TextStyle(
+                              color: kAccent2,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 0.5)),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ]),
         ),
-        const SizedBox(height: 14),
-        Center(
-          child: Text(user?.username ?? '',
-              style: const TextStyle(fontSize: 21, fontWeight: FontWeight.bold)),
-        ),
-        Center(child: Text(user?.role ?? '', style: const TextStyle(color: kMuted, fontSize: 13))),
-        const SizedBox(height: 20),
-        const Divider(height: 1),
-        ListTile(
-          leading: const Icon(LucideIcons.settings, size: 20),
-          title: const Text('Change password'),
-          onTap: () => _changePassword(context),
-        ),
-        const Divider(height: 1),
-        ListTile(
-          leading: const Icon(LucideIcons.logOut, size: 20),
-          title: const Text('Sign out'),
-          onTap: () async {
-            // Stop + wipe the player BEFORE logging out, otherwise audio keeps
-            // playing with no UI to stop it once we're on the login screen.
-            final player = context.read<PlayerModel>();
-            final appState = context.read<AppState>();
-            await player.signOutReset();
-            await appState.logout();
-          },
-        ),
-        const Divider(height: 1),
+        // Account actions, grouped in a card.
+        _card([
+          _tile(
+            icon: LucideIcons.settings,
+            label: 'Change password',
+            onTap: () => _changePassword(context),
+          ),
+        ]),
+        // Sign out (destructive), in its own card.
+        _card([
+          _tile(
+            icon: LucideIcons.logOut,
+            label: 'Sign out',
+            color: const Color(0xFFEF4444),
+            onTap: () async {
+              // Stop + wipe the player BEFORE logging out, otherwise audio keeps
+              // playing with no UI to stop it once we're on the login screen.
+              final player = context.read<PlayerModel>();
+              final appState = context.read<AppState>();
+              await player.signOutReset();
+              await appState.logout();
+            },
+          ),
+        ]),
         if (showFriends) ...[
           const Padding(
-            padding: EdgeInsets.fromLTRB(16, 16, 16, 4),
+            padding: EdgeInsets.fromLTRB(20, 18, 20, 6),
             child: Text('Friend activity',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
           ),
           const Expanded(child: FriendsList()),
         ],
       ],
     );
   }
+
+  Widget _card(List<Widget> children) => Container(
+        margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+        decoration: BoxDecoration(
+          color: kPanel,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: kBorder),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Column(mainAxisSize: MainAxisSize.min, children: children),
+      );
+
+  Widget _tile({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+    Color? color,
+  }) =>
+      ListTile(
+        leading: Icon(icon, size: 20, color: color),
+        title: Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w500)),
+        onTap: onTap,
+      );
 
   void _changePassword(BuildContext context) {
     final current = TextEditingController();

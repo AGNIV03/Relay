@@ -14,6 +14,8 @@ import '../widgets/track_tile.dart';
 
 bool get _isDesktop => !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
 
+enum _SortField { title, artist, album, added }
+
 class SongsScreen extends StatefulWidget {
   const SongsScreen({super.key});
   @override
@@ -22,12 +24,34 @@ class SongsScreen extends StatefulWidget {
 
 class _SongsScreenState extends State<SongsScreen> {
   final _controller = TextEditingController();
+  final _searchFocus = FocusNode();
   Timer? _debounce;
-  List<Track> _tracks = [];
+  List<Track> _tracks = []; // current display (filtered by the search server-side)
+  List<Track> _allTracks = []; // full unfiltered library — the queue context for search results
   bool _loading = true;
   bool _uploading = false;
   bool _refreshing = false;
+  _SortField _sortField = _SortField.title;
+  bool _sortAsc = true;
   final Set<String> _selected = {}; // multi-select on the songs list
+
+  List<Track> _sorted(List<Track> list) {
+    String key(Track t) {
+      switch (_sortField) {
+        case _SortField.title:
+          return t.title.toLowerCase();
+        case _SortField.artist:
+          return t.artistName.toLowerCase();
+        case _SortField.album:
+          return t.albumTitle.toLowerCase();
+        case _SortField.added:
+          return t.createdAt ?? '';
+      }
+    }
+
+    final l = List<Track>.of(list)..sort((a, b) => key(a).compareTo(key(b)));
+    return _sortAsc ? l : l.reversed.toList();
+  }
 
   void _toggleSelect(Track t) => setState(() {
         if (!_selected.remove(t.id)) _selected.add(t.id);
@@ -214,6 +238,7 @@ class _SongsScreenState extends State<SongsScreen> {
   void dispose() {
     _debounce?.cancel();
     _controller.dispose();
+    _searchFocus.dispose();
     super.dispose();
   }
 
@@ -222,6 +247,7 @@ class _SongsScreenState extends State<SongsScreen> {
     if (!mounted) return;
     setState(() {
       _tracks = tracks;
+      if (q.isEmpty) _allTracks = tracks; // keep the full library for the play context
       _loading = false;
       _selected.retainWhere((id) => tracks.any((t) => t.id == id));
     });
@@ -289,91 +315,146 @@ class _SongsScreenState extends State<SongsScreen> {
     }
   }
 
+  Widget _sortButton() {
+    const labels = {
+      _SortField.title: 'Title',
+      _SortField.artist: 'Artist',
+      _SortField.album: 'Album',
+      _SortField.added: 'Date added',
+    };
+    return PopupMenuButton<_SortField>(
+      icon: const Icon(LucideIcons.arrowDownUp, size: 20),
+      tooltip: 'Sort',
+      color: kPanel2,
+      onSelected: (f) => setState(() {
+        if (_sortField == f) {
+          _sortAsc = !_sortAsc; // second tap on the same field flips direction
+        } else {
+          _sortField = f;
+          _sortAsc = true;
+        }
+      }),
+      itemBuilder: (_) => [
+        for (final e in labels.entries)
+          PopupMenuItem(
+            value: e.key,
+            child: Row(children: [
+              Expanded(
+                child: Text(e.value,
+                    style: TextStyle(color: _sortField == e.key ? kAccent : null)),
+              ),
+              if (_sortField == e.key)
+                Icon(_sortAsc ? LucideIcons.arrowUp : LucideIcons.arrowDown,
+                    size: 15, color: kAccent),
+            ]),
+          ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
-          child: Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _controller,
-                  onChanged: _onSearch,
-                  decoration: InputDecoration(
-                    prefixIcon: const Icon(LucideIcons.search, size: 18),
-                    hintText: "Search songs, artists, albums…",
-                    suffixIcon: _controller.text.isEmpty
-                        ? null
-                        : IconButton(
-                            icon: const Icon(LucideIcons.x, size: 18),
-                            onPressed: () {
-                              _controller.clear();
-                              _load("");
-                              setState(() {});
-                            },
-                          ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              FilledButton.icon(
-                onPressed: _uploading ? null : _upload,
-                icon: _uploading
-                    ? const SizedBox(
-                        width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Icon(LucideIcons.upload, size: 18),
-                label: Text(_uploading ? 'Uploading…' : 'Upload'),
-              ),
-              const SizedBox(width: 8),
-              OutlinedButton.icon(
-                onPressed: _refreshing ? null : _refresh,
-                icon: _refreshing
-                    ? const SizedBox(
-                        width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Icon(LucideIcons.refreshCw, size: 18),
-                label: Text(_refreshing ? 'Refreshing…' : 'Refresh'),
-              ),
-            ],
+    final display = _sorted(_tracks);
+    final queueCtx = _sorted(_allTracks);
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Songs'),
+        actions: [
+          _sortButton(),
+          IconButton(
+            tooltip: 'Upload',
+            onPressed: _uploading ? null : _upload,
+            icon: _uploading
+                ? const SizedBox(
+                    width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(LucideIcons.upload, size: 20),
           ),
-        ),
-        if (_isDesktop && _tracks.isNotEmpty && _selected.isEmpty)
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Text(
-              'Click and hold or right click to select multiple tracks',
-              style: TextStyle(color: kMuted, fontSize: 12, fontStyle: FontStyle.italic),
+          IconButton(
+            tooltip: 'Refresh',
+            onPressed: _refreshing ? null : _refresh,
+            icon: _refreshing
+                ? const SizedBox(
+                    width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(LucideIcons.refreshCw, size: 20),
+          ),
+          const SizedBox(width: 4),
+        ],
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+            child: TextField(
+              controller: _controller,
+              focusNode: _searchFocus,
+              onChanged: _onSearch,
+              textInputAction: TextInputAction.search,
+              onTapOutside: (_) => _searchFocus.unfocus(),
+              decoration: InputDecoration(
+                prefixIcon: const Icon(LucideIcons.search, size: 18),
+                hintText: "Search songs, artists, albums…",
+                suffixIcon: _controller.text.isEmpty
+                    ? null
+                    : IconButton(
+                        icon: const Icon(LucideIcons.x, size: 18),
+                        onPressed: () {
+                          _controller.clear();
+                          _load("");
+                          _searchFocus.unfocus();
+                          setState(() {});
+                        },
+                      ),
+              ),
             ),
           ),
-        if (_selected.isNotEmpty) _selectionBar(),
-        Expanded(
-          child: _loading
-              ? const Center(child: CircularProgressIndicator())
-              : _tracks.isEmpty
-                  ? const Center(child: Text("No songs", style: TextStyle(color: kMuted)))
-                  : _isDesktop
-                      // Desktop/web: columnar table (Album / Uploaded by / Added).
-                      ? TrackTable(
-                          tracks: _tracks,
-                          onChanged: () => _load(_controller.text),
-                          selectedIds: _selected,
-                          onSelectToggle: _toggleSelect,
-                        )
-                      // Mobile: compact list, no "uploaded by".
-                      : ListView.builder(
-                          itemCount: _tracks.length,
-                          itemBuilder: (_, i) => TrackTile(
-                            tracks: _tracks,
-                            index: i,
-                            showDownload: true,
-                            onChanged: () => _load(_controller.text),
-                            selectedIds: _selected,
-                            onSelectToggle: _toggleSelect,
-                          ),
-                        ),
-        ),
-      ],
+          if (_isDesktop && display.isNotEmpty && _selected.isEmpty)
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Text(
+                'Click and hold or right click to select multiple tracks',
+                style: TextStyle(color: kMuted, fontSize: 12, fontStyle: FontStyle.italic),
+              ),
+            ),
+          if (_selected.isNotEmpty) _selectionBar(),
+          Expanded(
+            // Dismiss the search keyboard/cursor when the user scrolls the list.
+            child: NotificationListener<ScrollNotification>(
+              onNotification: (n) {
+                if (n is ScrollStartNotification) {
+                  FocusManager.instance.primaryFocus?.unfocus();
+                }
+                return false;
+              },
+              child: _loading
+                  ? const Center(child: CircularProgressIndicator())
+                  : display.isEmpty
+                      ? const Center(child: Text("No songs", style: TextStyle(color: kMuted)))
+                      : _isDesktop
+                          // Desktop/web: columnar table (Album / Uploaded by / Added).
+                          ? TrackTable(
+                              tracks: display,
+                              onChanged: () => _load(_controller.text),
+                              selectedIds: _selected,
+                              onSelectToggle: _toggleSelect,
+                            )
+                          // Mobile: compact list. Playing a track queues the whole
+                          // library (queueCtx) from that track, not just the filter.
+                          : ListView.builder(
+                              itemCount: display.length,
+                              itemBuilder: (_, i) => TrackTile(
+                                tracks: display,
+                                index: i,
+                                showDownload: true,
+                                queueContext: queueCtx,
+                                onChanged: () => _load(_controller.text),
+                                selectedIds: _selected,
+                                onSelectToggle: _toggleSelect,
+                              ),
+                            ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
