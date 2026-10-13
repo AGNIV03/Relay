@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' show Random;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../api.dart';
@@ -20,6 +21,9 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
   final _searchController = TextEditingController();
   String _q = '';
   Timer? _sync;
+  // Default order is random. A fixed per-session seed keeps that random order
+  // stable across rebuilds (so it doesn't reshuffle on every frame or poll).
+  final int _shuffleSeed = DateTime.now().millisecondsSinceEpoch;
 
   @override
   void initState() {
@@ -122,17 +126,19 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
               builder: (context, snap) {
                 if (!snap.hasData) return const Center(child: CircularProgressIndicator());
                 final ql = _q.toLowerCase();
-                final playlists = ql.isEmpty
-                    ? snap.data!
-                    : snap.data!.where((p) => p.name.toLowerCase().contains(ql)).toList();
+                final playlists = (ql.isEmpty
+                    ? List<Playlist>.of(snap.data!)
+                    : snap.data!.where((p) => p.name.toLowerCase().contains(ql)).toList())
+                  // Default to a random order (stable within this session).
+                  ..shuffle(Random(_shuffleSeed));
                 // The permanent Liked Songs tile shows when not filtering (or if it matches).
                 final showLiked = ql.isEmpty || 'liked songs'.contains(ql);
                 return GridView.builder(
                   padding: const EdgeInsets.fromLTRB(12, 8, 12, 90),
                   gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
                     maxCrossAxisExtent: 180,
-                    mainAxisSpacing: 16,
-                    crossAxisSpacing: 16,
+                    mainAxisSpacing: 24,
+                    crossAxisSpacing: 22,
                     childAspectRatio: 0.76,
                   ),
                   itemCount: playlists.length + (showLiked ? 1 : 0),

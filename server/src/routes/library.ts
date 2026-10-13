@@ -352,6 +352,74 @@ router.get("/stats/me", async (req, res) => {
   });
 });
 
+/** GET /api/library/stats/wrapped?year=YYYY — year-scoped "Rewind" (Spotify
+ *  Wrapped-style) listening summary for the signed-in user. Defaults to the
+ *  current year. `hasData` is false when there are no plays that year. */
+router.get("/stats/wrapped", async (req, res) => {
+  const userId = req.user!.id;
+  const nowYear = new Date().getUTCFullYear();
+  const year = Math.min(Math.max(Number(req.query.year) || nowYear, 2000), 3000);
+  const start = new Date(Date.UTC(year, 0, 1));
+  const end = new Date(Date.UTC(year + 1, 0, 1));
+
+  const rows = await prisma.playHistory.findMany({
+    where: { userId, playedAt: { gte: start, lt: end } },
+    select: { trackId: true, playedAt: true },
+  });
+
+  const trackCounts = new Map<string, number>();
+  for (const r of rows) trackCounts.set(r.trackId, (trackCounts.get(r.trackId) ?? 0) + 1);
+
+  const tracks = await prisma.track.findMany({
+    where: { id: { in: [...trackCounts.keys()] } },
+    include: { artist: true },
+  });
+  const byId = new Map(tracks.map((t) => [t.id, t]));
+
+  let totalPlays = 0;
+  let totalSeconds = 0;
+  const artistCounts = new Map<string, number>();
+  const genreCounts = new Map<string, number>();
+  const monthSeconds = new Array(12).fill(0);
+  for (const r of rows) {
+    const t = byId.get(r.trackId);
+    if (!t) continue;
+    totalPlays += 1;
+    totalSeconds += t.duration || 0;
+    monthSeconds[new Date(r.playedAt).getUTCMonth()] += t.duration || 0;
+    const an = t.artist?.name;
+    if (an) artistCounts.set(an, (artistCounts.get(an) ?? 0) + 1);
+    if (t.genre) genreCounts.set(t.genre, (genreCounts.get(t.genre) ?? 0) + 1);
+  }
+  const top = (m: Map<string, number>, n: number) =>
+    [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(([name, count]) => ({ name, count }));
+
+  const topTracks = [...trackCounts.entries()]
+    .map(([id, c]) => ({ t: byId.get(id), c }))
+    .filter((x) => x.t)
+    .sort((a, b) => b.c - a.c)
+    .slice(0, 5)
+    .map((x) => ({ id: x.t!.id, title: x.t!.title, artist: x.t!.artist?.name ?? "", playCount: x.c }));
+
+  const monthMinutes = monthSeconds.map((s) => Math.round(s / 60));
+  let peakMonth = 0;
+  for (let i = 1; i < 12; i++) if (monthMinutes[i] > monthMinutes[peakMonth]) peakMonth = i;
+
+  res.json({
+    year,
+    hasData: totalPlays > 0,
+    totalPlays,
+    totalMinutes: Math.round(totalSeconds / 60),
+    distinctTracks: trackCounts.size,
+    distinctArtists: artistCounts.size,
+    topTracks,
+    topArtists: top(artistCounts, 5),
+    topGenres: top(genreCounts, 5),
+    monthMinutes,
+    peakMonth,
+  });
+});
+
 /** GET /api/library/tracks/:id/lyrics — synced (LRC) + plain + line-aligned English
  *  translation; fetches/translates on demand if not yet done. */
 router.get("/tracks/:id/lyrics", async (req, res) => {

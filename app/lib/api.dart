@@ -260,6 +260,10 @@ class Api {
 
   Future<WrappedStats> statsMe() async => WrappedStats.fromJson(await _get('/api/library/stats/me'));
 
+  /// Year-scoped "Rewind" stats. Defaults to the current year server-side.
+  Future<RewindStats> rewind(int year) async =>
+      RewindStats.fromJson(await _get('/api/library/stats/wrapped?year=$year'));
+
   // ---- Lyrics ----
   Future<Lyrics> lyrics(String trackId) async =>
       Lyrics.fromJson(await _get('/api/library/tracks/$trackId/lyrics'));

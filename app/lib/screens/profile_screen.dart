@@ -6,6 +6,7 @@ import '../app_state.dart';
 import '../player.dart';
 import '../theme.dart';
 import '../widgets/friends_panel.dart';
+import 'rewind_screen.dart';
 
 /// Profile: the signed-in user, change password, sign out, and (on mobile)
 /// friend activity. Used as the mobile Profile tab and the desktop profile page.
@@ -76,6 +77,17 @@ class ProfileScreen extends StatelessWidget {
             ),
           ]),
         ),
+        // Relay Rewind — year in review (available any time from here).
+        _card([
+          _tile(
+            icon: LucideIcons.sparkles,
+            label: 'Your ${DateTime.now().year} Rewind',
+            color: kAccent,
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => RewindScreen(year: DateTime.now().year)),
+            ),
+          ),
+        ]),
         // Account actions, grouped in a card.
         _card([
           _tile(

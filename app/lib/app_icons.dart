@@ -47,4 +47,5 @@ class LucideIcons {
   static const IconData shuffle = Symbols.shuffle;
   static const IconData repeat = Symbols.repeat;
   static const IconData repeatOne = Symbols.repeat_one;
+  static const IconData star = Symbols.star;
 }

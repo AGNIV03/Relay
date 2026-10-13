@@ -1,5 +1,4 @@
 import 'dart:io' show Platform;
-import 'dart:math' show Random;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -455,12 +454,12 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                         onPressed: () => context.read<PlayerModel>().playQueue(
                               tracks,
                               playlistId: widget.playlistId,
-                              // Honour this playlist's remembered shuffle preference,
-                              // starting somewhere random so it feels shuffled.
+                              // Honour this playlist's remembered shuffle preference.
+                              // anchorStart:false → when shuffling, the whole list is
+                              // randomized so the FIRST song is random too (not the
+                              // playlist's original first track).
                               shuffle: _shufflePref,
-                              start: _shufflePref && tracks.length > 1
-                                  ? Random().nextInt(tracks.length)
-                                  : 0,
+                              anchorStart: false,
                             ),
                       ),
                       const SizedBox(width: 10),
@@ -479,16 +478,23 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                       const SizedBox(width: 10),
                       if (downloads.supported)
                         OutlinedButton.icon(
-                          icon: Icon(
-                            allDown ? LucideIcons.checkCircle : LucideIcons.download,
-                            size: 18,
-                            color: allDown ? kAccent : null,
-                          ),
+                          icon: downloads.anyPending(tracks)
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2))
+                              : Icon(
+                                  allDown ? LucideIcons.checkCircle : LucideIcons.download,
+                                  size: 18,
+                                  color: allDown ? kAccent : null,
+                                ),
                           label: Text(allDown
                               ? 'Downloaded'
-                              : downCount > 0
-                                  ? 'Download ($downCount/${tracks.length})'
-                                  : 'Download'),
+                              : downloads.anyPending(tracks)
+                                  ? 'Downloading ($downCount/${tracks.length})'
+                                  : downCount > 0
+                                      ? 'Download ($downCount/${tracks.length})'
+                                      : 'Download'),
                           onPressed: () async {
                             if (allDown) {
                               await downloads.removeAll(tracks, widget.playlistId);

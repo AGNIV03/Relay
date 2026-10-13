@@ -43,6 +43,8 @@ class TrackTile extends StatelessWidget {
   final bool showCover;
   final bool showUploader;
   final bool showDownload; // show an inline download/remove toggle button
+  final bool showLike; // show the like heart (hidden in offline mode — it's a no-op there)
+  final bool showMenu; // show the ⋮ menu (hidden offline — its actions need the server)
   final VoidCallback? onChanged; // called after a destructive change (e.g. delete)
   // Multi-select: when [onSelectToggle] is given, long-press selects; while any
   // row is selected a tap toggles selection instead of starting playback.
@@ -60,6 +62,8 @@ class TrackTile extends StatelessWidget {
     this.showCover = true,
     this.showUploader = false,
     this.showDownload = false,
+    this.showLike = true,
+    this.showMenu = true,
     this.onChanged,
     this.selectedIds = const {},
     this.onSelectToggle,
@@ -130,7 +134,7 @@ class TrackTile extends StatelessWidget {
           : Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                LikeButton(trackId: track.id, size: 18),
+                if (showLike) LikeButton(trackId: track.id, size: 18),
                 if (showDownload && downloads.supported)
                   _downloadButton(context, track, downloads)
                 else if (downloads.isDownloading(track.id))
@@ -138,7 +142,7 @@ class TrackTile extends StatelessWidget {
                       width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                 else if (downloads.isDownloaded(track.id))
                   const Icon(LucideIcons.checkCircle, size: 17, color: kAccent),
-                TrackMenu(track: track, onChanged: onChanged),
+                if (showMenu) TrackMenu(track: track, onChanged: onChanged),
               ],
             ),
       onTap: selectionMode ? () => onSelectToggle!(track) : () => _play(player),

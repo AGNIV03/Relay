@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io' show Platform;
+import 'dart:math' show Random;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
@@ -14,7 +15,7 @@ import '../widgets/track_tile.dart';
 
 bool get _isDesktop => !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
 
-enum _SortField { title, artist, album, added }
+enum _SortField { random, title, artist, album, added }
 
 class SongsScreen extends StatefulWidget {
   const SongsScreen({super.key});
@@ -31,13 +32,21 @@ class _SongsScreenState extends State<SongsScreen> {
   bool _loading = true;
   bool _uploading = false;
   bool _refreshing = false;
-  _SortField _sortField = _SortField.title;
+  // Songs default to a random order. A fixed per-session seed keeps that order
+  // stable across rebuilds; tapping "Shuffle" in the sort menu reshuffles it.
+  _SortField _sortField = _SortField.random;
   bool _sortAsc = true;
+  int _shuffleSeed = DateTime.now().millisecondsSinceEpoch;
   final Set<String> _selected = {}; // multi-select on the songs list
 
   List<Track> _sorted(List<Track> list) {
+    if (_sortField == _SortField.random) {
+      return List<Track>.of(list)..shuffle(Random(_shuffleSeed));
+    }
     String key(Track t) {
       switch (_sortField) {
+        case _SortField.random:
+          return ''; // unreachable (handled above), keeps the switch exhaustive
         case _SortField.title:
           return t.title.toLowerCase();
         case _SortField.artist:
@@ -317,6 +326,7 @@ class _SongsScreenState extends State<SongsScreen> {
 
   Widget _sortButton() {
     const labels = {
+      _SortField.random: 'Shuffle',
       _SortField.title: 'Title',
       _SortField.artist: 'Artist',
       _SortField.album: 'Album',
@@ -327,7 +337,11 @@ class _SongsScreenState extends State<SongsScreen> {
       tooltip: 'Sort',
       color: kPanel2,
       onSelected: (f) => setState(() {
-        if (_sortField == f) {
+        if (f == _SortField.random) {
+          // Tapping Shuffle (re)randomizes the order.
+          _sortField = _SortField.random;
+          _shuffleSeed = DateTime.now().millisecondsSinceEpoch;
+        } else if (_sortField == f) {
           _sortAsc = !_sortAsc; // second tap on the same field flips direction
         } else {
           _sortField = f;
@@ -344,8 +358,12 @@ class _SongsScreenState extends State<SongsScreen> {
                     style: TextStyle(color: _sortField == e.key ? kAccent : null)),
               ),
               if (_sortField == e.key)
-                Icon(_sortAsc ? LucideIcons.arrowUp : LucideIcons.arrowDown,
-                    size: 15, color: kAccent),
+                Icon(
+                    e.key == _SortField.random
+                        ? LucideIcons.shuffle
+                        : (_sortAsc ? LucideIcons.arrowUp : LucideIcons.arrowDown),
+                    size: 15,
+                    color: kAccent),
             ]),
           ),
       ],

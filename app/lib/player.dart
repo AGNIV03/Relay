@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform;
-import 'dart:math' show Random;
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:just_audio_background/just_audio_background.dart';
@@ -280,7 +279,7 @@ class PlayerModel extends ChangeNotifier {
       !isChorusMember && i >= 0 && i < _userQ.length && i < _queue.length && _userQ[i];
 
   Future<void> playQueue(List<Track> tracks,
-      {int start = 0, String? playlistId, bool? shuffle}) async {
+      {int start = 0, String? playlistId, bool? shuffle, bool anchorStart = true}) async {
     if (tracks.isEmpty) return;
     _playlistContext = playlistId;
     // `shuffle` overrides the global shuffle mode for THIS play only (used by the
@@ -305,16 +304,23 @@ class PlayerModel extends ChangeNotifier {
     _restoreAfterCurrent = false;
     // A fresh context fully REPLACES the previous queue (incl. any manual queue).
     _contextOriginal = List.of(tracks);
-    // With shuffle on, the chosen track plays first and the rest follow in a
-    // random order. We reorder the queue itself (not just_audio's shuffle mode)
-    // so the visible queue is the real play order and chorus members match.
+    // With shuffle on we reorder the queue itself (not just_audio's shuffle mode)
+    // so the visible queue is the real play order and chorus members match. Two
+    // modes: when [anchorStart] (the user tapped a specific track) the tapped
+    // track plays first and the rest follow randomly; otherwise (a whole-list
+    // "Play"/"Shuffle" action) the ENTIRE list is randomized, so the first song
+    // is random too — not the list's original first track.
     if (doShuffle && tracks.length > 1) {
-      final first = tracks[start];
-      final rest = [
-        for (var i = 0; i < tracks.length; i++)
-          if (i != start) tracks[i]
-      ]..shuffle();
-      _queue = [first, ...rest];
+      if (anchorStart) {
+        final first = tracks[start];
+        final rest = [
+          for (var i = 0; i < tracks.length; i++)
+            if (i != start) tracks[i]
+        ]..shuffle();
+        _queue = [first, ...rest];
+      } else {
+        _queue = List.of(tracks)..shuffle();
+      }
       _index = 0;
     } else {
       _queue = List.of(tracks);
@@ -1002,10 +1008,11 @@ class PlayerModel extends ChangeNotifier {
   }
 
   /// Shuffle a list and start playing immediately (used by "Shuffle" buttons).
-  Future<void> shuffleAndPlay(List<Track> tracks) async {
+  /// Randomizes the whole list, so the first song is random too.
+  Future<void> shuffleAndPlay(List<Track> tracks, {String? playlistId}) async {
     if (tracks.isEmpty) return;
     _shuffle = true;
-    await playQueue(tracks, start: Random().nextInt(tracks.length));
+    await playQueue(tracks, playlistId: playlistId, shuffle: true, anchorStart: false);
   }
 
   // ---- Lyrics ----
@@ -1018,6 +1025,14 @@ class PlayerModel extends ChangeNotifier {
       return;
     }
     _lyricsForId = t.id;
+    // Offline / downloaded: use the lyrics saved alongside the download so they
+    // show with no connection. Online tracks fall through to the server fetch.
+    final local = downloads.localLyrics(t.id);
+    if (local != null) {
+      _lyrics = local;
+      notifyListeners();
+      return;
+    }
     try {
       final l = await api.lyrics(t.id);
       if (current?.id == t.id) {

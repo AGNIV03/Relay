@@ -11,6 +11,7 @@ import '../theme.dart';
 import '../widgets/cover.dart';
 import 'album_detail_screen.dart';
 import 'playlist_detail_screen.dart';
+import 'rewind_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -58,10 +59,21 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  /// The year whose Rewind to surface on Home: December shows this year's;
+  /// January still shows last year's. Null the rest of the year (it stays
+  /// available any time from the Profile tab).
+  int? get _rewindYear {
+    final now = DateTime.now();
+    if (now.month == 12) return now.year;
+    if (now.month == 1) return now.year - 1;
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final name = context.watch<AppState>().user?.username ?? "";
     final hasActivity = (_stats?.totalPlays ?? 0) > 0;
+    final rewindYear = _rewindYear;
     return RefreshIndicator(
       onRefresh: _load,
       child: ListView(
@@ -72,6 +84,11 @@ class _HomeScreenState extends State<HomeScreen> {
             TextSpan(text: name, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: kAccent)),
           ])),
           const SizedBox(height: 16),
+
+          if (rewindYear != null) ...[
+            _RewindBanner(year: rewindYear),
+            const SizedBox(height: 22),
+          ],
 
           if (hasActivity && _stats != null) ...[
             const _Header(icon: LucideIcons.sparkles, text: "Your listening"),
@@ -105,6 +122,47 @@ class _HomeScreenState extends State<HomeScreen> {
           else
             _AlbumRow(albums: _added),
         ],
+      ),
+    );
+  }
+}
+
+/// Year-end call-to-action card that opens the Relay Rewind story.
+class _RewindBanner extends StatelessWidget {
+  final int year;
+  const _RewindBanner({required this.year});
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(16),
+      onTap: () => Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => RewindScreen(year: year)),
+      ),
+      child: Container(
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          gradient: const LinearGradient(
+            colors: [Color(0xFF8e2de2), Color(0xFFee0979)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
+        child: Row(children: [
+          const Icon(LucideIcons.sparkles, color: Colors.white, size: 30),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Your $year Rewind is here',
+                  style: const TextStyle(
+                      color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 2),
+              const Text('Tap to relive your year in music',
+                  style: TextStyle(color: Colors.white70, fontSize: 13)),
+            ]),
+          ),
+          const Icon(Icons.chevron_right, color: Colors.white),
+        ]),
       ),
     );
   }

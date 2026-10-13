@@ -1,8 +1,10 @@
+import 'dart:math' show Random;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../app_icons.dart';
 import '../app_state.dart';
 import '../downloads.dart';
+import '../models.dart';
 import '../player.dart';
 import '../theme.dart';
 import '../widgets/cover.dart';
@@ -19,85 +21,227 @@ Future<void> _retry(BuildContext context) async {
   }
 }
 
-/// Offline home: a banner, downloaded songs, and downloaded playlists. Only
-/// locally-stored audio can be played here.
-class OfflineRoot extends StatelessWidget {
+enum _SortField { random, title, artist, album }
+
+List<Track> _sortTracks(List<Track> list, _SortField field, bool asc, int seed) {
+  if (field == _SortField.random) return List<Track>.of(list)..shuffle(Random(seed));
+  String key(Track t) {
+    switch (field) {
+      case _SortField.random:
+        return '';
+      case _SortField.title:
+        return t.title.toLowerCase();
+      case _SortField.artist:
+        return t.artistName.toLowerCase();
+      case _SortField.album:
+        return t.albumTitle.toLowerCase();
+    }
+  }
+
+  final l = List<Track>.of(list)..sort((a, b) => key(a).compareTo(key(b)));
+  return asc ? l : l.reversed.toList();
+}
+
+/// Offline home: mirrors the online layout — a Songs tab (sortable) and a
+/// Playlists tab — but plays only locally-stored audio. Like buttons and the
+/// per-track menu are hidden because their actions need the server.
+class OfflineRoot extends StatefulWidget {
   const OfflineRoot({super.key});
+
+  @override
+  State<OfflineRoot> createState() => _OfflineRootState();
+}
+
+class _OfflineRootState extends State<OfflineRoot> with SingleTickerProviderStateMixin {
+  late final TabController _tabs = TabController(length: 2, vsync: this);
+  _SortField _sortField = _SortField.random;
+  bool _sortAsc = true;
+  int _shuffleSeed = DateTime.now().millisecondsSinceEpoch;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabs.addListener(() => setState(() {})); // show/hide the sort action per tab
+  }
+
+  @override
+  void dispose() {
+    _tabs.dispose();
+    super.dispose();
+  }
+
+  Widget _sortButton() {
+    const labels = {
+      _SortField.random: 'Shuffle',
+      _SortField.title: 'Title',
+      _SortField.artist: 'Artist',
+      _SortField.album: 'Album',
+    };
+    return PopupMenuButton<_SortField>(
+      icon: const Icon(LucideIcons.arrowDownUp, size: 20),
+      tooltip: 'Sort',
+      color: kPanel2,
+      onSelected: (f) => setState(() {
+        if (f == _SortField.random) {
+          _sortField = _SortField.random;
+          _shuffleSeed = DateTime.now().millisecondsSinceEpoch;
+        } else if (_sortField == f) {
+          _sortAsc = !_sortAsc;
+        } else {
+          _sortField = f;
+          _sortAsc = true;
+        }
+      }),
+      itemBuilder: (_) => [
+        for (final e in labels.entries)
+          PopupMenuItem(
+            value: e.key,
+            child: Row(children: [
+              Expanded(
+                child: Text(e.value,
+                    style: TextStyle(color: _sortField == e.key ? kAccent : null)),
+              ),
+              if (_sortField == e.key)
+                Icon(
+                    e.key == _SortField.random
+                        ? LucideIcons.shuffle
+                        : (_sortAsc ? LucideIcons.arrowUp : LucideIcons.arrowDown),
+                    size: 15,
+                    color: kAccent),
+            ]),
+          ),
+      ],
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final downloads = context.watch<DownloadManager>();
-    final tracks = downloads.offlineTracks;
+    final tracks = _sortTracks(downloads.offlineTracks, _sortField, _sortAsc, _shuffleSeed);
     final playlists = downloads.offlinePlaylists;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Offline mode'),
+        title: const Text('Offline'),
         actions: [
+          if (_tabs.index == 0) _sortButton(),
           IconButton(
             tooltip: 'Retry connection',
-            icon: const Icon(LucideIcons.refreshCw),
+            icon: const Icon(LucideIcons.refreshCw, size: 20),
             onPressed: () => _retry(context),
           ),
+          const SizedBox(width: 4),
         ],
+        bottom: TabBar(
+          controller: _tabs,
+          indicatorColor: kAccent,
+          labelColor: kAccent,
+          unselectedLabelColor: kMuted,
+          tabs: const [Tab(text: 'Songs'), Tab(text: 'Playlists')],
+        ),
       ),
-      // SafeArea keeps the player controls above the system navigation bar
-      // (offline mode has no bottom nav bar to provide that inset).
       bottomNavigationBar: const SafeArea(
         top: false,
         child: Column(mainAxisSize: MainAxisSize.min, children: [MiniPlayer()]),
       ),
-      body: ListView(
+      body: TabBarView(
+        controller: _tabs,
         children: [
-          Container(
-            margin: const EdgeInsets.fromLTRB(12, 12, 12, 4),
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: kAccent.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: const Row(children: [
-              Icon(LucideIcons.download, size: 18, color: kAccent),
-              SizedBox(width: 10),
+          // ---- Songs ----
+          Column(
+            children: [
+              const _OfflineBanner(),
               Expanded(
-                child: Text("You're offline — playing your downloaded music.",
-                    style: TextStyle(color: kAccent, fontSize: 13)),
+                child: tracks.isEmpty
+                    ? const _EmptyNote('No downloaded songs')
+                    : ListView.builder(
+                        itemCount: tracks.length,
+                        itemBuilder: (_, i) => TrackTile(
+                          tracks: tracks,
+                          index: i,
+                          showLike: false,
+                          showMenu: false,
+                        ),
+                      ),
               ),
-            ]),
+            ],
           ),
-          if (playlists.isNotEmpty) ...[
-            _header('Downloaded playlists'),
-            ...playlists.map((pl) => ListTile(
-                  leading: Cover(trackId: pl.tracks.first.id, size: 44),
-                  title: Text(pl.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                  subtitle: Text('${pl.tracks.length} songs',
-                      style: const TextStyle(color: kMuted, fontSize: 12)),
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => OfflinePlaylistScreen(playlist: pl)),
+          // ---- Playlists ----
+          playlists.isEmpty
+              ? const _EmptyNote('No downloaded playlists')
+              : GridView.builder(
+                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+                  gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                    maxCrossAxisExtent: 180,
+                    mainAxisSpacing: 24,
+                    crossAxisSpacing: 22,
+                    childAspectRatio: 0.76,
                   ),
-                )),
-          ],
-          _header('Downloaded songs'),
-          if (tracks.isEmpty)
-            const Padding(
-              padding: EdgeInsets.all(24),
-              child: Text('No downloaded songs', style: TextStyle(color: kMuted)),
-            )
-          else
-            ...List.generate(
-              tracks.length,
-              (i) => TrackTile(tracks: tracks, index: i),
-            ),
-          const SizedBox(height: 12),
+                  itemCount: playlists.length,
+                  itemBuilder: (context, i) {
+                    final pl = playlists[i];
+                    return InkWell(
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => OfflinePlaylistScreen(playlist: pl)),
+                      ),
+                      borderRadius: BorderRadius.circular(12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          AspectRatio(
+                            aspectRatio: 1,
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(12),
+                              child: Cover(trackId: pl.tracks.first.id, size: 180, radius: 12),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(pl.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
+                          Text('${pl.tracks.length} songs',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 11.5, color: kMuted)),
+                        ],
+                      ),
+                    );
+                  },
+                ),
         ],
       ),
     );
   }
+}
 
-  Widget _header(String t) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
-        child: Text(t, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+class _OfflineBanner extends StatelessWidget {
+  const _OfflineBanner();
+  @override
+  Widget build(BuildContext context) => Container(
+        margin: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: kAccent.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: const Row(children: [
+          Icon(LucideIcons.download, size: 18, color: kAccent),
+          SizedBox(width: 10),
+          Expanded(
+            child: Text("You're offline — playing your downloaded music.",
+                style: TextStyle(color: kAccent, fontSize: 13)),
+          ),
+        ]),
       );
+}
+
+class _EmptyNote extends StatelessWidget {
+  final String text;
+  const _EmptyNote(this.text);
+  @override
+  Widget build(BuildContext context) =>
+      Center(child: Text(text, style: const TextStyle(color: kMuted)));
 }
 
 /// A single downloaded playlist, playable offline.
@@ -127,17 +271,12 @@ class OfflinePlaylistScreen extends StatelessWidget {
                     : () => context.read<PlayerModel>().playQueue(tracks),
               ),
               const SizedBox(width: 10),
-              Consumer<PlayerModel>(
-                builder: (context, player, _) => OutlinedButton.icon(
-                  icon: Icon(Icons.shuffle,
-                      size: 18, color: player.shuffleEnabled ? kAccent : null),
-                  label: const Text('Shuffle'),
-                  style: player.shuffleEnabled
-                      ? OutlinedButton.styleFrom(
-                          foregroundColor: kAccent, side: const BorderSide(color: kAccent))
-                      : null,
-                  onPressed: player.toggleShuffle,
-                ),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.shuffle, size: 18),
+                label: const Text('Shuffle'),
+                onPressed: tracks.isEmpty
+                    ? null
+                    : () => context.read<PlayerModel>().shuffleAndPlay(tracks),
               ),
               const SizedBox(width: 10),
               Text('${tracks.length} songs', style: const TextStyle(color: kMuted)),
@@ -146,7 +285,8 @@ class OfflinePlaylistScreen extends StatelessWidget {
           Expanded(
             child: ListView.builder(
               itemCount: tracks.length,
-              itemBuilder: (_, i) => TrackTile(tracks: tracks, index: i),
+              itemBuilder: (_, i) =>
+                  TrackTile(tracks: tracks, index: i, showLike: false, showMenu: false),
             ),
           ),
         ],

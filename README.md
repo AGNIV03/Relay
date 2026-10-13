@@ -127,6 +127,9 @@ GET  /api/library/tracks?q=&limit=&offset=
 GET  /api/library/tracks/by-ids?ids=a,b,c
 GET  /api/library/tracks/:id/lyrics
 POST /api/library/upload                         multipart  (chunked: /upload/chunk + /upload/finalize)
+GET  /api/library/scrobble | /recently-played | /most-played
+GET  /api/library/stats/me                       all-time listening summary
+GET  /api/library/stats/wrapped?year=YYYY        year-end "Rewind" summary
 GET  /api/search?q=
 
 GET  /api/stream/:trackId                         direct, Range-aware

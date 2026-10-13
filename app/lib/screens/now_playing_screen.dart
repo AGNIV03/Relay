@@ -116,11 +116,21 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                     ]),
                     const SizedBox(height: 10),
                     Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                      IconButton(
-                        iconSize: 24,
-                        icon: Icon(LucideIcons.shuffle,
-                            color: player.shuffleEnabled ? kAccent : kMuted),
-                        onPressed: player.toggleShuffle,
+                      // Shuffle toggle with an unmistakable on/off look: ON shows a
+                      // filled cyan circle with a dark icon; OFF is just a muted icon.
+                      GestureDetector(
+                        onTap: player.toggleShuffle,
+                        child: Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: player.shuffleEnabled ? kAccent : Colors.transparent,
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(LucideIcons.shuffle,
+                              size: 22,
+                              color: player.shuffleEnabled ? kAccentInk : kMuted),
+                        ),
                       ),
                       const SizedBox(width: 8),
                       IconButton(iconSize: 34, icon: const Icon(LucideIcons.skipBack), onPressed: player.previous),

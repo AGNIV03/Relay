@@ -138,6 +138,60 @@ class WrappedStats {
       );
 }
 
+/// Year-scoped "Rewind" (Spotify Wrapped-style) stats for one user.
+class RewindStats {
+  final int year;
+  final bool hasData;
+  final int totalPlays;
+  final int totalMinutes;
+  final int distinctTracks;
+  final int distinctArtists;
+  final List<({String id, String title, String artist, int playCount})> topTracks;
+  final List<({String name, int count})> topArtists;
+  final List<({String name, int count})> topGenres;
+  final List<int> monthMinutes; // 12 entries, Jan..Dec
+  final int peakMonth; // 0..11
+
+  RewindStats({
+    required this.year,
+    required this.hasData,
+    required this.totalPlays,
+    required this.totalMinutes,
+    required this.distinctTracks,
+    required this.distinctArtists,
+    required this.topTracks,
+    required this.topArtists,
+    required this.topGenres,
+    required this.monthMinutes,
+    required this.peakMonth,
+  });
+
+  factory RewindStats.fromJson(Map<String, dynamic> j) => RewindStats(
+        year: j['year'] as int? ?? DateTime.now().year,
+        hasData: j['hasData'] as bool? ?? false,
+        totalPlays: j['totalPlays'] as int? ?? 0,
+        totalMinutes: j['totalMinutes'] as int? ?? 0,
+        distinctTracks: j['distinctTracks'] as int? ?? 0,
+        distinctArtists: j['distinctArtists'] as int? ?? 0,
+        topTracks: ((j['topTracks'] as List?) ?? [])
+            .map((e) => (
+                  id: e['id'] as String? ?? '',
+                  title: e['title'] as String? ?? '',
+                  artist: e['artist'] as String? ?? '',
+                  playCount: e['playCount'] as int? ?? 0,
+                ))
+            .toList(),
+        topArtists: ((j['topArtists'] as List?) ?? [])
+            .map((e) => (name: e['name'] as String? ?? '', count: e['count'] as int? ?? 0))
+            .toList(),
+        topGenres: ((j['topGenres'] as List?) ?? [])
+            .map((e) => (name: e['name'] as String? ?? '', count: e['count'] as int? ?? 0))
+            .toList(),
+        monthMinutes: ((j['monthMinutes'] as List?) ?? []).map((e) => e as int? ?? 0).toList(),
+        peakMonth: j['peakMonth'] as int? ?? 0,
+      );
+}
+
 class Lyrics {
   final String? synced;
   final String? plain;
@@ -150,6 +204,12 @@ class Lyrics {
         translated: j['translated'] as String?,
         lang: j['lang'] as String?,
       );
+  Map<String, dynamic> toJson() => {
+        'synced': synced,
+        'plain': plain,
+        'translated': translated,
+        'lang': lang,
+      };
 }
 
 class Playlist {
