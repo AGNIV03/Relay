@@ -1,12 +1,13 @@
 "use client";
 
 import { useRef } from "react";
-import { X, Play, Music, GripVertical } from "lucide-react";
+import { X, Play, Music, GripVertical, Trash2 } from "lucide-react";
 import { usePlayer } from "@/context/PlayerContext";
 import { fmtTime } from "@/lib/format";
 
 /** Slide-over queue: now playing + upcoming tracks, click to jump, ✕ to remove,
- *  drag the grip to reorder. */
+ *  drag the grip to reorder. "Clear queue" drops everything after the current
+ *  track; "Clear" on Next in queue drops only the manually queued songs. */
 export function QueueView({ onClose }: { onClose: () => void }) {
   const p = usePlayer();
   const dragFrom = useRef<number | null>(null);
@@ -55,13 +56,24 @@ export function QueueView({ onClose }: { onClose: () => void }) {
     <div className="absolute right-0 top-0 z-20 flex h-full w-80 flex-col border-l border-[var(--border)] bg-[var(--panel)] shadow-xl">
       <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
         <div className="text-sm font-semibold">Queue</div>
-        <button
-          onClick={onClose}
-          className="rounded p-1 text-[var(--muted)] transition hover:text-white"
-          title="Close"
-        >
-          <X size={16} />
-        </button>
+        <div className="flex items-center gap-1">
+          {upcoming.length > 0 && (
+            <button
+              onClick={() => p.clearQueue()}
+              className="flex items-center gap-1.5 rounded px-2 py-1 text-xs text-[var(--muted)] transition hover:bg-[var(--panel-2)] hover:text-white"
+              title="Remove everything after the current song"
+            >
+              <Trash2 size={13} /> Clear queue
+            </button>
+          )}
+          <button
+            onClick={onClose}
+            className="rounded p-1 text-[var(--muted)] transition hover:text-white"
+            title="Close"
+          >
+            <X size={16} />
+          </button>
+        </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {p.current && (
@@ -82,7 +94,16 @@ export function QueueView({ onClose }: { onClose: () => void }) {
           </div>
         )}
         {inQueue.length > 0 && (
-          <div className="px-4 pb-1 pt-4 text-xs uppercase text-[var(--muted)]">Next in queue</div>
+          <div className="flex items-center justify-between px-4 pb-1 pt-4">
+            <span className="text-xs uppercase text-[var(--muted)]">Next in queue</span>
+            {/* Clear only the songs added by hand; the playlist/album carries on. */}
+            <button
+              onClick={() => p.clearQueue({ userQueueOnly: true })}
+              className="text-xs font-medium text-[var(--accent)] transition hover:brightness-125"
+            >
+              Clear
+            </button>
+          </div>
         )}
         {inQueue.map(row)}
         {nextUp.length > 0 && (

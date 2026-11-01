@@ -150,6 +150,12 @@ class _DesktopShellState extends State<DesktopShell> {
                 child: Text(title,
                     style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               ),
+              if (_rightPanel == 'queue')
+                Consumer<PlayerModel>(
+                  builder: (context, player, _) => ClearQueueButton(
+                    enabled: player.index >= 0 && player.index < player.queue.length - 1,
+                  ),
+                ),
               IconButton(
                 icon: const Icon(LucideIcons.x, size: 18),
                 onPressed: () => setState(() => _rightPanel = ''),
@@ -292,10 +298,18 @@ class _SidebarState extends State<_Sidebar> {
     super.dispose();
   }
 
+  String _plSig = '';
+
   Future<void> _loadPlaylists() async {
     try {
       final pls = await context.read<Api>().playlists();
-      if (mounted) setState(() => _playlists = pls);
+      // The 8s sync poll usually returns the same list: only rebuild the sidebar
+      // when something it shows actually changed.
+      final sig = pls.map((p) => '${p.id}|${p.name}|${p.trackCount}').join(';');
+      if (mounted && sig != _plSig) {
+        _plSig = sig;
+        setState(() => _playlists = pls);
+      }
     } catch (_) {}
   }
 
@@ -552,23 +566,29 @@ class _DesktopPlayerBar extends StatelessWidget {
                           onPressed: player.cycleRepeat,
                         ),
                       ]),
-                      Row(children: [
-                        Text(_fmt(player.position),
-                            style: const TextStyle(color: kMuted, fontSize: 11)),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: SquigglyProgress(
-                            position: player.position,
-                            duration: player.duration,
-                            playing: player.playing,
-                            onSeek: player.seek,
-                            height: 22,
+                      // Only this row follows the play head (positionTick), so the
+                      // rest of the bar doesn't rebuild several times a second.
+                      ValueListenableBuilder<Duration>(
+                        valueListenable: player.positionTick,
+                        builder: (context, _, _) => Row(children: [
+                          Text(_fmt(player.position),
+                              style: const TextStyle(color: kMuted, fontSize: 11)),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: SquigglyProgress(
+                              position: player.position,
+                              duration: player.duration,
+                              playing: player.playing,
+                              onSeek: player.seek,
+                              height: 22,
+                              animated: false, // flat bar on desktop (no animation cost)
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(_fmt(player.duration),
-                            style: const TextStyle(color: kMuted, fontSize: 11)),
-                      ]),
+                          const SizedBox(width: 8),
+                          Text(_fmt(player.duration),
+                              style: const TextStyle(color: kMuted, fontSize: 11)),
+                        ]),
+                      ),
                     ],
                   ),
                 ),

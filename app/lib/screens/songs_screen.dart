@@ -303,14 +303,23 @@ class _SongsScreenState extends State<SongsScreen> {
       // Handles any count/size: small files batched under the CDN cap, large
       // files chunked individually.
       final r = await api.uploadManyTracks(paths);
-      final added = r['added'] ?? 0;
-      final failed = r['failed'] ?? 0;
-      final dupes = r['duplicates'] ?? 0;
+      final added = r['added'] as int? ?? 0;
+      final failed = r['failed'] as int? ?? 0;
+      final dupes = r['duplicates'] as int? ?? 0;
+      final rejected = (r['rejected'] as List?)?.cast<({String name, String reason})>() ?? [];
       if (!mounted) return;
+      // Broken files (no playable audio) are refused by the server: say which
+      // one and why, so the user knows to find a good copy.
+      final why = rejected.isEmpty
+          ? ''
+          : rejected.length == 1
+              ? '\n${rejected.first.name}: ${rejected.first.reason}'
+              : '\n${rejected.length} files had no playable audio (truncated or corrupt)';
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        duration: Duration(seconds: rejected.isEmpty ? 4 : 8),
         content: Text('Uploaded $added song${added == 1 ? '' : 's'}'
             '${dupes > 0 ? ', $dupes already in library' : ''}'
-            '${failed > 0 ? ', $failed rejected' : ''}'),
+            '${failed > 0 ? ', $failed rejected' : ''}$why'),
       ));
       appState.reloadLiked(); // uploads are auto-liked — refresh hearts
       _load(_controller.text);

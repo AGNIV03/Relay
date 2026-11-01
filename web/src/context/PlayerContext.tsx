@@ -9,10 +9,27 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
-import { api, streamUrl, coverUrl, tokens } from "@/lib/api";
+import { api, streamUrl, coverUrl, tokens, clock, syncClock, ApiError } from "@/lib/api";
 import type { Track, Lyrics, HostActivity, ChorusState, ChorusPatch } from "@/lib/types";
 
 export type RepeatMode = "off" | "all" | "one";
+
+/** Options for a single `playQueue` call. */
+export interface PlayOptions {
+  /** Shuffle THIS play only (e.g. a playlist's own Shuffle toggle) without
+   *  changing the player's global shuffle. Omitted → follow the global toggle. */
+  shuffle?: boolean;
+  /** When shuffling: true (default, a tapped track) keeps the start track first
+   *  and shuffles the rest; false (a whole-list "Play") randomizes the entire
+   *  list, so the first song is random too. */
+  anchorStart?: boolean;
+  playlistId?: string;
+}
+
+// Listen-along drift tolerance: with a measured clock offset the host-position
+// estimate is good to a few hundred ms, so smaller drift is corrected.
+const DRIFT_SYNCED_SEC = 0.7;
+const DRIFT_UNSYNCED_SEC = 2;
 
 interface PlayerState {
   queue: Track[];
@@ -25,11 +42,21 @@ interface PlayerState {
   repeat: RepeatMode;
   shuffle: boolean;
   lyrics: Lyrics | null;
+  /** True while the current track's lyrics are being fetched. */
+  lyricsLoading: boolean;
   /** Play a list of tracks starting at `start`. Pass `playlistId` when playing a
-   *  playlist so Recently Played can group by playlist. */
-  playQueue: (tracks: Track[], start?: number, forceShuffle?: boolean, playlistId?: string) => void;
-  /** Shuffle a list and start playing immediately (regardless of the toggle). */
-  shuffleAndPlay: (tracks: Track[]) => void;
+   *  playlist so Recently Played can group by playlist. The third argument is
+   *  either the legacy `forceShuffle` flag (also turns the global shuffle on) or
+   *  per-call `PlayOptions`. */
+  playQueue: (
+    tracks: Track[],
+    start?: number,
+    opts?: boolean | PlayOptions,
+    playlistId?: string,
+  ) => void;
+  /** Shuffle a whole list (first song random too) and start playing immediately;
+   *  turns the global shuffle on. */
+  shuffleAndPlay: (tracks: Track[], playlistId?: string) => void;
   toggle: () => void;
   next: () => void;
   prev: () => void;
@@ -40,6 +67,12 @@ interface PlayerState {
   coverFor: (t: Track) => string;
   /** Append a track to the end of the queue. */
   addToQueue: (t: Track) => void;
+  /** Add a whole list to the user queue, in order, after the current track and
+   *  anything already queued. Starts playing it if nothing is loaded. */
+  addAllToQueue: (tracks: Track[]) => void;
+  /** Clear what's coming up (the current track keeps playing). `userQueueOnly`
+   *  drops just the manually queued songs and lets the context carry on. */
+  clearQueue: (opts?: { userQueueOnly?: boolean }) => void;
   /** Insert a track to play right after the current one. */
   playNext: (t: Track) => void;
   /** Remove the track at queue position `i`. */
@@ -93,6 +126,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [repeat, setRepeat] = useState<RepeatMode>("off");
   const [shuffle, setShuffle] = useState(false);
   const [lyrics, setLyrics] = useState<Lyrics | null>(null);
+  const [lyricsLoading, setLyricsLoading] = useState(false);
+  const lyricsForRef = useRef<string | null>(null); // track the in-flight lyrics fetch is for
   const scrobbled = useRef<Set<string>>(new Set());
   const playlistContextRef = useRef<string | null>(null); // playlist the queue was started from
   const [listenHost, setListenHost] = useState<{ id: string; name: string } | null>(null);
@@ -166,6 +201,23 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     const dur = (c.queue[c.index]?.duration ?? 0) * 1000;
     if (dur > 0 && ms > dur) ms = dur;
     return ms < 0 ? 0 : ms;
+  }, []);
+
+  // Fetch lyrics for a track. A failed fetch shows "No lyrics found" (empty
+  // lyrics) instead of an endless loading state; a late reply for a track we've
+  // since skipped is dropped.
+  const loadLyrics = useCallback((trackId: string) => {
+    lyricsForRef.current = trackId;
+    setLyrics(null);
+    setLyricsLoading(true);
+    api
+      .get<Lyrics>(`/api/library/tracks/${trackId}/lyrics`)
+      .catch((): Lyrics => ({ synced: null, plain: null }))
+      .then((l) => {
+        if (lyricsForRef.current !== trackId) return;
+        setLyrics(l);
+        setLyricsLoading(false);
+      });
   }, []);
 
   // Advance helper shared by manual-next and natural-end. The queue IS the play
@@ -244,7 +296,9 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         setQueue([]);
         setIndex(0);
         setPlaying(false);
+        lyricsForRef.current = null;
         setLyrics(null);
+        setLyricsLoading(false);
         // Host: broadcasting the empty queue clears members' controls too (the
         // [queue,index,playing] effect fires on the queue change).
         return;
@@ -274,11 +328,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     audio.src = streamUrl(localCurrent.id);
     audio.play().catch(() => setPlaying(false));
     setPosition(0);
-    setLyrics(null);
-    api
-      .get<Lyrics>(`/api/library/tracks/${localCurrent.id}/lyrics`)
-      .then(setLyrics)
-      .catch(() => setLyrics(null));
+    loadLyrics(localCurrent.id);
     if ("mediaSession" in navigator) {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: localCurrent.title,
@@ -294,23 +344,22 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const memberTrackId = isChorusMember ? chorus!.queue[chorus!.index]?.id ?? null : null;
   useEffect(() => {
     if (!memberTrackId) return;
-    setLyrics(null);
-    api
-      .get<Lyrics>(`/api/library/tracks/${memberTrackId}/lyrics`)
-      .then(setLyrics)
-      .catch(() => setLyrics(null));
-  }, [memberTrackId]);
+    loadLyrics(memberTrackId);
+  }, [memberTrackId, loadLyrics]);
 
   // ---- Chorus sync engine ---------------------------------------------------
   const broadcastChorus = useCallback(() => {
     const c = chorusRef.current;
     if (!c || !c.isHost) return; // only the host publishes truth
+    const positionMs = Math.round((audioRef.current?.currentTime ?? 0) * 1000);
+    const atServerMs = clock.serverNow(); // when that position was true (null until synced)
     api
       .post("/api/chorus/state", {
         queue: queueRef.current.map((t) => t.id),
         index: indexRef.current,
-        positionMs: Math.round((audioRef.current?.currentTime ?? 0) * 1000),
+        positionMs,
         playing: playingRef.current,
+        ...(atServerMs != null ? { atServerMs } : {}),
       })
       .catch(() => {});
   }, []);
@@ -413,7 +462,11 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         // Approved member — silence local audio and mirror the host.
         const audio = audioRef.current;
         if (!wasMember && audio && !audio.paused) audio.pause();
-        const adv = c.playing && c.serverNow ? c.serverNow - c.updatedAt : 0;
+        // Extrapolate from when the host's position was true, using our
+        // server-clock estimate when we have one (also covers transit time);
+        // otherwise the server's clock at response time.
+        const srvNow = clock.serverNow() ?? (c.serverNow > 0 ? c.serverNow : null);
+        const adv = c.playing && srvNow != null ? srvNow - c.updatedAt : 0;
         memberBaseMsRef.current = c.positionMs + (adv > 0 ? adv : 0);
         memberBaseAtRef.current = Date.now();
         setMemberPos(memberBaseMsRef.current);
@@ -423,6 +476,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   );
 
   const startChorusLoop = useCallback(() => {
+    void syncClock(true); // host stamps + member extrapolation
     if (chorusLoopRef.current) return;
     chorusLoopRef.current = true;
     (async () => {
@@ -484,18 +538,28 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   // ---- Playback controls ----------------------------------------------------
   const playQueue = useCallback(
-    (tracks: Track[], start = 0, forceShuffle = false, playlistId?: string) => {
+    (tracks: Track[], start = 0, opts?: boolean | PlayOptions, playlistId?: string) => {
       if (!tracks.length) return;
-      playlistContextRef.current = playlistId ?? null;
-      const useShuffle = forceShuffle || shuffle;
+      // `true` is the legacy forceShuffle flag (shuffles AND turns the global
+      // toggle on); an options object can override shuffle for this play only.
+      const o: PlayOptions = typeof opts === "object" ? opts : {};
+      const forceShuffle = opts === true;
+      playlistContextRef.current = o.playlistId ?? playlistId ?? null;
+      const useShuffle = forceShuffle || (o.shuffle ?? shuffle);
       if (forceShuffle && !shuffle) setShuffle(true);
-      // Build the actual play order: with shuffle on, the chosen track plays first
-      // and the rest follow in random order. The queue IS the play order.
+      start = Math.min(Math.max(start, 0), tracks.length - 1);
+      // Build the actual play order. With shuffle on: a tapped track (anchorStart)
+      // plays first and the rest follow randomly; a whole-list "Play" randomizes
+      // the ENTIRE list so the first song is random too. The queue IS the play order.
       let q: Track[];
       let startIdx: number;
       if (useShuffle && tracks.length > 1) {
-        const rest = shuffleInPlace(tracks.filter((_, i) => i !== start));
-        q = [tracks[start], ...rest];
+        if (o.anchorStart ?? true) {
+          const rest = shuffleInPlace(tracks.filter((_, i) => i !== start));
+          q = [tracks[start], ...rest];
+        } else {
+          q = shuffleInPlace([...tracks]);
+        }
         startIdx = 0;
       } else {
         q = [...tracks];
@@ -519,32 +583,17 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       userQRef.current = new Array(q.length).fill(false);
       setQueue(q);
       setIndex(startIdx);
-      // Auto-start a chorus whenever fresh playback begins (host), unless already in one.
-      if (!chorusRef.current) {
-        api
-          .post<ChorusState>("/api/chorus/start", {
-            mode: "open",
-            queue: q.map((t) => t.id),
-            index: startIdx,
-            positionMs: 0,
-            playing: true,
-          })
-          .then((c) => {
-            chorusVersionRef.current = c.version;
-            chorusRef.current = c;
-            setChorus(c);
-            startChorusLoop();
-          })
-          .catch(() => {});
-      }
+      // Chorus is opt-in (same as the apps): playback no longer auto-hosts a
+      // session; the user starts Chorus explicitly from its control.
     },
-    [shuffle, memberNow, sendCommand, startChorusLoop],
+    [shuffle, memberNow, sendCommand],
   );
 
   const shuffleAndPlay = useCallback(
-    (tracks: Track[]) => {
+    (tracks: Track[], playlistId?: string) => {
       if (!tracks.length) return;
-      playQueue(tracks, Math.floor(Math.random() * tracks.length), true);
+      setShuffle(true);
+      playQueue(tracks, 0, { shuffle: true, anchorStart: false, playlistId });
     },
     [playQueue],
   );
@@ -776,6 +825,62 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     [memberNow, sendCommand],
   );
 
+  // Add a whole list to the user queue (in order), after the current track and
+  // anything already queued. Computed from the refs (not a state updater) so the
+  // userQ flags are written exactly once.
+  const addAllToQueue = useCallback(
+    (tracks: Track[]) => {
+      if (!tracks.length) return;
+      if (memberNow()) {
+        const c = chorusRef.current!;
+        sendCommand({ queue: [...c.queueIds, ...tracks.map((t) => t.id)], index: c.index });
+        return;
+      }
+      const q = queueRef.current;
+      if (!q.length) {
+        playQueue(tracks);
+        return;
+      }
+      const uq = userQRef.current;
+      let at = indexRef.current + 1;
+      while (at < q.length && uq[at]) at++;
+      const nq = [...q.slice(0, at), ...tracks, ...q.slice(at)];
+      userQRef.current = [...uq.slice(0, at), ...tracks.map(() => true), ...uq.slice(at)];
+      queueRef.current = nq;
+      setQueue(nq);
+    },
+    [memberNow, sendCommand, playQueue],
+  );
+
+  // Clear what's coming up; the current track keeps playing. User-queued items
+  // always form one contiguous block right after the current track, so both
+  // cases are a single range removal.
+  const clearQueue = useCallback(
+    (opts?: { userQueueOnly?: boolean }) => {
+      if (memberNow()) {
+        // Members have no separate manual queue; ask the host to drop the upcoming.
+        const c = chorusRef.current!;
+        const keep = c.queueIds.slice(0, Math.min(Math.max(c.index + 1, 0), c.queueIds.length));
+        sendCommand({ queue: keep, index: c.index });
+        return;
+      }
+      const q = queueRef.current;
+      const uq = userQRef.current;
+      const start = indexRef.current + 1;
+      let end = q.length;
+      if (opts?.userQueueOnly) {
+        end = start;
+        while (end < q.length && uq[end]) end++;
+      }
+      if (end <= start) return;
+      const nq = [...q.slice(0, start), ...q.slice(end)];
+      userQRef.current = [...uq.slice(0, start), ...uq.slice(end)];
+      queueRef.current = nq;
+      setQueue(nq);
+    },
+    [memberNow, sendCommand],
+  );
+
   const removeFromQueue = useCallback(
     (i: number) => {
       if (memberNow()) {
@@ -852,14 +957,18 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const member = memberNow();
       const c = chorusRef.current;
       const t = member && c ? c.queue[c.index] ?? null : queueRef.current[indexRef.current];
+      const positionMs = member
+        ? memberPositionMs()
+        : Math.round((audioRef.current?.currentTime ?? 0) * 1000);
+      // Server-clock time at which that position was true (null until synced).
+      const atServerMs = clock.serverNow();
       api
         .post("/api/social/activity", {
           trackId: t?.id ?? null,
-          positionMs: member
-            ? memberPositionMs()
-            : Math.round((audioRef.current?.currentTime ?? 0) * 1000),
+          positionMs,
           playing: member && c ? c.playing : playingRef.current,
           listeningTo: listenHostRef.current, // host we're listening-along to (or null)
+          ...(atServerMs != null ? { atServerMs } : {}),
         })
         .catch(() => {});
     };
@@ -909,6 +1018,21 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     let active = true;
     let version = 0;
     const ctrl = new AbortController();
+    let detachLoad: (() => void) | null = null; // pending new-track sync listeners
+
+    // Where the host's playback is RIGHT NOW (seconds): their reported position
+    // plus the time elapsed since it was true. With a measured clock offset that's
+    // (our estimate of server now - updatedAt), which also covers the time the
+    // response spent in transit; otherwise the server's clock at response time.
+    const hostTargetSec = (act: HostActivity) => {
+      let adv = 0;
+      if (act.playing && act.updatedAt) {
+        const srvNow = clock.serverNow() ?? (act.serverNow && act.serverNow > 0 ? act.serverNow : null);
+        if (srvNow != null) adv = srvNow - new Date(act.updatedAt as number).getTime();
+      }
+      return Math.max(0, act.positionMs + (adv > 0 ? adv : 0)) / 1000;
+    };
+
     const applyHostActivity = (act: HostActivity) => {
       if (!act.online) {
         stopListenAlong();
@@ -917,25 +1041,40 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       if (!act.track || !act.trackId) return;
       const audio = audioRef.current;
       if (!audio) return;
-      // Extrapolate using server clocks (skew-free) to "now".
-      let targetMs = act.positionMs;
-      if (act.playing && act.serverNow && act.updatedAt) {
-        targetMs += act.serverNow - new Date(act.updatedAt as number).getTime();
-      }
-      const targetSec = Math.max(0, targetMs / 1000);
       if (currentIdRef.current !== act.trackId) {
+        detachLoad?.();
         scrobbled.current.clear();
         userQRef.current = [false];
         setQueue([act.track]);
         setIndex(0);
+        const trackId = act.trackId;
+        const stillFollowing = () => active && currentIdRef.current === trackId;
+        // Once metadata is in, jump to a freshly computed target (loading took time).
         const onReady = () => {
-          audio.currentTime = Math.max(0, targetSec);
-          if (act.playing) audio.play().catch(() => {});
           audio.removeEventListener("loadedmetadata", onReady);
+          if (!stillFollowing()) return;
+          audio.currentTime = hostTargetSec(act);
+          if (act.playing) audio.play().catch(() => {});
+          else audio.pause();
+        };
+        // Once audio is actually running, re-seek to cover buffering time.
+        const onPlaying = () => {
+          audio.removeEventListener("playing", onPlaying);
+          if (!stillFollowing()) return;
+          const fresh = hostTargetSec(act);
+          if (Math.abs(audio.currentTime - fresh) > 0.25) audio.currentTime = fresh;
         };
         audio.addEventListener("loadedmetadata", onReady);
+        if (act.playing) audio.addEventListener("playing", onPlaying);
+        detachLoad = () => {
+          audio.removeEventListener("loadedmetadata", onReady);
+          audio.removeEventListener("playing", onPlaying);
+          detachLoad = null;
+        };
       } else {
-        if (Math.abs(audio.currentTime - targetSec) > 2) {
+        const targetSec = hostTargetSec(act);
+        const tolerance = clock.offsetMs != null ? DRIFT_SYNCED_SEC : DRIFT_UNSYNCED_SEC;
+        if (Math.abs(audio.currentTime - targetSec) > tolerance) {
           audio.currentTime = targetSec;
         }
         if (act.playing && audio.paused) audio.play().catch(() => {});
@@ -943,16 +1082,24 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       }
     };
     (async () => {
+      await syncClock(true); // measure the clock offset before the first apply
       let backoff = 1000;
       while (active && listenHostRef.current === listenHost.id) {
+        void syncClock(); // cached; re-measures every few minutes
         let act: HostActivity;
         try {
           act = await api.getSignal<HostActivity>(
             `/api/social/activity/${listenHost.id}/poll?since=${version}`,
             ctrl.signal,
           );
-        } catch {
+        } catch (e) {
           if (!active) break;
+          if (e instanceof ApiError && e.status === 403) {
+            // They turned off sharing / listen-along: stop following instead of
+            // retrying forever.
+            if (listenHostRef.current === listenHost.id) stopListenAlong();
+            break;
+          }
           await new Promise((r) => setTimeout(r, backoff));
           backoff = Math.min(backoff * 2, 30000); // exponential backoff on errors
           continue;
@@ -966,6 +1113,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     return () => {
       active = false;
       ctrl.abort();
+      detachLoad?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listenHost]);
@@ -1049,6 +1197,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         repeat,
         shuffle,
         lyrics,
+        lyricsLoading,
         playQueue,
         shuffleAndPlay,
         toggle,
@@ -1060,6 +1209,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         toggleShuffle,
         coverFor,
         addToQueue,
+        addAllToQueue,
+        clearQueue,
         playNext,
         removeFromQueue,
         moveInQueue,

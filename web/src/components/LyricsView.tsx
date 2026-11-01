@@ -42,7 +42,7 @@ function alignTranslations(originals: string[], translated: string | null | unde
 }
 
 export function LyricsView({ onClose }: { onClose: () => void }) {
-  const { current, lyrics, position, seek } = usePlayer();
+  const { current, lyrics, lyricsLoading, position, seek } = usePlayer();
   const containerRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLDivElement>(null);
 
@@ -179,8 +179,9 @@ export function LyricsView({ onClose }: { onClose: () => void }) {
             ))}
           </div>
         ) : (
+          // A failed fetch resolves to empty lyrics, so this never sticks on loading.
           <div className="flex h-full items-center justify-center text-[var(--muted)]">
-            No lyrics found for this track.
+            {lyricsLoading ? "Loading lyrics…" : current ? "No lyrics found" : "Nothing playing"}
           </div>
         )}
       </div>

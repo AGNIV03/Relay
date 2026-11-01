@@ -22,12 +22,19 @@ A:\stream
 - Recursive library scan (tags via `music-metadata`, embedded cover art, incremental rescans).
 - Gapless-ish queue, repeat (off/all/one), shuffle, seek with a squiggly progress bar.
 - Direct streaming with HTTP **Range** (seeking) + on-the-fly ffmpeg transcoding (`?format=…&bitrate=…`).
-- Lyrics with **line-by-line translations** (fetched + stored at upload, shown synced).
+- Lyrics with **line-by-line translations** (fetched + stored at upload, shown synced, saved with downloads for offline).
 - In-app uploads (MP3/FLAC, content-sniffed) including chunked uploads for files over the CDN body cap.
+  Every new file is decoded once at ingest; truncated/corrupt files with no playable audio are rejected,
+  and exact duplicates are caught by content hash (SHA-256) on every ingest path.
+- Optional **auto-tagging** (set `ACOUSTID_API_KEY`): AcoustID fingerprint lookup + MusicBrainz metadata
+  fill in missing or placeholder tags (never overwrites real ones, never modifies files).
 
 **Social**
 - **Friend activity** panel — who's online and what they're playing (or last played).
 - **Listen Along** — play a friend's music on your own device, kept in sync.
+- **Privacy** — each user can stop sharing their activity / history / likes, and separately
+  disallow listen-along (Profile → Privacy & sharing). Private playlists are visible only to
+  the owner and collaborators.
 - **Chorus** — collaborative listening (like Spotify Jam, but join from anywhere). Audio plays
   **only on the host's device**; members are silent remote controls that can change the song,
   edit the queue, play/pause, and seek. Auto-starts when you play; open or ask-to-join.
@@ -39,8 +46,16 @@ A:\stream
 - **Offline mode** — downloaded songs/playlists play with no connection, even logged out.
 
 **Real-time sync** uses long-polling (the server holds the request and returns the instant
-state changes) so pauses/seeks/song-changes propagate in well under a second, with clock-skew
-correction and exponential backoff on errors.
+state changes) so pauses/seeks/song-changes propagate in well under a second, with exponential
+backoff on errors. Clients estimate their offset from the server clock NTP-style (fastest of a few
+pings to `/api/social/time`), stamp each reported position with the server time it was true at
+(`atServerMs`, so upload latency and out-of-order posts don't skew it), and extrapolate the host's
+position to "now" on arrival (covering download latency and track load time).
+
+**Outside services.** Relay's developer runs no servers, but your server does contact a few
+services about the *music* (never about users): LRCLIB and Musixmatch for lyrics (artist, title,
+album, length), Google Translate for lyric translations (the lyric text), and, only if
+`ACOUSTID_API_KEY` is set, AcoustID/MusicBrainz for auto-tagging (an audio fingerprint + length).
 
 ## Quick start (Docker — recommended)
 
@@ -108,7 +123,7 @@ defense-in-depth.
 |-----|------|
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Database. Use a long random password. |
 | `DATABASE_URL` | Server's DB connection (Docker host is `postgres`; local is `localhost`). |
-| `JWT_SECRET` | Long random secret. `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` |
+| `JWT_SECRET` | Long random secret (>= 32 chars; placeholders refused in prod). `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` |
 | `MUSIC_DIR` | Host folder with your audio (bind-mounted to `/music`, writable for uploads). |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | First admin (created on empty DB). Strong password required in prod. |
 | `CORS_ORIGINS` | Comma-separated browser origins allowed cross-origin (e.g. your domain). |
@@ -119,12 +134,14 @@ defense-in-depth.
 ```
 POST /api/auth/login            { username, password } -> { accessToken, refreshToken, user }
 POST /api/auth/refresh          { refreshToken }
-POST /api/auth/change-password  { currentPassword, newPassword }
+POST /api/auth/change-password  { currentPassword, newPassword } -> { ok, accessToken, refreshToken, user }  (revokes other sessions)
+POST /api/auth/logout-all       sign out of all devices (revokes every token) -> 204
 GET  /api/auth/me
 
 GET  /api/library/artists | /albums | /albums?recent=1
 GET  /api/library/tracks?q=&limit=&offset=
 GET  /api/library/tracks/by-ids?ids=a,b,c
+PATCH /api/library/tracks/:id                    { title?, artist?, album?, year?, genre?, trackNo?, discNo? }  edit metadata, DB only (ADMIN or uploader)
 GET  /api/library/tracks/:id/lyrics
 POST /api/library/upload                         multipart  (chunked: /upload/chunk + /upload/finalize)
 GET  /api/library/scrobble | /recently-played | /most-played
@@ -142,7 +159,9 @@ POST/DELETE           /api/library/like ...        likes / Liked Songs
 GET  /api/social/friends
 GET  /api/social/users/:id
 GET  /api/social/activity/:userId  | /activity/:userId/poll?since=   listen-along (long-poll)
-POST /api/social/activity                          presence heartbeat
+POST /api/social/activity                          presence heartbeat (optional atServerMs)
+GET  /api/social/time                              server clock (listen-along sync)
+GET  /api/social/privacy | PATCH                   shareActivity / allowListenAlong
 
 GET  /api/chorus | /chorus/poll?since=             collaborative session (long-poll)
 POST /api/chorus/{start,stop,leave,mode,join,approve,deny,remove,state,command}

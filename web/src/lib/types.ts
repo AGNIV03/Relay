@@ -21,6 +21,7 @@ export interface Album {
   coverPath?: string | null;
   artist?: Artist;
   artistId?: string;
+  createdAt?: string; // when the album entered the library
   tracks?: Track[];
   _count?: { tracks: number };
 }
@@ -52,6 +53,14 @@ export interface Friend {
   chorusMode?: "open" | "ask" | null; // they're hosting a Chorus
   inChorusWithYou?: boolean; // they share the chorus you're in
   listeningToYou?: boolean; // they're listening along to your playback
+  private?: boolean; // they don't share activity: online status only, no track
+  allowListenAlong?: boolean; // false → hide the Listen-along action
+}
+
+/** The caller's own sharing settings (GET/PATCH /api/social/privacy). */
+export interface Privacy {
+  shareActivity: boolean;
+  allowListenAlong: boolean;
 }
 
 export interface ChorusPatch {
@@ -153,6 +162,8 @@ export interface UserProfile {
   likeCount: number;
   favorites: Track[];
   playlists: { id: string; name: string; trackCount: number }[];
+  /** They don't share activity/likes: favorites come back empty. */
+  private?: boolean;
 }
 
 export interface Stats {

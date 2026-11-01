@@ -37,6 +37,11 @@ export function transcodeStream(
     "-hide_banner",
     "-loglevel",
     "error",
+    // The input is always a local library file. Forbid every other protocol so a
+    // crafted file (e.g. a playlist/HLS-style container referencing URLs) can't
+    // make ffmpeg fetch from the network or read via other protocols.
+    "-protocol_whitelist",
+    "file",
     "-i",
     inputPath,
     "-vn", // drop embedded cover art / video streams

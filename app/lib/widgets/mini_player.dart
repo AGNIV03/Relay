@@ -19,17 +19,15 @@ class MiniPlayer extends StatelessWidget {
     final track = player.current;
     if (track == null) return const SizedBox.shrink();
 
-    final dur = player.duration.inMilliseconds;
-    final pos = player.position.inMilliseconds;
-    final progress = dur > 0 ? (pos / dur).clamp(0.0, 1.0) : 0.0;
-
     return Padding(
       padding: const EdgeInsets.fromLTRB(8, 0, 8, 6),
       child: CustomPaint(
         // Draw the progress as a stroke that follows the bubble's rounded border,
         // so it curves cleanly around the corners instead of being a flat bar
         // clipped at the bottom edge.
-        foregroundPainter: _BubbleProgressPainter(progress),
+        // Repaints straight off the position notifier: ticks redraw only the ring,
+        // without rebuilding the mini-player.
+        foregroundPainter: _BubbleProgressPainter(player),
         child: Material(
           color: kPanel2,
           borderRadius: BorderRadius.circular(14),
@@ -97,8 +95,13 @@ class MiniPlayer extends StatelessWidget {
 /// border (radius 14), starting at the top-left and running clockwise, so the
 /// progress follows the curve of the bubble.
 class _BubbleProgressPainter extends CustomPainter {
-  final double progress;
-  const _BubbleProgressPainter(this.progress);
+  final PlayerModel player;
+  _BubbleProgressPainter(this.player) : super(repaint: player.positionTick);
+
+  double get progress {
+    final dur = player.duration.inMilliseconds;
+    return dur > 0 ? (player.position.inMilliseconds / dur).clamp(0.0, 1.0) : 0.0;
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -127,5 +130,5 @@ class _BubbleProgressPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _BubbleProgressPainter old) => old.progress != progress;
+  bool shouldRepaint(covariant _BubbleProgressPainter old) => old.player != player;
 }

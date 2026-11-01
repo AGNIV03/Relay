@@ -53,7 +53,7 @@ export function UserProfileDialog({ userId, onClose }: { userId: string; onClose
             {profile && (
               <div className="mt-1 flex gap-4 text-xs text-[var(--muted)]">
                 <span className="flex items-center gap-1">
-                  <Heart size={12} /> {profile.likeCount} liked
+                  <Heart size={12} /> {profile.private ? "Likes private" : `${profile.likeCount} liked`}
                 </span>
                 <span className="flex items-center gap-1">
                   <ListMusic size={12} /> {profile.playlists.length} playlists
@@ -134,7 +134,7 @@ export function UserProfileDialog({ userId, onClose }: { userId: string; onClose
               {profile.favorites.length === 0 && profile.playlists.length === 0 && (
                 <div className="py-6 text-center text-sm text-[var(--muted)]">
                   <Music size={20} className="mx-auto mb-2 opacity-50" />
-                  No favorites or playlists yet.
+                  {profile.private ? "This user keeps their likes private." : "No favorites or playlists yet."}
                 </div>
               )}
             </>

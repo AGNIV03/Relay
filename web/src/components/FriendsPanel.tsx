@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Headphones, X, Music, Users, Radio, UserPlus, Check } from "lucide-react";
+import { Headphones, X, Music, Users, Radio, UserPlus, Check, EyeOff } from "lucide-react";
 import { api } from "@/lib/api";
 import { usePlayer } from "@/context/PlayerContext";
 import type { Friend } from "@/lib/types";
@@ -78,9 +78,12 @@ function FriendRow({ f, onOpen }: { f: Friend; onOpen: () => void }) {
       ? "Listening along with you"
       : null;
   // Show the current/last track regardless of online state (never "Offline").
-  const subtitle = f.track
-    ? `${f.track.title} · ${f.track.artist?.name ?? ""}`
-    : "No recent activity";
+  // Friends who don't share activity only expose their online status.
+  const subtitle = f.private
+    ? "Activity is private"
+    : f.track
+      ? `${f.track.title} · ${f.track.artist?.name ?? ""}`
+      : "No recent activity";
   return (
     <div className="flex items-center gap-3 px-4 py-2.5 hover:bg-[var(--panel-2)]">
       <button
@@ -104,7 +107,11 @@ function FriendRow({ f, onOpen }: { f: Friend; onOpen: () => void }) {
             </div>
           ) : (
             <div className="flex items-center gap-1 truncate text-xs text-[var(--muted)]">
-              {f.track && <Music size={11} className="shrink-0" />}
+              {f.private ? (
+                <EyeOff size={11} className="shrink-0" />
+              ) : (
+                f.track && <Music size={11} className="shrink-0" />
+              )}
               <span className="truncate">{subtitle}</span>
             </div>
           )}
@@ -134,10 +141,12 @@ function FriendRow({ f, onOpen }: { f: Friend; onOpen: () => void }) {
           <X size={16} />
         </button>
       ) : (
-        // Listen-along for an online friend; hidden once they go offline / when
-        // we're a silent chorus member.
+        // Listen-along for an online friend; hidden once they go offline, when
+        // they don't allow it (private / listen-along off), or when we're a
+        // silent chorus member.
         f.online &&
         f.track &&
+        f.allowListenAlong !== false &&
         !p.isChorusMember && (
           <button
             onClick={() => p.startListenAlong(f.id, f.username)}

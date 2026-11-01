@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs";
 import { prisma } from "./lib/prisma.js";
-import { env } from "./lib/env.js";
+import { env, isProduction, isPlaceholderSecret } from "./lib/env.js";
 
 /**
  * On first boot (no users in the DB), create the initial admin account from
@@ -12,11 +12,16 @@ export async function ensureFirstAdmin() {
   const count = await prisma.user.count();
   if (count > 0) return;
   // Fail fast rather than ship a guessable admin on a fresh production deploy.
-  if (process.env.NODE_ENV === "production") {
+  if (isProduction) {
     const pw = env.adminPassword;
-    if (!pw || pw.length < 10 || WEAK_ADMIN_PASSWORDS.has(pw.toLowerCase())) {
+    if (
+      !pw ||
+      pw.length < 10 ||
+      WEAK_ADMIN_PASSWORDS.has(pw.toLowerCase()) ||
+      isPlaceholderSecret(pw) // e.g. the .env.example "change-me-to-a-strong-password"
+    ) {
       throw new Error(
-        "Refusing to seed the first admin with a weak/default ADMIN_PASSWORD. " +
+        "Refusing to seed the first admin with a weak/default/placeholder ADMIN_PASSWORD. " +
           "Set a strong ADMIN_PASSWORD (>= 10 chars) in the environment.",
       );
     }

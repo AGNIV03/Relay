@@ -28,10 +28,19 @@ class _FriendsListState extends State<FriendsList> {
     _timer = Timer.periodic(const Duration(seconds: 10), (_) => _load());
   }
 
+  String _friendsSig = '';
+
   Future<void> _load() async {
     try {
       final f = await context.read<Api>().friends();
       if (!mounted) return;
+      // Polled every 10s; skip the rebuild when nothing visible changed.
+      final sig = f
+          .map((x) => '${x.id}|${x.online}|${x.playing}|${x.track?.id}|${x.chorusMode}|'
+              '${x.inChorusWithYou}|${x.listeningToYou}|${x.isPrivate}|${x.allowListenAlong}')
+          .join(';');
+      if (_loaded && sig == _friendsSig) return;
+      _friendsSig = sig;
       setState(() {
         _friends = f;
         _loaded = true;
@@ -89,8 +98,11 @@ class _FriendTile extends StatelessWidget {
             ? 'Listening along with you'
             : null;
     // Show the current/last track regardless of online state (never "Offline").
-    final subtitle =
-        f.track != null ? '${f.track!.title} • ${f.track!.artistName}' : 'No recent activity';
+    final subtitle = f.isPrivate
+        ? 'Activity is private'
+        : f.track != null
+            ? '${f.track!.title} • ${f.track!.artistName}'
+            : 'No recent activity';
 
     // Trailing actions: Join Chorus (when the friend is hosting and we aren't
     // already a member of someone's chorus), and Listen Along. With auto-start
@@ -113,7 +125,7 @@ class _FriendTile extends StatelessWidget {
         icon: const Icon(LucideIcons.x, color: kAccent),
         onPressed: player.stopListenAlong,
       ));
-    } else if (f.online && f.track != null && !player.isChorusMember) {
+    } else if (f.online && f.track != null && f.allowListenAlong && !player.isChorusMember) {
       actions.add(IconButton(
         tooltip: 'Listen along',
         icon: const Icon(LucideIcons.headphones, color: kText),

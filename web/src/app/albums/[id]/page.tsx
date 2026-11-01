@@ -53,7 +53,8 @@ export default function AlbumPage() {
           </div>
           <div className="mt-4 flex items-center justify-center gap-3 sm:justify-start">
             <button
-              onClick={() => player.playQueue(tracks, 0)}
+              // With shuffle on, a whole-list Play randomizes the first song too.
+              onClick={() => player.playQueue(tracks, 0, { anchorStart: false })}
               disabled={tracks.length === 0}
               className="flex items-center gap-2 rounded-full bg-[var(--accent)] px-6 py-2 text-sm font-medium text-[var(--accent-ink)] hover:brightness-110 disabled:opacity-40"
             >

@@ -6,6 +6,10 @@ import { env } from "../lib/env.js";
 import { fetchLyrics, lrcToPlain } from "./lyrics.service.js";
 import { translateText } from "./translate.service.js";
 import { fetchMusixmatchTranslated } from "./musixmatch.service.js";
+import { IngestRejectedError, sha256File, verifyDecodes } from "./audioCheck.js";
+import { backfillAutotag, queueAutotag } from "./autotag.js";
+
+export { IngestRejectedError } from "./audioCheck.js";
 
 const AUDIO_EXT = new Set([".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".wma"]);
 
@@ -15,7 +19,13 @@ export interface ScanResult {
   updated: number;
   removed: number;
   errors: number;
+  rejected: number; // broken/undecodable files skipped (left on disk)
+  duplicates: number; // byte-identical copies of an existing track, skipped
 }
+
+// Files a scan already found broken or duplicate, keyed by path → "size:mtime",
+// so later scans don't re-hash / re-decode them until they change on disk.
+const scanSkip = new Map<string, string>();
 
 let scanning = false;
 let lastResult: ScanResult | null = null;
@@ -41,7 +51,7 @@ async function* walk(dir: string): AsyncGenerator<string> {
   }
 }
 
-async function findOrCreateArtist(name: string): Promise<string> {
+export async function findOrCreateArtist(name: string): Promise<string> {
   const clean = name.trim() || "Unknown Artist";
   const existing = await prisma.artist.findUnique({ where: { name: clean } });
   if (existing) return existing.id;
@@ -49,7 +59,7 @@ async function findOrCreateArtist(name: string): Promise<string> {
   return created.id;
 }
 
-async function findOrCreateAlbum(
+export async function findOrCreateAlbum(
   title: string,
   artistId: string,
   year: number | undefined,
@@ -161,6 +171,11 @@ export async function translateAndStore(trackId: string): Promise<void> {
 /**
  * Parse a single audio file and upsert it (artist/album/cover/track). Returns
  * the track id and whether it was newly created. Shared by full scans and uploads.
+ *
+ * `duplicate: true` means the file is byte-identical to an existing track (any
+ * path), or — with `dedupe` — has the same title + artist + album; nothing is
+ * written and the caller decides what to do with the file. Throws
+ * IngestRejectedError when the file has no playable audio.
  */
 export async function ingestFile(
   file: string,
@@ -173,28 +188,49 @@ export async function ingestFile(
     return { trackId: existing.id, created: false }; // unchanged
   }
 
+  // Exact-duplicate check by content, independent of tags.
+  const contentHash = await sha256File(file);
+  const sameBytes = await prisma.track.findFirst({
+    where: { contentHash, ...(existing ? { id: { not: existing.id } } : {}) },
+  });
+  if (sameBytes) {
+    if (!existing && !(await fileExists(sameBytes.path))) {
+      // The other copy's file is gone: this is the same song moved/renamed.
+      // Re-point that row so its likes / playlists / history survive the move.
+      await prisma.track.update({ where: { id: sameBytes.id }, data: { path: file, size: stat.size } });
+      return { trackId: sameBytes.id, created: false };
+    }
+    return { trackId: sameBytes.id, created: false, duplicate: true };
+  }
+
   const meta = await parseFile(file, { duration: true });
   const common = meta.common;
   const fmt = meta.format;
 
-  const artistName = common.artist || common.albumartist || "Unknown Artist";
-  const artistId = await findOrCreateArtist(artistName);
-
+  const artistName = (common.artist || common.albumartist || "").trim() || "Unknown Artist";
   const title = common.title || path.basename(file, path.extname(file));
   const albumTitle = (common.album || "Unknown Album").trim() || "Unknown Album";
   // Reject duplicate songs (same title + album + artist already in the library).
-  // Checked before creating the album so we don't leave an orphan album behind.
+  // Checked before creating any artist/album row so we don't leave orphans behind.
   if (dedupe && !existing) {
-    const dup = await prisma.track.findFirst({
-      where: {
-        title: { equals: title, mode: "insensitive" },
-        artistId,
-        album: { is: { title: { equals: albumTitle, mode: "insensitive" } } },
-      },
-    });
+    const artist = await prisma.artist.findUnique({ where: { name: artistName } });
+    const dup = artist
+      ? await prisma.track.findFirst({
+          where: {
+            title: { equals: title, mode: "insensitive" },
+            artistId: artist.id,
+            album: { is: { title: { equals: albumTitle, mode: "insensitive" } } },
+          },
+        })
+      : null;
     if (dup) return { trackId: dup.id, created: false, duplicate: true };
   }
 
+  // Make sure the audio actually decodes (headers can lie — e.g. a FLAC that is
+  // only embedded art). Throws IngestRejectedError; nothing has been written yet.
+  await verifyDecodes(file, fmt.duration ?? 0);
+
+  const artistId = await findOrCreateArtist(artistName);
   const albumId = await findOrCreateAlbum(albumTitle, artistId, common.year);
 
   const album = await prisma.album.findUnique({ where: { id: albumId } });
@@ -212,6 +248,7 @@ export async function ingestFile(
     format: path.extname(file).slice(1).toLowerCase(),
     bitrate: fmt.bitrate ? Math.round(fmt.bitrate / 1000) : null,
     size: stat.size,
+    contentHash,
     albumId,
     artistId,
   };
@@ -226,16 +263,66 @@ export async function ingestFile(
   return { trackId: created.id, created: true };
 }
 
+async function fileExists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function processFile(file: string, result: ScanResult) {
-  const r = await ingestFile(file);
+  // Known-bad / known-duplicate file that hasn't changed since: skip cheaply.
+  const st = await fs.stat(file);
+  const sig = `${st.size}:${st.mtimeMs}`;
+  if (scanSkip.get(file) === sig) return;
+  scanSkip.delete(file);
+
+  let r: Awaited<ReturnType<typeof ingestFile>>;
+  try {
+    r = await ingestFile(file);
+  } catch (err) {
+    if (!(err instanceof IngestRejectedError)) throw err;
+    // Broken audio: skip it, but leave the file alone — the library folder
+    // belongs to the operator.
+    result.rejected++;
+    scanSkip.set(file, sig);
+    console.warn(`[scan] skipped ${file}: ${err.reason}`);
+    return;
+  }
   if (!r) return;
   result.scanned++;
+  if (r.duplicate) {
+    result.duplicates++;
+    scanSkip.set(file, sig);
+    console.log(`[scan] skipped ${file}: identical to existing track ${r.trackId}`);
+    return;
+  }
   if (r.created) {
     result.added++;
     // Fetch lyrics for new tracks (best-effort, don't block on failure).
     await fetchAndStoreLyrics(r.trackId).catch(() => {});
+    queueAutotag(r.trackId); // background; no-op unless enabled
   } else {
     result.updated++;
+  }
+}
+
+/** Fill contentHash for tracks ingested before hashing existed. */
+async function backfillHashes(limit: number) {
+  const rows = await prisma.track.findMany({
+    where: { contentHash: null },
+    select: { id: true, path: true },
+    take: limit,
+  });
+  for (const t of rows) {
+    try {
+      const contentHash = await sha256File(t.path);
+      await prisma.track.update({ where: { id: t.id }, data: { contentHash } });
+    } catch (e) {
+      console.warn(`[scan] could not hash ${t.path}:`, (e as Error).message);
+    }
   }
 }
 
@@ -257,7 +344,15 @@ async function pruneMissing(result: ScanResult) {
 export async function runScan(): Promise<ScanResult> {
   if (scanning) throw new Error("A scan is already in progress");
   scanning = true;
-  const result: ScanResult = { scanned: 0, added: 0, updated: 0, removed: 0, errors: 0 };
+  const result: ScanResult = {
+    scanned: 0,
+    added: 0,
+    updated: 0,
+    removed: 0,
+    errors: 0,
+    rejected: 0,
+    duplicates: 0,
+  };
   try {
     for await (const file of walk(env.musicPath)) {
       try {
@@ -275,6 +370,9 @@ export async function runScan(): Promise<ScanResult> {
       take: 200,
     });
     for (const t of pending) await fetchAndStoreLyrics(t.id).catch(() => {});
+    // Backfill content hashes (dedup) and, when enabled, AcoustID auto-tags.
+    await backfillHashes(200).catch((e) => console.warn("[scan] hash backfill failed:", e.message));
+    await backfillAutotag(50);
     lastResult = result;
     console.log("[scan] complete:", result);
     return result;

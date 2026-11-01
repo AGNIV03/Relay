@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Play, Music } from "lucide-react";
 import { usePlayer } from "@/context/PlayerContext";
 import { fmtTime } from "@/lib/format";
@@ -16,6 +17,10 @@ export function TrackList({
   showArtist?: boolean;
 }) {
   const player = usePlayer();
+  // Rows edited via "Edit info" show their new values right away (the parent
+  // page owns the list and would otherwise only update on its next reload).
+  const [edited, setEdited] = useState<Record<string, Track>>({});
+  const rows = tracks.map((t) => edited[t.id] ?? t);
 
   return (
     <div className="overflow-hidden rounded-xl border border-[var(--border)]">
@@ -30,7 +35,7 @@ export function TrackList({
           </tr>
         </thead>
         <tbody>
-          {tracks.map((t, i) => {
+          {rows.map((t, i) => {
             const isCurrent = player.current?.id === t.id;
             return (
               <tr
@@ -41,7 +46,7 @@ export function TrackList({
               >
                 <td
                   className="cursor-pointer px-3 py-2 text-center text-[var(--muted)]"
-                  onClick={() => player.playQueue(tracks, i)}
+                  onClick={() => player.playQueue(rows, i)}
                 >
                   <span className="group-hover:hidden">
                     {isCurrent && player.playing ? (
@@ -52,7 +57,7 @@ export function TrackList({
                   </span>
                   <Play size={14} className="mx-auto hidden group-hover:block" />
                 </td>
-                <td className="cursor-pointer px-3 py-2" onClick={() => player.playQueue(tracks, i)}>
+                <td className="cursor-pointer px-3 py-2" onClick={() => player.playQueue(rows, i)}>
                   <div className={`font-medium ${isCurrent ? "text-[var(--accent)]" : ""}`}>
                     {t.title}
                   </div>
@@ -64,7 +69,11 @@ export function TrackList({
                   </td>
                 )}
                 <td className="px-3 py-2 text-center">
-                  <AddToPlaylist trackId={t.id} track={t} />
+                  <AddToPlaylist
+                    trackId={t.id}
+                    track={t}
+                    onEdited={(u) => setEdited((m) => ({ ...m, [u.id]: { ...t, ...(u as Partial<Track>) } }))}
+                  />
                 </td>
                 <td className="px-3 py-2 text-right tabular-nums text-[var(--muted)]">
                   {fmtTime(t.duration)}

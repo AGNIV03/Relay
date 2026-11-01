@@ -2,25 +2,30 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { MoreHorizontal, ListEnd, ListPlus, Trash2, Plus } from "lucide-react";
+import { MoreHorizontal, ListEnd, ListPlus, Trash2, Plus, Info, Pencil } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
 import { usePlayer } from "@/context/PlayerContext";
 import { useAuth } from "@/context/AuthContext";
 import type { Playlist, Track } from "@/lib/types";
+import { TrackInfoDialog, type TrackDetails } from "./TrackInfoDialog";
 
 const MENU_W = 192; // w-48
 
 /** Per-track menu: queue actions (when a full `track` is given) + add-to-playlist,
- *  plus Delete for an admin or the track's uploader. The menu renders in a portal
+ *  song info (editable for an admin or the uploader), plus Delete for an admin or
+ *  the track's uploader. The menu renders in a portal
  *  with fixed positioning so it's never clipped by the table's overflow-hidden. */
 export function AddToPlaylist({
   trackId,
   track,
   onDeleted,
+  onEdited,
 }: {
   trackId: string;
   track?: Track;
   onDeleted?: () => void;
+  /** Called with the updated track after its metadata is saved (so lists can refresh). */
+  onEdited?: (track: TrackDetails) => void;
 }) {
   const player = usePlayer();
   const { user } = useAuth();
@@ -28,6 +33,7 @@ export function AddToPlaylist({
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [result, setResult] = useState<{ id: string; text: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
   // Fixed-position coords for the portal menu (viewport-relative).
   const [pos, setPos] = useState<{ left: number; top?: number; bottom?: number }>({ left: 0 });
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -53,6 +59,13 @@ export function AddToPlaylist({
 
   const canDelete =
     user?.role === "ADMIN" || (!!track?.uploader && track.uploader.username === user?.username);
+
+  // Mirrors the server rule for PATCH /tracks/:id (ADMIN or uploader); the dialog
+  // re-checks against the full row and the server enforces it.
+  const uploaderId = (track as TrackDetails | undefined)?.uploaderId;
+  const canEdit =
+    user?.role === "ADMIN" ||
+    (uploaderId != null ? uploaderId === user?.id : canDelete);
 
   async function del() {
     if (!confirm(`Delete "${track?.title ?? "this song"}" permanently? This removes the file from the server.`))
@@ -174,6 +187,16 @@ export function AddToPlaylist({
                 {result?.id === pl.id ? result.text : pl.name}
               </button>
             ))}
+            <div className="my-1 border-t border-[var(--border)]" />
+            <button
+              onClick={() => {
+                setOpen(false);
+                setInfoOpen(true);
+              }}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[var(--panel)]"
+            >
+              {canEdit ? <Pencil size={14} /> : <Info size={14} />} {canEdit ? "Edit info" : "View info"}
+            </button>
             {canDelete && (
               <>
                 <div className="my-1 border-t border-[var(--border)]" />
@@ -189,6 +212,14 @@ export function AddToPlaylist({
           </div>,
           document.body,
         )}
+      {infoOpen && (
+        <TrackInfoDialog
+          trackId={trackId}
+          track={track}
+          onClose={() => setInfoOpen(false)}
+          onSaved={onEdited}
+        />
+      )}
     </>
   );
 }

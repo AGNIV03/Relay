@@ -15,6 +15,10 @@ RUN npm run build
 FROM node:26-alpine AS runtime
 # ffmpeg powers on-the-fly transcoding; su-exec drops root after fixing volume perms
 RUN apk add --no-cache ffmpeg su-exec
+# chromaprint provides `fpcalc` for the opt-in AcoustID auto-tagging
+# (ACOUSTID_API_KEY). Optional: if the package is unavailable the build still
+# succeeds and the server just logs that auto-tagging is disabled.
+RUN apk add --no-cache chromaprint || echo "chromaprint unavailable — fpcalc (auto-tagging) disabled"
 WORKDIR /app/server
 ENV NODE_ENV=production
 # Prisma 7 is a prod dependency now (the runtime needs the CLI for `migrate

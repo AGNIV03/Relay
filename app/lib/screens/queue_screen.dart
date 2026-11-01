@@ -48,9 +48,20 @@ class QueuePanel extends StatelessWidget {
       (player.isUserQueuedAt(i) ? inQueue : fromContext).add(i);
     }
 
-    Widget header(String label) => Padding(
-          padding: const EdgeInsets.fromLTRB(16, 18, 16, 2),
-          child: Text(label, style: const TextStyle(color: kMuted, fontSize: 11, letterSpacing: 1)),
+    Widget header(String label, {VoidCallback? onClear}) => Padding(
+          padding: EdgeInsets.fromLTRB(16, onClear == null ? 18 : 8, 4, 2),
+          child: Row(children: [
+            Expanded(
+              child: Text(label,
+                  style: const TextStyle(color: kMuted, fontSize: 11, letterSpacing: 1)),
+            ),
+            if (onClear != null)
+              TextButton(
+                onPressed: onClear,
+                style: TextButton.styleFrom(foregroundColor: kAccent, visualDensity: VisualDensity.compact),
+                child: const Text('Clear'),
+              ),
+          ]),
         );
 
     // A drag-to-reorder list for one queue section (indices are contiguous global
@@ -78,7 +89,8 @@ class QueuePanel extends StatelessWidget {
         ),
         tile(q[idx], current: true),
         if (inQueue.isNotEmpty) ...[
-          header('NEXT IN QUEUE'),
+          // Clear only the songs added by hand; the playlist/album carries on.
+          header('NEXT IN QUEUE', onClear: () => player.clearQueue(userQueueOnly: true)),
           reorderSection(inQueue),
         ],
         if (fromContext.isNotEmpty) ...[
@@ -95,9 +107,38 @@ class QueueScreen extends StatelessWidget {
   const QueueScreen({super.key});
   @override
   Widget build(BuildContext context) {
+    final player = context.watch<PlayerModel>();
+    final hasUpcoming = player.index >= 0 && player.index < player.queue.length - 1;
     return Scaffold(
-      appBar: AppBar(title: const Text('Queue')),
+      appBar: AppBar(
+        title: const Text('Queue'),
+        actions: [
+          ClearQueueButton(enabled: hasUpcoming),
+          const SizedBox(width: 4),
+        ],
+      ),
       body: const QueuePanel(),
     );
   }
+}
+
+/// Clears everything after the current song (which keeps playing).
+class ClearQueueButton extends StatelessWidget {
+  final bool enabled;
+  const ClearQueueButton({super.key, required this.enabled});
+  @override
+  Widget build(BuildContext context) => TextButton.icon(
+        onPressed: !enabled
+            ? null
+            : () async {
+                final messenger = ScaffoldMessenger.of(context);
+                await context.read<PlayerModel>().clearQueue();
+                messenger.showSnackBar(const SnackBar(
+                  content: Text('Queue cleared'),
+                  duration: Duration(seconds: 2),
+                ));
+              },
+        icon: const Icon(LucideIcons.trash2, size: 18),
+        label: const Text('Clear queue'),
+      );
 }

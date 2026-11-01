@@ -1,6 +1,7 @@
 import 'dart:math' show Random;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../app_icons.dart';
 import '../app_state.dart';
 import '../downloads.dart';
@@ -9,6 +10,7 @@ import '../player.dart';
 import '../theme.dart';
 import '../widgets/cover.dart';
 import '../widgets/mini_player.dart';
+import '../widgets/playlist_actions.dart';
 import '../widgets/track_tile.dart';
 
 /// Shared "Retry connection" action used across the offline screens.
@@ -244,13 +246,39 @@ class _EmptyNote extends StatelessWidget {
       Center(child: Text(text, style: const TextStyle(color: kMuted)));
 }
 
-/// A single downloaded playlist, playable offline.
-class OfflinePlaylistScreen extends StatelessWidget {
+/// A single downloaded playlist, playable offline. Same controls as online:
+/// Shuffle is the playlist's remembered toggle (shared with the online setting),
+/// Play honours it, and the whole playlist can be added to the queue.
+class OfflinePlaylistScreen extends StatefulWidget {
   final OfflinePlaylist playlist;
   const OfflinePlaylistScreen({super.key, required this.playlist});
 
   @override
+  State<OfflinePlaylistScreen> createState() => _OfflinePlaylistScreenState();
+}
+
+class _OfflinePlaylistScreenState extends State<OfflinePlaylistScreen> {
+  bool _shufflePref = false;
+  // Same key as the online playlist page, so the preference follows the playlist.
+  String get _shuffleKey => 'pl_shuffle_${widget.playlist.id}';
+
+  @override
+  void initState() {
+    super.initState();
+    SharedPreferences.getInstance().then((p) {
+      if (mounted) setState(() => _shufflePref = p.getBool(_shuffleKey) ?? false);
+    });
+  }
+
+  Future<void> _toggleShufflePref() async {
+    setState(() => _shufflePref = !_shufflePref);
+    final p = await SharedPreferences.getInstance();
+    await p.setBool(_shuffleKey, _shufflePref);
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final playlist = widget.playlist;
     final tracks = playlist.tracks;
     return Scaffold(
       appBar: AppBar(title: Text(playlist.name)),
@@ -263,22 +291,21 @@ class OfflinePlaylistScreen extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.all(12),
             child: Row(children: [
-              FilledButton.icon(
-                icon: const Icon(Icons.play_arrow),
-                label: const Text('Play'),
+              PlayRoundButton(
                 onPressed: tracks.isEmpty
                     ? null
-                    : () => context.read<PlayerModel>().playQueue(tracks),
+                    : () => context.read<PlayerModel>().playQueue(
+                          tracks,
+                          playlistId: playlist.id,
+                          shuffle: _shufflePref,
+                          anchorStart: false, // shuffled → the first song is random too
+                        ),
               ),
-              const SizedBox(width: 10),
-              OutlinedButton.icon(
-                icon: const Icon(Icons.shuffle, size: 18),
-                label: const Text('Shuffle'),
-                onPressed: tracks.isEmpty
-                    ? null
-                    : () => context.read<PlayerModel>().shuffleAndPlay(tracks),
-              ),
-              const SizedBox(width: 10),
+              const SizedBox(width: 12),
+              ShuffleToggleButton(on: _shufflePref, onPressed: _toggleShufflePref),
+              const SizedBox(width: 12),
+              AddToQueueButton(tracks: tracks, shuffle: _shufflePref),
+              const SizedBox(width: 14),
               Text('${tracks.length} songs', style: const TextStyle(color: kMuted)),
             ]),
           ),

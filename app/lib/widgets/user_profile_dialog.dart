@@ -75,10 +75,14 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
                           ...p.playlists.map(_playlistRow),
                         ],
                         if (p.favorites.isEmpty && p.playlists.isEmpty)
-                          const Padding(
-                            padding: EdgeInsets.all(24),
-                            child: Text('No favorites or playlists yet',
-                                textAlign: TextAlign.center, style: TextStyle(color: kMuted)),
+                          Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Text(
+                                p.isPrivate
+                                    ? 'This user keeps their likes private'
+                                    : 'No favorites or playlists yet',
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(color: kMuted)),
                           ),
                       ],
                     ),
@@ -117,7 +121,10 @@ class _UserProfileDialogState extends State<_UserProfileDialog> {
                 style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold)),
             Text('${p.role}$joinedStr', style: const TextStyle(color: kMuted, fontSize: 12)),
             const SizedBox(height: 4),
-            Text('${p.likeCount} liked · ${p.playlists.length} playlists',
+            Text(
+                p.isPrivate
+                    ? 'Likes and activity are private · ${p.playlists.length} public playlists'
+                    : '${p.likeCount} liked · ${p.playlists.length} playlists',
                 style: const TextStyle(color: kMuted, fontSize: 12)),
           ]),
         ),

@@ -12,6 +12,8 @@ import '../downloads.dart';
 import '../models.dart';
 import '../player.dart';
 import '../theme.dart';
+import '../widgets/playlist_actions.dart';
+import '../widgets/track_sort.dart';
 import '../widgets/track_table.dart';
 import '../widgets/track_tile.dart';
 
@@ -40,6 +42,9 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   bool _shufflePref = false;
   String get _shuffleKey => 'pl_shuffle_${widget.playlistId}';
 
+  // Remembered track ordering for this playlist (playlist order by default).
+  final _sort = TrackSortState();
+
   @override
   void initState() {
     super.initState();
@@ -47,6 +52,9 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     _load();
     SharedPreferences.getInstance().then((p) {
       if (mounted) setState(() => _shufflePref = p.getBool(_shuffleKey) ?? false);
+    });
+    _sort.load(widget.playlistId).then((_) {
+      if (mounted) setState(() {});
     });
   }
 
@@ -364,6 +372,13 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       appBar: AppBar(
         title: Text(_name),
         actions: [
+          TrackSortButton(
+            state: _sort,
+            onSelected: (o) {
+              setState(() => _sort.pick(o));
+              _sort.save(widget.playlistId);
+            },
+          ),
           if (showMenu)
           PopupMenuButton<String>(
             icon: const Icon(LucideIcons.moreVertical),
@@ -435,22 +450,19 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         future: _future,
         builder: (context, snap) {
           if (!snap.hasData) return const Center(child: CircularProgressIndicator());
-          final tracks = snap.data!.tracks;
-          final downloads = context.watch<DownloadManager>();
-          final allDown = downloads.allDownloaded(tracks);
-          final downCount = downloads.downloadedCount(tracks);
+          // Shown, played and queued in the chosen order.
+          final tracks =
+              sortTracks(snap.data!.tracks, _sort.order, _sort.asc, addedAt: _pl?.addedAt);
           final totalSec = totalDurationSeconds(tracks.map((t) => t.duration));
           return Column(
             children: [
               _coverHeader(tracks.length, totalSec),
               if (tracks.isNotEmpty)
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
                   child: Row(
                     children: [
-                      FilledButton.icon(
-                        icon: const Icon(Icons.play_arrow),
-                        label: const Text('Play'),
+                      PlayRoundButton(
                         onPressed: () => context.read<PlayerModel>().playQueue(
                               tracks,
                               playlistId: widget.playlistId,
@@ -462,54 +474,15 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                               anchorStart: false,
                             ),
                       ),
-                      const SizedBox(width: 10),
-                      // Per-playlist shuffle toggle (remembered). Highlighted when on.
-                      // Does not touch the global shuffle or anything already playing.
-                      OutlinedButton.icon(
-                        icon: Icon(LucideIcons.shuffle,
-                            size: 18, color: _shufflePref ? kAccent : null),
-                        label: const Text('Shuffle'),
-                        style: _shufflePref
-                            ? OutlinedButton.styleFrom(
-                                foregroundColor: kAccent, side: const BorderSide(color: kAccent))
-                            : null,
-                        onPressed: _toggleShufflePref,
-                      ),
-                      const SizedBox(width: 10),
-                      if (downloads.supported)
-                        OutlinedButton.icon(
-                          icon: downloads.anyPending(tracks)
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(strokeWidth: 2))
-                              : Icon(
-                                  allDown ? LucideIcons.checkCircle : LucideIcons.download,
-                                  size: 18,
-                                  color: allDown ? kAccent : null,
-                                ),
-                          label: Text(allDown
-                              ? 'Downloaded'
-                              : downloads.anyPending(tracks)
-                                  ? 'Downloading ($downCount/${tracks.length})'
-                                  : downCount > 0
-                                      ? 'Download ($downCount/${tracks.length})'
-                                      : 'Download'),
-                          onPressed: () async {
-                            if (allDown) {
-                              await downloads.removeAll(tracks, widget.playlistId);
-                            } else {
-                              try {
-                                await downloads.downloadAll(tracks, widget.playlistId, name: _name);
-                              } catch (e) {
-                                if (context.mounted) {
-                                  ScaffoldMessenger.of(context)
-                                      .showSnackBar(SnackBar(content: Text('$e')));
-                                }
-                              }
-                            }
-                          },
-                        ),
+                      const SizedBox(width: 12),
+                      // Per-playlist shuffle toggle (remembered); inverted colours when
+                      // on. Does not touch the global shuffle or anything already playing.
+                      ShuffleToggleButton(on: _shufflePref, onPressed: _toggleShufflePref),
+                      const SizedBox(width: 12),
+                      AddToQueueButton(tracks: tracks, shuffle: _shufflePref),
+                      const SizedBox(width: 12),
+                      DownloadToggleButton(
+                          tracks: tracks, source: widget.playlistId, name: _name),
                     ],
                   ),
                 ),

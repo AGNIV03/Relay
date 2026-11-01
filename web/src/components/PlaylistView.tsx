@@ -1,20 +1,40 @@
 "use client";
 
-import { useRef, useState } from "react";
-import { Play, Pause, Music, Heart, Clock, X, Shuffle, RefreshCw, Upload } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Play, Pause, Music, Heart, Clock, X, RefreshCw, Upload } from "lucide-react";
 import { api, coverUrl, playlistCoverUrl, uploadPlaylistCover } from "@/lib/api";
 import { usePlayer } from "@/context/PlayerContext";
 import { fmtTime, fmtDateAdded } from "@/lib/format";
+import {
+  TRACK_ORDER_LABELS,
+  loadShufflePref,
+  loadTrackSort,
+  pickSort,
+  saveShufflePref,
+  saveTrackSort,
+  sortTracks,
+  type SortState,
+  type TrackOrder,
+} from "@/lib/trackSort";
 import type { Track } from "@/lib/types";
 import { LikeButton } from "./LikeButton";
 import { PlaylistMenu } from "./PlaylistMenu";
+import { SortMenu } from "./SortMenu";
+import { PlayRoundButton, ShuffleToggleButton, AddToQueueButton } from "./PlaylistActions";
+
+const SORT_OPTIONS = (Object.keys(TRACK_ORDER_LABELS) as TrackOrder[]).map((key) => ({
+  key,
+  label: TRACK_ORDER_LABELS[key],
+}));
 
 export interface PlaylistTrackRow {
   track: Track;
   addedAt?: string;
 }
 
-/** Spotify-style playlist detail: gradient hero + track table. */
+/** Spotify-style playlist detail: gradient hero + track table. The list's
+ *  Shuffle toggle and sort order are remembered per playlist (Liked Songs uses
+ *  the key "liked"); Play and Add to queue use the displayed order. */
 export function PlaylistView({
   name,
   rows,
@@ -41,7 +61,48 @@ export function PlaylistView({
   onDeleted?: () => void; // navigate away after delete/leave
 }) {
   const player = usePlayer();
-  const tracks = rows.map((r) => r.track);
+  const listKey = liked ? "liked" : playlistId;
+  // Per-list preferences, loaded after mount (localStorage is client-only).
+  const [shufflePref, setShufflePref] = useState(false);
+  const [sort, setSort] = useState<SortState<TrackOrder>>({ order: "custom", asc: true });
+  useEffect(() => {
+    if (!listKey) return;
+    setShufflePref(loadShufflePref(listKey));
+    setSort(loadTrackSort(listKey));
+  }, [listKey]);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showToast = (msg: string) => {
+    setToast(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 2500);
+  };
+
+  // Displayed order ("Date added" = when the song was added to this list).
+  const shownRows = useMemo(() => {
+    const byId = new Map(rows.map((r) => [r.track.id, r]));
+    const addedAt = new Map(rows.map((r) => [r.track.id, r.addedAt]));
+    return sortTracks(
+      rows.map((r) => r.track),
+      sort.order,
+      sort.asc,
+      addedAt,
+    ).map((t) => byId.get(t.id)!);
+  }, [rows, sort]);
+  const tracks = shownRows.map((r) => r.track);
+
+  function toggleShufflePref() {
+    const on = !shufflePref;
+    setShufflePref(on);
+    if (listKey) saveShufflePref(listKey, on);
+  }
+
+  function onPickSort(o: TrackOrder) {
+    const next = pickSort(sort, o);
+    setSort(next);
+    if (listKey) saveTrackSort(listKey, next);
+  }
+
   const totalSec = tracks.reduce((s, t) => s + (t.duration || 0), 0);
   const [coverErr, setCoverErr] = useState(false);
   const [thumbErr, setThumbErr] = useState<Set<string>>(new Set());
@@ -173,25 +234,22 @@ export function PlaylistView({
       </div>
 
       {/* Action bar */}
-      <div className="flex items-center gap-4 px-6 py-4 md:px-10">
-        <button
-          onClick={() => player.playQueue(tracks, 0, false, playlistId)}
+      <div className="flex items-center gap-3 px-6 py-4 md:px-10">
+        {/* Play honours this list's Shuffle toggle; when shuffling, the whole list
+            is randomized so the FIRST song is random too. */}
+        <PlayRoundButton
+          onClick={() =>
+            player.playQueue(tracks, 0, { shuffle: shufflePref, anchorStart: false, playlistId })
+          }
           disabled={tracks.length === 0}
-          className="flex h-14 w-14 items-center justify-center rounded-full bg-[var(--accent)] text-[var(--accent-ink)] shadow-lg transition hover:scale-105 disabled:opacity-40"
-          title="Play"
-        >
-          <Play size={26} className="translate-x-[1px]" fill="currentColor" />
-        </button>
-        <button
-          onClick={player.toggleShuffle}
+        />
+        {/* Remembered per list; doesn't touch the global shuffle or what's playing. */}
+        <ShuffleToggleButton
+          on={shufflePref}
+          onToggle={toggleShufflePref}
           disabled={tracks.length === 0}
-          className={`transition hover:text-white disabled:opacity-40 ${
-            player.shuffle ? "text-[var(--accent)]" : "text-[var(--muted)]"
-          }`}
-          title={player.shuffle ? "Shuffle: on" : "Shuffle: off"}
-        >
-          <Shuffle size={22} />
-        </button>
+        />
+        <AddToQueueButton tracks={tracks} shuffle={shufflePref} onDone={showToast} />
         {playlistId && !liked && onChanged && onDeleted && (
           <PlaylistMenu
             playlistId={playlistId}
@@ -202,6 +260,9 @@ export function PlaylistView({
             onDeleted={onDeleted}
           />
         )}
+        <div className="ml-auto">
+          <SortMenu options={SORT_OPTIONS} order={sort.order} asc={sort.asc} onPick={onPickSort} />
+        </div>
       </div>
 
       {/* Track table */}
@@ -221,7 +282,7 @@ export function PlaylistView({
             </tr>
           </thead>
           <tbody>
-            {rows.map(({ track: t, addedAt }, i) => {
+            {shownRows.map(({ track: t, addedAt }, i) => {
               const isCurrent = player.current?.id === t.id;
               return (
                 <tr
@@ -302,7 +363,7 @@ export function PlaylistView({
                 </tr>
               );
             })}
-            {rows.length === 0 && (
+            {shownRows.length === 0 && (
               <tr>
                 <td colSpan={onRemove ? 7 : 6} className="px-3 py-10 text-center text-[var(--muted)]">
                   {liked
@@ -314,6 +375,12 @@ export function PlaylistView({
           </tbody>
         </table>
       </div>
+
+      {toast && (
+        <div className="fixed bottom-24 left-1/2 z-40 -translate-x-1/2 rounded-lg border border-[var(--border)] bg-[var(--panel-2)] px-4 py-2 text-sm shadow-xl">
+          {toast}
+        </div>
+      )}
     </div>
   );
 }

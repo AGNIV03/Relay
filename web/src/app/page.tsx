@@ -1,12 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Clock, Music2, Disc3, ListMusic, Sparkles, Star } from "lucide-react";
+import Link from "next/link";
+import { Clock, Music2, Disc3, ListMusic, Sparkles, Star, ChevronRight } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { AlbumCard } from "@/components/AlbumCard";
 import { TrackCards } from "@/components/TrackCards";
 import { PlaylistCards, RecentCards } from "@/components/HomeRows";
+import { RewindHomeBanner } from "@/components/rewind";
 import type { Album, PlaylistRef, RecentItem, Track, WrappedStats } from "@/lib/types";
 
 export default function HomePage() {
@@ -38,6 +40,9 @@ export default function HomePage() {
         </h1>
         <p className="text-sm text-[var(--muted)]">Here&apos;s your music at a glance.</p>
       </div>
+
+      {/* Dec 20 to Jan 7 only; renders nothing otherwise (or without data). */}
+      <RewindHomeBanner />
 
       {/* Wrapped-style listening stats */}
       {hasActivity && stats && (
@@ -92,7 +97,7 @@ export default function HomePage() {
         </Section>
       )}
 
-      <Section icon={<Disc3 size={18} />} title="Recently added">
+      <Section icon={<Disc3 size={18} />} title="Recently added" href="/albums">
         {loading ? (
           <div className="text-[var(--muted)]">Loading…</div>
         ) : added.length === 0 ? (
@@ -121,16 +126,29 @@ export default function HomePage() {
 function Section({
   icon,
   title,
+  href,
   children,
 }: {
   icon: React.ReactNode;
   title: string;
+  href?: string; // makes the header a link to the full list (with a chevron)
   children: React.ReactNode;
 }) {
   return (
     <section>
       <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold">
-        <span className="text-[var(--accent)]">{icon}</span> {title}
+        <span className="text-[var(--accent)]">{icon}</span>{" "}
+        {href ? (
+          <Link href={href} className="group flex items-center gap-1 hover:underline">
+            {title}
+            <ChevronRight
+              size={18}
+              className="text-[var(--muted)] transition group-hover:translate-x-0.5 group-hover:text-white"
+            />
+          </Link>
+        ) : (
+          title
+        )}
       </h2>
       {children}
     </section>

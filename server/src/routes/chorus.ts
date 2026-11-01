@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { acquirePoll, releasePoll } from "../lib/pollGuard.js";
+import { qnum } from "../lib/query.js";
 import {
   type ChorusMode,
   approve,
@@ -23,15 +24,21 @@ const router = Router();
 router.use(requireAuth);
 
 const modeSchema = z.enum(["open", "ask"]);
+// Bounded so a client can't park huge arrays/strings in server memory.
+const idSchema = z.string().max(64);
+const queueSchema = z.array(idSchema).max(1000);
 const stateSchema = z.object({
-  queue: z.array(z.string()),
+  queue: queueSchema,
   index: z.number().int().nonnegative(),
   positionMs: z.number().int().nonnegative(),
   playing: z.boolean(),
 });
+// The host's /state post may also carry `atServerMs`: its estimate of SERVER
+// time at the moment it read its playback position (clock sync).
+const hostStateSchema = stateSchema.extend({ atServerMs: z.number().optional() });
 // A member command is a partial intent (any subset of the playback fields).
 const commandSchema = z.object({
-  queue: z.array(z.string()).optional(),
+  queue: queueSchema.optional(),
   index: z.number().int().nonnegative().optional(),
   positionMs: z.number().int().nonnegative().optional(),
   playing: z.boolean().optional(),
@@ -97,7 +104,7 @@ router.get("/", async (req, res) => {
  *  commands. This is the primary sync channel — near-instant, no busy polling. */
 router.get("/poll", async (req, res) => {
   const userId = req.user!.id;
-  const since = Number(req.query.since ?? 0) || 0;
+  const since = qnum(req.query.since) || 0;
 
   const current = getChorusForUser(userId);
   // Not in a chorus, or already have a newer version → respond immediately.
@@ -163,7 +170,7 @@ router.post("/mode", (req, res) => {
 
 /** POST /api/chorus/join { hostId } — join (open) or request (ask). */
 router.post("/join", (req, res) => {
-  const parsed = z.object({ hostId: z.string() }).safeParse(req.body);
+  const parsed = z.object({ hostId: idSchema }).safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid input" });
   const result = joinChorus(req.user!.id, parsed.data.hostId);
   if (result === "notfound") return res.status(404).json({ error: "Chorus not found" });
@@ -172,7 +179,7 @@ router.post("/join", (req, res) => {
 
 /** POST /api/chorus/approve { userId } — host approves a pending request. */
 router.post("/approve", (req, res) => {
-  const parsed = z.object({ userId: z.string() }).safeParse(req.body);
+  const parsed = z.object({ userId: idSchema }).safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid input" });
   approve(req.user!.id, parsed.data.userId);
   res.status(204).end();
@@ -180,7 +187,7 @@ router.post("/approve", (req, res) => {
 
 /** POST /api/chorus/deny { userId } — host denies a pending request. */
 router.post("/deny", (req, res) => {
-  const parsed = z.object({ userId: z.string() }).safeParse(req.body);
+  const parsed = z.object({ userId: idSchema }).safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid input" });
   deny(req.user!.id, parsed.data.userId);
   res.status(204).end();
@@ -188,19 +195,21 @@ router.post("/deny", (req, res) => {
 
 /** POST /api/chorus/remove { userId } — host removes a member. */
 router.post("/remove", (req, res) => {
-  const parsed = z.object({ userId: z.string() }).safeParse(req.body);
+  const parsed = z.object({ userId: idSchema }).safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid input" });
   // Only the host may remove others (a chorus is keyed by host id).
   removeMember(req.user!.id, parsed.data.userId);
   res.status(204).end();
 });
 
-/** POST /api/chorus/state { queue, index, positionMs, playing } — the HOST
- *  publishes its real playback state (the single source of truth). */
+/** POST /api/chorus/state { queue, index, positionMs, playing, atServerMs? } — the
+ *  HOST publishes its real playback state (the single source of truth). A post
+ *  older than the stored state (by atServerMs) is ignored but still returns 204. */
 router.post("/state", (req, res) => {
-  const parsed = stateSchema.safeParse(req.body);
+  const parsed = hostStateSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid input" });
-  const ok = updateState(req.user!.id, parsed.data);
+  const { atServerMs, ...state } = parsed.data;
+  const ok = updateState(req.user!.id, state, atServerMs);
   if (!ok) return res.status(409).json({ error: "Not the chorus host" });
   res.status(204).end();
 });

@@ -103,6 +103,41 @@ class DownloadManager extends ChangeNotifier {
     // track is no longer referenced.
     await _sweepOrphanParts();
     notifyListeners();
+    // Songs downloaded before lyrics were saved alongside the audio have no
+    // lyrics file, so they'd show none offline. Fill them in once we're online
+    // (delayed so sign-in/token refresh has finished; failures retry next launch).
+    unawaited(Future.delayed(const Duration(seconds: 8), backfillLyrics));
+  }
+
+  bool _backfilling = false;
+
+  /// Fetch + save lyrics for every downloaded track that has no lyrics file yet.
+  /// Sequential and best-effort: offline or failing requests are simply skipped.
+  Future<void> backfillLyrics() async {
+    if (!supported || _dir == null || _backfilling) return;
+    _backfilling = true;
+    try {
+      for (final id in _downloaded.toList()) {
+        if (File(_lyricsPathFor(id)).existsSync()) continue;
+        try {
+          saveLyrics(id, await api.lyrics(id));
+        } catch (_) {
+          return; // most likely offline / signed out — try again next launch
+        }
+      }
+    } finally {
+      _backfilling = false;
+    }
+  }
+
+  /// Persist lyrics for a downloaded track so they're available offline. No-op
+  /// for tracks that aren't downloaded or lyrics with no content.
+  void saveLyrics(String id, Lyrics l) {
+    if (!supported || _dir == null || !_downloaded.contains(id)) return;
+    if (!((l.synced?.isNotEmpty ?? false) || (l.plain?.isNotEmpty ?? false))) return;
+    try {
+      File(_lyricsPathFor(id)).writeAsStringSync(jsonEncode(l.toJson()));
+    } catch (_) {}
   }
 
   String _pathFor(String trackId) => '${_dir!.path}/stream_$trackId.audio';

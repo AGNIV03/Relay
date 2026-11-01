@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import { api, tokens } from "@/lib/api";
+import { api, tokens, ApiError } from "@/lib/api";
 import type { User } from "@/lib/types";
 
 interface AuthState {
@@ -22,8 +22,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (tokens.access) {
         try {
           setUser(await api.get<User>("/api/auth/me"));
-        } catch {
-          tokens.clear();
+        } catch (e) {
+          // Only a definite "no such session/user" drops the tokens. A network
+          // error or a 5xx (server restarting) must not sign the user out.
+          if (e instanceof ApiError && (e.status === 401 || e.status === 404)) tokens.clear();
         }
       }
       setLoading(false);

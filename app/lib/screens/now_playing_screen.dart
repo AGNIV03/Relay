@@ -20,6 +20,7 @@ class NowPlayingScreen extends StatefulWidget {
 
 class _NowPlayingScreenState extends State<NowPlayingScreen> {
   late bool _showLyrics = widget.showLyrics;
+  static const double _controlIcon = 32; // one size for shuffle / prev / next / repeat
 
   String _fmt(Duration d) => "${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}";
 
@@ -104,57 +105,73 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                       LikeButton(trackId: track.id, size: 26),
                     ]),
                     const SizedBox(height: 14),
-                    SquigglyProgress(
-                      position: player.position,
-                      duration: player.duration,
-                      playing: player.playing,
-                      onSeek: player.seek,
+                    ValueListenableBuilder<Duration>(
+                      valueListenable: player.positionTick,
+                      builder: (context, _, _) => Column(children: [
+                        SquigglyProgress(
+                          position: player.position,
+                          duration: player.duration,
+                          playing: player.playing,
+                          onSeek: player.seek,
+                        ),
+                        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                          Text(_fmt(player.position),
+                              style: const TextStyle(color: kMuted, fontSize: 12)),
+                          Text(_fmt(player.duration),
+                              style: const TextStyle(color: kMuted, fontSize: 12)),
+                        ]),
+                      ]),
                     ),
-                    Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                      Text(_fmt(player.position), style: const TextStyle(color: kMuted, fontSize: 12)),
-                      Text(_fmt(player.duration), style: const TextStyle(color: kMuted, fontSize: 12)),
-                    ]),
                     const SizedBox(height: 10),
-                    Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                      // Shuffle toggle with an unmistakable on/off look: ON shows a
-                      // filled cyan circle with a dark icon; OFF is just a muted icon.
-                      GestureDetector(
-                        onTap: player.toggleShuffle,
-                        child: Container(
-                          width: 40,
-                          height: 40,
-                          decoration: BoxDecoration(
-                            color: player.shuffleEnabled ? kAccent : Colors.transparent,
-                            shape: BoxShape.circle,
+                    // Five controls in equal-width slots. Shuffle, previous, next and
+                    // repeat share one icon size; play/pause stays the primary circle.
+                    Row(children: [
+                      Expanded(
+                        child: IconButton(
+                          iconSize: _controlIcon,
+                          icon: Icon(LucideIcons.shuffle,
+                              color: player.shuffleEnabled ? kAccent : kMuted),
+                          onPressed: player.toggleShuffle,
+                        ),
+                      ),
+                      Expanded(
+                        child: IconButton(
+                            iconSize: _controlIcon,
+                            icon: const Icon(LucideIcons.skipBack),
+                            onPressed: player.previous),
+                      ),
+                      Expanded(
+                        child: Center(
+                          child: GestureDetector(
+                            onTap: player.toggle,
+                            child: Container(
+                              width: 64,
+                              height: 64,
+                              decoration:
+                                  const BoxDecoration(color: kAccent, shape: BoxShape.circle),
+                              child: Icon(player.playing ? LucideIcons.pause : LucideIcons.play,
+                                  size: 28, color: kAccentInk),
+                            ),
                           ),
-                          child: Icon(LucideIcons.shuffle,
-                              size: 22,
-                              color: player.shuffleEnabled ? kAccentInk : kMuted),
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      IconButton(iconSize: 34, icon: const Icon(LucideIcons.skipBack), onPressed: player.previous),
-                      const SizedBox(width: 12),
-                      GestureDetector(
-                        onTap: player.toggle,
-                        child: Container(
-                          width: 64,
-                          height: 64,
-                          decoration: const BoxDecoration(color: kAccent, shape: BoxShape.circle),
-                          child: Icon(player.playing ? LucideIcons.pause : LucideIcons.play,
-                              size: 28, color: kAccentInk),
-                        ),
+                      Expanded(
+                        child: IconButton(
+                            iconSize: _controlIcon,
+                            icon: const Icon(LucideIcons.skipForward),
+                            onPressed: player.next),
                       ),
-                      const SizedBox(width: 12),
-                      IconButton(iconSize: 34, icon: const Icon(LucideIcons.skipForward), onPressed: player.next),
-                      const SizedBox(width: 8),
-                      IconButton(
-                        iconSize: 24,
-                        icon: Icon(
-                          player.loopMode == LoopMode.one ? LucideIcons.repeatOne : LucideIcons.repeat,
-                          color: player.loopMode == LoopMode.off ? kMuted : kAccent,
+                      Expanded(
+                        child: IconButton(
+                          iconSize: _controlIcon,
+                          icon: Icon(
+                            player.loopMode == LoopMode.one
+                                ? LucideIcons.repeatOne
+                                : LucideIcons.repeat,
+                            color: player.loopMode == LoopMode.off ? kMuted : kAccent,
+                          ),
+                          onPressed: player.cycleRepeat,
                         ),
-                        onPressed: player.cycleRepeat,
                       ),
                     ]),
                   ]),

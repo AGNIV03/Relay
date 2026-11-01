@@ -29,10 +29,58 @@ class _LyricsPaneState extends State<LyricsPane> {
   bool _showTrans = true; // default on whenever a translation exists
   bool _following = true; // auto-centre the current line until the user scrolls
 
+  // Parsed LRC, cached per lyrics text (it used to be re-parsed on every build).
+  String? _parsedSrc;
+  List<({double t, String text})> _lines = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    widget.player.positionTick.addListener(_onTick);
+  }
+
+  @override
+  void didUpdateWidget(covariant LyricsPane old) {
+    super.didUpdateWidget(old);
+    if (old.player != widget.player) {
+      old.player.positionTick.removeListener(_onTick);
+      widget.player.positionTick.addListener(_onTick);
+    }
+  }
+
   @override
   void dispose() {
+    widget.player.positionTick.removeListener(_onTick);
     _scroll.dispose();
     super.dispose();
+  }
+
+  List<({double t, String text})> _linesFor(String lrc) {
+    if (lrc != _parsedSrc) {
+      _parsedSrc = lrc;
+      _lines = _parse(lrc);
+    }
+    return _lines;
+  }
+
+  int _activeAt(List<({double t, String text})> lines) {
+    final pos = widget.player.position.inMilliseconds / 1000.0;
+    var active = -1;
+    for (var i = 0; i < lines.length; i++) {
+      if (pos >= lines[i].t - 0.2) {
+        active = i;
+      } else {
+        break;
+      }
+    }
+    return active;
+  }
+
+  /// Position tick: rebuild only when the highlighted line actually changes.
+  void _onTick() {
+    final synced = widget.player.lyrics?.synced;
+    if (synced == null || synced.isEmpty || !mounted) return;
+    if (_activeAt(_linesFor(synced)) != _active) setState(() {});
   }
 
   List<({double t, String text})> _parse(String lrc) {
@@ -142,17 +190,9 @@ class _LyricsPaneState extends State<LyricsPane> {
       return const Center(child: Text("Loading lyrics…", style: TextStyle(color: kMuted)));
     }
     if (lyrics.synced != null && lyrics.synced!.isNotEmpty) {
-      final lines = _parse(lyrics.synced!);
+      final lines = _linesFor(lyrics.synced!);
       final trans = _align(lines.map((l) => l.text).toList(), lyrics.translated);
-      final pos = widget.player.position.inMilliseconds / 1000.0;
-      int active = -1;
-      for (int i = 0; i < lines.length; i++) {
-        if (pos >= lines[i].t - 0.2) {
-          active = i;
-        } else {
-          break;
-        }
-      }
+      final active = _activeAt(lines);
       if (active != _active) {
         _active = active;
         if (_following) {

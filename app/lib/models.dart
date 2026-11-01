@@ -23,6 +23,7 @@ class Album {
   final Artist? artist;
   final int trackCount;
   final List<Track> tracks;
+  final String? createdAt; // ISO timestamp the album was first added to the library
 
   Album({
     required this.id,
@@ -31,6 +32,7 @@ class Album {
     this.artist,
     this.trackCount = 0,
     this.tracks = const [],
+    this.createdAt,
   });
 
   factory Album.fromJson(Map<String, dynamic> j) => Album(
@@ -40,6 +42,7 @@ class Album {
         artist: j['artist'] != null ? Artist.fromJson(j['artist']) : null,
         trackCount: (j['_count']?['tracks'] ?? (j['tracks'] as List?)?.length ?? 0) as int,
         tracks: (j['tracks'] as List?)?.map((t) => Track.fromJson(t)).toList() ?? const [],
+        createdAt: j['createdAt'] as String?,
       );
 }
 
@@ -147,10 +150,13 @@ class RewindStats {
   final int distinctTracks;
   final int distinctArtists;
   final List<({String id, String title, String artist, int playCount})> topTracks;
-  final List<({String name, int count})> topArtists;
-  final List<({String name, int count})> topGenres;
+  // trackId = that artist's / genre's most-played track this year (for the cover
+  // and the background music on its Rewind card); null on older servers.
+  final List<({String name, int count, String? trackId})> topArtists;
+  final List<({String name, int count, String? trackId})> topGenres;
   final List<int> monthMinutes; // 12 entries, Jan..Dec
   final int peakMonth; // 0..11
+  final String? peakMonthTrackId;
 
   RewindStats({
     required this.year,
@@ -164,6 +170,7 @@ class RewindStats {
     required this.topGenres,
     required this.monthMinutes,
     required this.peakMonth,
+    this.peakMonthTrackId,
   });
 
   factory RewindStats.fromJson(Map<String, dynamic> j) => RewindStats(
@@ -182,13 +189,22 @@ class RewindStats {
                 ))
             .toList(),
         topArtists: ((j['topArtists'] as List?) ?? [])
-            .map((e) => (name: e['name'] as String? ?? '', count: e['count'] as int? ?? 0))
+            .map((e) => (
+                  name: e['name'] as String? ?? '',
+                  count: e['count'] as int? ?? 0,
+                  trackId: e['trackId'] as String?,
+                ))
             .toList(),
         topGenres: ((j['topGenres'] as List?) ?? [])
-            .map((e) => (name: e['name'] as String? ?? '', count: e['count'] as int? ?? 0))
+            .map((e) => (
+                  name: e['name'] as String? ?? '',
+                  count: e['count'] as int? ?? 0,
+                  trackId: e['trackId'] as String?,
+                ))
             .toList(),
         monthMinutes: ((j['monthMinutes'] as List?) ?? []).map((e) => e as int? ?? 0).toList(),
         peakMonth: j['peakMonth'] as int? ?? 0,
+        peakMonthTrackId: j['peakMonthTrackId'] as String?,
       );
 }
 
@@ -314,6 +330,7 @@ class UserProfile {
   final int likeCount;
   final List<Track> favorites;
   final List<Playlist> playlists;
+  final bool isPrivate; // they don't share activity/likes (favorites come back empty)
   UserProfile({
     required this.id,
     required this.username,
@@ -322,6 +339,7 @@ class UserProfile {
     this.likeCount = 0,
     this.favorites = const [],
     this.playlists = const [],
+    this.isPrivate = false,
   });
   factory UserProfile.fromJson(Map<String, dynamic> j) => UserProfile(
         id: j['id'] as String,
@@ -333,6 +351,7 @@ class UserProfile {
             (j['favorites'] as List?)?.map((e) => Track.fromJson(e)).toList() ?? const [],
         playlists:
             (j['playlists'] as List?)?.map((e) => Playlist.fromJson(e)).toList() ?? const [],
+        isPrivate: j['private'] as bool? ?? false,
       );
 }
 
@@ -345,6 +364,10 @@ class Friend {
   final String? chorusMode; // 'open' | 'ask' | null — they're hosting a Chorus
   final bool inChorusWithYou; // they share the chorus you're in
   final bool listeningToYou; // they're listening along to your playback
+  // Privacy: isPrivate = they don't share activity (no track/history shown);
+  // allowListenAlong = false hides the Listen along action for them.
+  final bool isPrivate;
+  final bool allowListenAlong;
   Friend({
     required this.id,
     required this.username,
@@ -354,6 +377,8 @@ class Friend {
     this.chorusMode,
     this.inChorusWithYou = false,
     this.listeningToYou = false,
+    this.isPrivate = false,
+    this.allowListenAlong = true,
   });
   factory Friend.fromJson(Map<String, dynamic> j) => Friend(
         id: j['id'] as String,
@@ -364,6 +389,8 @@ class Friend {
         chorusMode: j['chorusMode'] as String?,
         inChorusWithYou: j['inChorusWithYou'] as bool? ?? false,
         listeningToYou: j['listeningToYou'] as bool? ?? false,
+        isPrivate: j['private'] as bool? ?? false,
+        allowListenAlong: j['allowListenAlong'] as bool? ?? !(j['private'] as bool? ?? false),
       );
 }
 

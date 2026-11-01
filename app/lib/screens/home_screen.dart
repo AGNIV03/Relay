@@ -10,6 +10,7 @@ import '../player.dart';
 import '../theme.dart';
 import '../widgets/cover.dart';
 import 'album_detail_screen.dart';
+import 'albums_screen.dart';
 import 'playlist_detail_screen.dart';
 import 'rewind_screen.dart';
 
@@ -59,21 +60,13 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  /// The year whose Rewind to surface on Home: December shows this year's;
-  /// January still shows last year's. Null the rest of the year (it stays
-  /// available any time from the Profile tab).
-  int? get _rewindYear {
-    final now = DateTime.now();
-    if (now.month == 12) return now.year;
-    if (now.month == 1) return now.year - 1;
-    return null;
-  }
-
   @override
   Widget build(BuildContext context) {
     final name = context.watch<AppState>().user?.username ?? "";
     final hasActivity = (_stats?.totalPlays ?? 0) > 0;
-    final rewindYear = _rewindYear;
+    // Dec 20 to Jan 7 Rewind is featured here; the rest of the year it lives on
+    // the Profile tab (see RewindSchedule).
+    final rewindYear = RewindSchedule.homeYear();
     return RefreshIndicator(
       onRefresh: _load,
       child: ListView(
@@ -85,10 +78,14 @@ class _HomeScreenState extends State<HomeScreen> {
           ])),
           const SizedBox(height: 16),
 
-          if (rewindYear != null) ...[
-            _RewindBanner(year: rewindYear),
-            const SizedBox(height: 22),
-          ],
+          if (rewindYear != null)
+            RewindGate(
+              year: rewindYear,
+              builder: (_) => Padding(
+                padding: const EdgeInsets.only(bottom: 22),
+                child: _RewindBanner(year: rewindYear),
+              ),
+            ),
 
           if (hasActivity && _stats != null) ...[
             const _Header(icon: LucideIcons.sparkles, text: "Your listening"),
@@ -114,7 +111,13 @@ class _HomeScreenState extends State<HomeScreen> {
             const SizedBox(height: 22),
           ],
 
-          const _Header(icon: LucideIcons.disc3, text: "Recently added"),
+          _Header(
+            icon: LucideIcons.disc3,
+            text: "Recently added",
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const AlbumsScreen()),
+            ),
+          ),
           if (_loading)
             const Padding(padding: EdgeInsets.all(20), child: Center(child: CircularProgressIndicator()))
           else if (_added.isEmpty)
@@ -135,9 +138,7 @@ class _RewindBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       borderRadius: BorderRadius.circular(16),
-      onTap: () => Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => RewindScreen(year: year)),
-      ),
+      onTap: () => openRewind(context, year),
       child: Container(
         padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
@@ -171,16 +172,33 @@ class _RewindBanner extends StatelessWidget {
 class _Header extends StatelessWidget {
   final IconData icon;
   final String text;
-  const _Header({required this.icon, required this.text});
+  final VoidCallback? onTap; // when set, the header shows an arrow and opens "see all"
+  const _Header({required this.icon, required this.text, this.onTap});
   @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.only(bottom: 10),
-        child: Row(children: [
-          Icon(icon, size: 18, color: kAccent),
-          const SizedBox(width: 8),
-          Text(text, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-        ]),
-      );
+  Widget build(BuildContext context) {
+    final row = Row(mainAxisSize: MainAxisSize.min, children: [
+      Icon(icon, size: 18, color: kAccent),
+      const SizedBox(width: 8),
+      Text(text, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+      if (onTap != null) ...[
+        const SizedBox(width: 2),
+        const Icon(Icons.chevron_right, size: 22, color: kMuted),
+      ],
+    ]);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: onTap == null
+            ? row
+            : InkWell(
+                borderRadius: BorderRadius.circular(8),
+                onTap: onTap,
+                child: Padding(padding: const EdgeInsets.symmetric(vertical: 2), child: row),
+              ),
+      ),
+    );
+  }
 }
 
 class _StatsCard extends StatelessWidget {

@@ -13,7 +13,15 @@ class AppState extends ChangeNotifier {
   bool offline = false; // server unreachable — run in offline (downloads-only) mode
   final Set<String> _liked = {};
 
-  AppState(this.api);
+  AppState(this.api) {
+    // Revoked elsewhere (password change, sign out everywhere, …): back to login.
+    api.sessionRevoked.addListener(() {
+      if (user == null) return;
+      user = null;
+      _liked.clear();
+      notifyListeners();
+    });
+  }
 
   bool get isLoggedIn => user != null;
   bool isLiked(String trackId) => _liked.contains(trackId);
@@ -76,7 +84,14 @@ class AppState extends ChangeNotifier {
     offline = false;
     if (api.isLoggedIn) {
       user = await api.me();
-      if (user != null) _loadLiked();
+      if (user != null) {
+        _loadLiked();
+      } else if (!await api.isOnline()) {
+        // The account check failed because the server went down mid-launch (e.g.
+        // a restart), not because the session is invalid: go offline instead of
+        // dropping the user on the sign-in screen.
+        offline = true;
+      }
     }
     loading = false;
     notifyListeners();
@@ -85,11 +100,13 @@ class AppState extends ChangeNotifier {
   /// Retry reaching the server from offline mode. Returns true once back online.
   Future<bool> retryConnect() async {
     if (!await api.isOnline()) return false;
-    offline = false;
     if (api.isLoggedIn) {
-      user = await api.me();
+      final me = await api.me();
+      if (me == null && !await api.isOnline()) return false; // went down again
+      user = me;
       if (user != null) _loadLiked();
     }
+    offline = false;
     notifyListeners();
     return true;
   }

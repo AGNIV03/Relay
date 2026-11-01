@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../theme.dart';
@@ -10,6 +11,9 @@ class SquigglyProgress extends StatefulWidget {
   final bool playing;
   final ValueChanged<Duration> onSeek;
   final double height;
+  // false = a still, flat bar (no animation clock at all). Used on desktop, where
+  // a constantly redrawing wave isn't worth the CPU/GPU.
+  final bool animated;
 
   const SquigglyProgress({
     super.key,
@@ -18,33 +22,66 @@ class SquigglyProgress extends StatefulWidget {
     required this.playing,
     required this.onSeek,
     this.height = 28,
+    this.animated = true,
   });
 
   @override
   State<SquigglyProgress> createState() => _SquigglyProgressState();
 }
 
-class _SquigglyProgressState extends State<SquigglyProgress>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl =
-      AnimationController(vsync: this, duration: const Duration(seconds: 1))..repeat();
+class _SquigglyProgressState extends State<SquigglyProgress> with WidgetsBindingObserver {
+  // The wave animates ONLY while playing and the app is visible, driven by a
+  // ~30fps timer rather than a vsync ticker. A repeating AnimationController ran
+  // the frame pipeline at the display's full refresh rate (60–144Hz) the whole
+  // time the bar was on screen — even paused — which kept the desktop app busy.
+  // The wave is slow and calm, so 30fps looks the same.
+  static const _frame = Duration(milliseconds: 33);
+  static const _radPerSec = 1.08; // same speed as the old 0.018 rad/frame at 60fps
+  Timer? _timer;
+  final _clock = Stopwatch();
   double _phase = 0;
+  bool _visible = true;
   double? _dragFrac; // set only while actively dragging
 
   @override
   void initState() {
     super.initState();
-    _ctrl.addListener(() {
-      if (widget.playing && _dragFrac == null) {
-        // Slow, calm advance (~1.1 rad/s at 60fps) for an ocean-wave feel.
-        setState(() => _phase += 0.018);
-      }
-    });
+    WidgetsBinding.instance.addObserver(this);
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(covariant SquigglyProgress old) {
+    super.didUpdateWidget(old);
+    if (old.playing != widget.playing || old.animated != widget.animated) _sync();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Minimised / hidden window: nothing to draw, so stop the clock entirely.
+    _visible = state == AppLifecycleState.resumed || state == AppLifecycleState.inactive;
+    _sync();
+  }
+
+  void _sync() {
+    final run = widget.animated && widget.playing && _visible;
+    if (run && _timer == null) {
+      _clock.start();
+      _timer = Timer.periodic(_frame, (_) {
+        if (_dragFrac != null || !mounted) return;
+        setState(() => _phase = _clock.elapsedMilliseconds / 1000 * _radPerSec);
+      });
+    } else if (!run && _timer != null) {
+      _timer!.cancel();
+      _timer = null;
+      _clock.stop();
+    }
   }
 
   @override
   void dispose() {
-    _ctrl.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    _timer?.cancel();
     super.dispose();
   }
 
@@ -79,8 +116,12 @@ class _SquigglyProgressState extends State<SquigglyProgress>
           child: SizedBox(
             width: double.infinity,
             height: widget.height,
-            child: CustomPaint(
-              painter: _SquigglyPainter(frac: frac, phase: _phase, animate: widget.playing),
+            // Own layer: repainting the wave doesn't repaint the player bar.
+            child: RepaintBoundary(
+              child: CustomPaint(
+                painter: _SquigglyPainter(
+                    frac: frac, phase: _phase, animate: widget.animated && widget.playing),
+              ),
             ),
           ),
         );

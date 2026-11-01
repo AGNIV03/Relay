@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart' show ValueNotifier;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'events.dart';
@@ -20,6 +21,11 @@ class Api {
 
   bool get isLoggedIn => _access != null;
   String? get accessToken => _access;
+
+  /// Bumps when the server refuses our refresh token (password changed, "sign
+  /// out of all devices", role change, account deleted). AppState signs the user
+  /// out and the player stops when this fires. A network failure never fires it.
+  final sessionRevoked = ValueNotifier<int>(0);
 
   Future<void> load() async {
     final p = await SharedPreferences.getInstance();
@@ -95,6 +101,12 @@ class Api {
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'refreshToken': _refresh}),
     );
+    if (res.statusCode == 401) {
+      // The session was revoked server-side: the tokens are dead for good.
+      await clearTokens();
+      sessionRevoked.value++;
+      return false;
+    }
     if (res.statusCode != 200) return false;
     final body = jsonDecode(res.body);
     _access = body['accessToken'];
@@ -108,20 +120,96 @@ class Api {
   /// whether a fresh access token is now available.
   Future<bool> ensureFreshToken() => _tryRefresh();
 
-  Future<void> changePassword(String currentPassword, String newPassword) => _send(
-        'POST',
-        '/api/auth/change-password',
-        body: {'currentPassword': currentPassword, 'newPassword': newPassword},
+  /// Changing the password revokes every session (all devices); the server hands
+  /// THIS device a fresh token pair so it stays signed in.
+  Future<void> changePassword(String currentPassword, String newPassword) async {
+    final body = await _send(
+      'POST',
+      '/api/auth/change-password',
+      body: {'currentPassword': currentPassword, 'newPassword': newPassword},
+    );
+    if (body is Map && body['accessToken'] is String) {
+      _access = body['accessToken'] as String;
+      _refresh = body['refreshToken'] as String? ?? _refresh;
+      await _persist();
+    }
+  }
+
+  /// Revoke every token for this account, on every device (including this one).
+  Future<void> logoutAll() => _send('POST', '/api/auth/logout-all');
+
+  // ---- Privacy ----
+  Future<({bool shareActivity, bool allowListenAlong})> privacy() async =>
+      _privacyFrom(await _get('/api/social/privacy'));
+
+  Future<({bool shareActivity, bool allowListenAlong})> setPrivacy(
+          {bool? shareActivity, bool? allowListenAlong}) async =>
+      _privacyFrom(await _send('PATCH', '/api/social/privacy', body: {
+        'shareActivity': ?shareActivity,
+        'allowListenAlong': ?allowListenAlong,
+      }));
+
+  ({bool shareActivity, bool allowListenAlong}) _privacyFrom(dynamic j) => (
+        shareActivity: (j is Map ? j['shareActivity'] as bool? : null) ?? true,
+        allowListenAlong: (j is Map ? j['allowListenAlong'] as bool? : null) ?? true,
       );
 
-  /// Whether the server is reachable. Any HTTP response (even 401) counts as
-  /// online; only a network error / timeout means offline. Used to decide
-  /// whether to enter offline mode at startup.
+  // ---- Clock sync (listen-along / Chorus) ----
+  // Offset of the server clock from ours (serverMs - localMs), estimated
+  // NTP-style from quick pings to /api/social/time. Null until measured (or on
+  // an older server without that endpoint) — callers then fall back to the
+  // server-timestamp-only behaviour.
+  int? _clockOffsetMs;
+  int _clockSyncedAt = 0;
+
+  int? get clockOffsetMs => _clockOffsetMs;
+
+  /// Best estimate of the server's clock right now, or null if not yet synced.
+  int? get serverNowEstimate =>
+      _clockOffsetMs == null ? null : DateTime.now().millisecondsSinceEpoch + _clockOffsetMs!;
+
+  /// Measure the clock offset: a few pings, keeping the one with the smallest
+  /// round trip (least queueing noise); offset = serverNow - midpoint(send, receive).
+  /// Cheap and cached for 5 minutes unless [force].
+  Future<void> syncClock({bool force = false}) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (!force && _clockOffsetMs != null && now - _clockSyncedAt < 5 * 60 * 1000) return;
+    int? bestRtt;
+    int? bestOffset;
+    for (var i = 0; i < 4; i++) {
+      try {
+        final t0 = DateTime.now().millisecondsSinceEpoch;
+        final res = await http
+            .get(_uri('/api/social/time'), headers: _headers)
+            .timeout(const Duration(seconds: 4));
+        final t3 = DateTime.now().millisecondsSinceEpoch;
+        if (res.statusCode != 200) return; // older server: no time endpoint
+        final serverNow = ((jsonDecode(res.body) as Map)['serverNow'] as num).toInt();
+        final rtt = t3 - t0;
+        if (bestRtt == null || rtt < bestRtt) {
+          bestRtt = rtt;
+          bestOffset = serverNow - (t0 + t3) ~/ 2;
+        }
+      } catch (_) {
+        return;
+      }
+    }
+    if (bestOffset != null) {
+      _clockOffsetMs = bestOffset;
+      _clockSyncedAt = DateTime.now().millisecondsSinceEpoch;
+    }
+  }
+
+  /// Whether the server is reachable. Any non-5xx response (even 401) counts as
+  /// online. A network error / timeout means offline, and so does a 5xx: while
+  /// the server restarts, Cloudflare still answers the tunnel with a 502/530 error
+  /// page, which must not be mistaken for a live server. Used to decide whether to
+  /// enter offline mode at startup.
   Future<bool> isOnline() async {
     if (baseUrl.isEmpty) return false; // no server configured yet
     try {
       final res = await http.get(_uri('/api/health')).timeout(const Duration(seconds: 5));
-      return res.statusCode > 0;
+      return res.statusCode > 0 && res.statusCode < 500;
     } catch (_) {
       return false;
     }
@@ -142,7 +230,7 @@ class Api {
     if (res.statusCode == 401 && retry && await _tryRefresh()) {
       return _get(path, retry: false);
     }
-    if (res.statusCode >= 400) throw ApiException(_errorMessage(res));
+    if (res.statusCode >= 400) throw ApiException(_errorMessage(res), status: res.statusCode);
     return res.body.isEmpty ? null : jsonDecode(res.body);
   }
 
@@ -155,7 +243,7 @@ class Api {
     if (res.statusCode == 401 && retry && await _tryRefresh()) {
       return _send(method, path, body: body, retry: false);
     }
-    if (res.statusCode >= 400) throw ApiException(_errorMessage(res));
+    if (res.statusCode >= 400) throw ApiException(_errorMessage(res), status: res.statusCode);
     return res.body.isEmpty ? null : jsonDecode(res.body);
   }
 
@@ -342,14 +430,21 @@ class Api {
   /// multipart batches so a single request never exceeds the CDN's ~100MB body cap
   /// (uploading several lossless tracks in one request used to fail); large files
   /// are chunked individually. Returns aggregated {added, failed, duplicates}.
-  Future<Map<String, int>> uploadManyTracks(List<String> paths) async {
+  Future<Map<String, dynamic>> uploadManyTracks(List<String> paths) async {
     const batchBytes = 80 * 1024 * 1024;
     const batchCount = 25;
     var added = 0, failed = 0, duplicates = 0;
+    // Files the server refused as broken (no playable audio etc.): {name, reason}.
+    final rejected = <({String name, String reason})>[];
     void merge(Map<String, dynamic> r) {
       added += (r['added'] ?? 0) as int;
       failed += (r['failed'] ?? 0) as int;
       duplicates += (r['duplicates'] ?? 0) as int;
+      for (final e in (r['rejected'] as List?) ?? const []) {
+        if (e is Map) {
+          rejected.add((name: '${e['name'] ?? ''}', reason: '${e['reason'] ?? 'Rejected'}'));
+        }
+      }
     }
 
     final sizes = <String, int>{};
@@ -392,7 +487,7 @@ class Api {
         failed += 1;
       }
     }
-    return {'added': added, 'failed': failed, 'duplicates': duplicates};
+    return {'added': added, 'failed': failed, 'duplicates': duplicates, 'rejected': rejected};
   }
 
   // ---- Likes / Liked Songs ----
@@ -490,16 +585,21 @@ class Api {
   }
 
   // ---- Social / friends ----
+  /// [atServerMs] = our estimate of the SERVER clock at the moment [positionMs]
+  /// was read, so followers can extrapolate from when the position was true
+  /// rather than from when the post happened to arrive.
   Future<void> postActivity(
           {String? trackId,
           required int positionMs,
           required bool playing,
-          String? listeningTo}) =>
+          String? listeningTo,
+          int? atServerMs}) =>
       _send('POST', '/api/social/activity', body: {
         'trackId': trackId,
         'positionMs': positionMs,
         'playing': playing,
         'listeningTo': listeningTo,
+        'atServerMs': ?atServerMs,
       });
 
   Future<List<Friend>> friends() async =>
@@ -514,7 +614,7 @@ class Api {
     final res = await http
         .get(_uri('/api/social/activity/$userId/poll?since=$since'), headers: _headers)
         .timeout(const Duration(seconds: 35));
-    if (res.statusCode >= 400) throw ApiException(_errorMessage(res));
+    if (res.statusCode >= 400) throw ApiException(_errorMessage(res), status: res.statusCode);
     return HostActivity.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
   }
 
@@ -592,12 +692,14 @@ class Api {
   Future<void> removeFromChorus(String userId) =>
       _send('POST', '/api/chorus/remove', body: {'userId': userId});
 
-  Future<void> postChorusState(List<String> queue, int index, int positionMs, bool playing) =>
+  Future<void> postChorusState(List<String> queue, int index, int positionMs, bool playing,
+          {int? atServerMs}) =>
       _send('POST', '/api/chorus/state', body: {
         'queue': queue,
         'index': index,
         'positionMs': positionMs,
         'playing': playing,
+        'atServerMs': ?atServerMs,
       });
 
   // ---- Media URLs (token in query so the audio engine can authenticate) ----
@@ -609,7 +711,8 @@ class Api {
 
 class ApiException implements Exception {
   final String message;
-  ApiException(this.message);
+  final int? status; // HTTP status when the server answered (e.g. 403 = not allowed)
+  ApiException(this.message, {this.status});
   @override
   String toString() => message;
 }

@@ -255,31 +255,63 @@ export function leaveChorus(userId: string): void {
   }
 }
 
-/** Host writes the authoritative playback state (its real player). Host only. */
-export function updateState(userId: string, patch: Required<ChorusPatch>): boolean {
+/** How far back / ahead of the server clock a host's `atServerMs` may be. */
+const AT_SERVER_PAST_MS = 10_000;
+const AT_SERVER_FUTURE_MS = 1_000;
+
+/** Host writes the authoritative playback state (its real player). Host only.
+ *  `atServerMs` is the host's estimate of SERVER time when it read its position
+ *  (lets members extrapolate without the host→server latency); out-of-range
+ *  values are ignored. A write older than the stored state (out-of-order
+ *  delivery) is dropped. Returns false only if the caller isn't the host. */
+export function updateState(
+  userId: string,
+  patch: Required<ChorusPatch>,
+  atServerMs?: number,
+): boolean {
   const hostId = memberOf.get(userId);
   if (!hostId || hostId !== userId) return false; // only the host owns the truth
   const c = choruses.get(hostId);
   if (!c) return false;
+  const now = Date.now();
+  const timed =
+    atServerMs !== undefined &&
+    Number.isFinite(atServerMs) &&
+    atServerMs >= now - AT_SERVER_PAST_MS &&
+    atServerMs <= now + AT_SERVER_FUTURE_MS;
+  const updatedAt = timed ? Math.min(atServerMs, now) : now;
+  touch(c, userId);
+  // Stale (reordered) write — ignore. Untimed writes are stamped "now", which is
+  // never older than the stored state, so they behave exactly as before.
+  if (timed && updatedAt < c.updatedAt) return true;
   c.queue = patch.queue;
   c.index = patch.index;
   c.positionMs = patch.positionMs;
   c.playing = patch.playing;
-  c.updatedAt = Date.now();
-  touch(c, userId);
+  c.updatedAt = updatedAt;
   bump(c);
   return true;
 }
+
+/** Pending member commands kept per chorus; older ones are dropped (the host
+ *  applies them in order, so only the most recent intents matter). */
+const MAX_PENDING_COMMANDS = 50;
 
 /** A member (or the host) enqueues a playback intent for the host to apply. */
 export function addCommand(userId: string, patch: ChorusPatch): boolean {
   const hostId = memberOf.get(userId);
   if (!hostId) return false;
   const c = choruses.get(hostId);
-  if (!c || !c.members.has(userId)) return false;
-  c.commands.push(patch);
-  c.controllerId = userId;
+  if (!c) return false;
   touch(c, userId);
+  // Drop stale members / end an abandoned chorus (whose commands would otherwise
+  // pile up with no host draining them).
+  if (!prune(c) || !c.members.has(userId)) return false;
+  c.commands.push(patch);
+  if (c.commands.length > MAX_PENDING_COMMANDS) {
+    c.commands.splice(0, c.commands.length - MAX_PENDING_COMMANDS);
+  }
+  c.controllerId = userId;
   bump(c);
   return true;
 }

@@ -173,6 +173,7 @@ function CreateUser({ onCreated }: { onCreated: () => void }) {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
+    if (password.length < 10) return setError("Password must be at least 10 characters");
     setBusy(true);
     try {
       await api.post("/api/admin/users", { username, password, role });
@@ -206,6 +207,7 @@ function CreateUser({ onCreated }: { onCreated: () => void }) {
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
+          placeholder="min 10 characters"
           className="rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-1.5 outline-none focus:border-[var(--accent)]"
         />
       </div>

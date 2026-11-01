@@ -4,13 +4,45 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Trash2, Music, Search } from "lucide-react";
 import { api, playlistCoverUrl } from "@/lib/api";
+import { pickSort, seededShuffle, type SortState } from "@/lib/trackSort";
+import { SortMenu } from "@/components/SortMenu";
 import type { Playlist } from "@/lib/types";
+
+type PlOrder = "shuffle" | "name" | "songs";
+const PL_SORTS: { key: PlOrder; label: string }[] = [
+  { key: "shuffle", label: "Shuffle" },
+  { key: "name", label: "Name" },
+  { key: "songs", label: "Most songs" },
+];
 
 export default function PlaylistsPage() {
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [name, setName] = useState("");
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
+  // Default order is random. A per-visit seed keeps it stable across reloads
+  // (create/delete); picking "Shuffle" in the sort menu reshuffles.
+  const [sort, setSort] = useState<SortState<PlOrder>>({ order: "shuffle", asc: true });
+  const [seed, setSeed] = useState(() => Math.floor(Math.random() * 2 ** 32));
+
+  function onPickSort(o: PlOrder) {
+    if (o === "shuffle") {
+      setSort({ order: "shuffle", asc: true });
+      setSeed(Math.floor(Math.random() * 2 ** 32));
+    } else {
+      setSort((s) => pickSort(s, o));
+    }
+  }
+
+  function ordered(list: Playlist[]): Playlist[] {
+    if (sort.order === "shuffle") return seededShuffle(list, seed);
+    const l = [...list].sort((a, b) =>
+      sort.order === "name"
+        ? a.name.toLowerCase().localeCompare(b.name.toLowerCase())
+        : (b._count?.tracks ?? 0) - (a._count?.tracks ?? 0), // most first
+    );
+    return sort.asc ? l : l.reverse();
+  }
 
   function load() {
     api
@@ -53,20 +85,32 @@ export default function PlaylistsPage() {
         </button>
       </form>
 
-      <div className="relative mb-6 max-w-md">
-        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted)]" />
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Search playlists…"
-          className="w-full rounded-lg border border-[var(--border)] bg-[var(--panel)] py-2 pl-9 pr-3 outline-none focus:border-[var(--accent)]"
+      <div className="mb-6 flex items-center gap-3">
+        <div className="relative max-w-md flex-1">
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted)]" />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search playlists…"
+            className="w-full rounded-lg border border-[var(--border)] bg-[var(--panel)] py-2 pl-9 pr-3 outline-none focus:border-[var(--accent)]"
+          />
+        </div>
+        <SortMenu
+          options={PL_SORTS}
+          order={sort.order}
+          asc={sort.asc}
+          onPick={onPickSort}
+          shuffleKey="shuffle"
+          align="left"
         />
       </div>
 
       {(() => {
-        const shown = q.trim()
-          ? playlists.filter((pl) => pl.name.toLowerCase().includes(q.trim().toLowerCase()))
-          : playlists;
+        const shown = ordered(
+          q.trim()
+            ? playlists.filter((pl) => pl.name.toLowerCase().includes(q.trim().toLowerCase()))
+            : playlists,
+        );
         return loading ? (
           <div className="text-[var(--muted)]">Loading…</div>
         ) : playlists.length === 0 ? (

@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { env } from "./lib/env.js";
 import { ensureFirstAdmin } from "./bootstrap.js";
 
@@ -55,13 +55,23 @@ app.use(express.json());
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
 // Brute-force protection on credential endpoints (Cloudflare is the edge limiter;
-// this is in-app defense-in-depth).
+// this is in-app defense-in-depth). Keyed on CF-Connecting-IP: the Cloudflare
+// tunnel always overwrites it with the real client IP, whereas X-Forwarded-For
+// (what req.ip derives from with `trust proxy` on) can be prefixed by the client,
+// letting an attacker rotate keys per request. req.ip is the fallback for direct
+// (non-tunnel) dev access. A custom keyGenerator also skips the library's
+// permissive-trust-proxy check, so no `validate` override is needed. Per-username
+// backoff lives in routes/auth.ts.
 const authLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   limit: 40,
   standardHeaders: "draft-7",
   legacyHeaders: false,
-  validate: { trustProxy: false }, // we knowingly run behind a trusted proxy chain
+  keyGenerator: (req) => {
+    const cf = req.headers["cf-connecting-ip"];
+    const client = typeof cf === "string" && cf.trim() ? cf.trim() : (req.ip ?? "unknown");
+    return ipKeyGenerator(client); // collapses IPv6 to its /56 so it can't rotate addresses
+  },
   message: { error: "Too many attempts — please try again later." },
 });
 app.use("/api/auth/login", authLimiter);

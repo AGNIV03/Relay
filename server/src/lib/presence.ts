@@ -25,17 +25,33 @@ function wake(userId: string) {
   for (const fn of [...set]) fn(); // each callback removes itself
 }
 
+/**
+ * Record a heartbeat. `at` (optional) is the server-clock moment the client read
+ * its playback position — lets followers extrapolate from the true sample time
+ * instead of the arrival time. A sample older than the stored one is out of
+ * order and dropped. Returns whether the update was applied.
+ */
 export function setActivity(
   userId: string,
   a: Omit<Activity, "updatedAt" | "version" | "listeningTo"> & { listeningTo?: string | null },
-): void {
+  at?: number,
+): boolean {
   const prev = presence.get(userId);
+  const updatedAt = at ?? Date.now();
+  if (at !== undefined && prev && at < prev.updatedAt) return false;
   presence.set(userId, {
     ...a,
     listeningTo: a.listeningTo ?? null,
-    updatedAt: Date.now(),
+    updatedAt,
     version: (prev?.version ?? 0) + 1,
   });
+  wake(userId);
+  return true;
+}
+
+/** Wake a user's long-poll waiters without changing their state (e.g. their
+ *  privacy changed, so followers should re-check access now). */
+export function notifyActivity(userId: string): void {
   wake(userId);
 }
 

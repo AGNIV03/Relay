@@ -25,6 +25,15 @@ model User {
   role         Role     @default(USER)
   createdAt    DateTime @default(now())
 
+  // Bumped to revoke every token this user holds (password change, role change,
+  // "sign out everywhere"). Tokens carry the version they were issued at.
+  tokenVersion Int @default(0)
+
+  // Privacy. shareActivity=false hides your live listening, play history and
+  // likes from other users; allowListenAlong=false stops anyone following you.
+  shareActivity    Boolean @default(true)
+  allowListenAlong Boolean @default(true)
+
   playlists Playlist[]
   history   PlayHistory[]
   favorites Favorite[]
@@ -66,6 +75,13 @@ model Track {
   bitrate  Int? // kbps
   size     Int // bytes
 
+  // SHA-256 of the file contents: exact-duplicate detection across every ingest
+  // path (upload, admin upload, scan), independent of tags.
+  contentHash String?
+  // Identity from AcoustID/MusicBrainz auto-tagging (only when enabled).
+  acoustId        String?
+  mbRecordingId   String?
+
   // Lyrics (fetched from LRCLIB by track signature). lyricsSynced is LRC format
   // (timestamped lines) for karaoke-style sync; lyricsPlain is the fallback text.
   lyricsPlain   String?
@@ -96,6 +112,7 @@ model Track {
   @@index([albumId])
   @@index([artistId])
   @@index([title])
+  @@index([contentHash])
 }
 
 model Favorite {

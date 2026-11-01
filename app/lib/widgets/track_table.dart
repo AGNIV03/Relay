@@ -251,10 +251,13 @@ class _TrackRowState extends State<_TrackRow> {
   @override
   Widget build(BuildContext context) {
     final api = context.read<Api>();
-    final player = context.watch<PlayerModel>();
-    final downloads = context.watch<DownloadManager>();
     final t = widget.tracks[widget.index];
-    final isCurrent = player.current?.id == t.id;
+    // Rebuild a row only when ITS "is current / playing" state changes, not on
+    // every player notification (a table can have hundreds of rows).
+    final (isCurrent, isPlaying) = context.select<PlayerModel, (bool, bool)>(
+        (p) => (p.current?.id == t.id, p.current?.id == t.id && p.playing));
+    final player = context.read<PlayerModel>();
+    final downloads = context.watch<DownloadManager>();
     final selectable = widget.onSelectToggle != null;
     final selectionMode = selectable && widget.selectedIds.isNotEmpty;
     final isSelected = widget.selectedIds.contains(t.id);
@@ -281,7 +284,7 @@ class _TrackRowState extends State<_TrackRow> {
                   child: selectionMode
                       ? Icon(isSelected ? LucideIcons.checkCircle : LucideIcons.circle,
                           size: 17, color: isSelected ? kAccent : kMuted)
-                      : isCurrent && player.playing
+                      : isPlaying
                           ? const Icon(LucideIcons.music2, size: 15, color: kAccent)
                           : Text('${widget.index + 1}',
                               style: const TextStyle(color: kMuted, fontSize: 13)),

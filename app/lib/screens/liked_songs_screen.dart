@@ -1,13 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../api.dart';
 import '../app_icons.dart';
 import '../app_state.dart';
-import '../downloads.dart';
 import '../format.dart';
 import '../models.dart';
 import '../player.dart';
 import '../theme.dart';
+import '../widgets/playlist_actions.dart';
+import '../widgets/track_sort.dart';
 import '../widgets/track_tile.dart';
 
 /// The permanent "Liked Songs" playlist (backed by the likes table).
@@ -21,25 +23,60 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
   Future<Playlist> _load() => context.read<Api>().liked();
   late final Future<Playlist> _future = _load();
 
+  // Remembered shuffle toggle, like playlists. The key matches the offline copy
+  // of Liked Songs (download source "liked"), so the setting follows it offline.
+  bool _shufflePref = false;
+  static const _shuffleKey = 'pl_shuffle_liked';
+
+  // Remembered ordering ("Date added" here = when you liked it).
+  final _sort = TrackSortState();
+
+  @override
+  void initState() {
+    super.initState();
+    SharedPreferences.getInstance().then((p) {
+      if (mounted) setState(() => _shufflePref = p.getBool(_shuffleKey) ?? false);
+    });
+    _sort.load('liked').then((_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  Future<void> _toggleShufflePref() async {
+    setState(() => _shufflePref = !_shufflePref);
+    final p = await SharedPreferences.getInstance();
+    await p.setBool(_shuffleKey, _shufflePref);
+  }
+
   @override
   Widget build(BuildContext context) {
     // Re-fetch whenever the set of liked tracks changes.
     context.watch<AppState>();
     return Scaffold(
-      appBar: AppBar(title: const Text('Liked Songs')),
+      appBar: AppBar(
+        title: const Text('Liked Songs'),
+        actions: [
+          TrackSortButton(
+            state: _sort,
+            onSelected: (o) {
+              setState(() => _sort.pick(o));
+              _sort.save('liked');
+            },
+          ),
+        ],
+      ),
       body: FutureBuilder<Playlist>(
         future: _future,
         builder: (context, snap) {
           if (!snap.hasData) return const Center(child: CircularProgressIndicator());
-          final tracks = snap.data!.tracks;
+          final tracks = sortTracks(snap.data!.tracks, _sort.order, _sort.asc,
+              addedAt: snap.data!.addedAt);
           if (tracks.isEmpty) {
             return const Center(
               child: Text('Songs you like will show up here.\nTap the ♥ on any track.',
                   textAlign: TextAlign.center, style: TextStyle(color: kMuted)),
             );
           }
-          final downloads = context.watch<DownloadManager>();
-          final allDown = downloads.allDownloaded(tracks);
           final totalSec = totalDurationSeconds(tracks.map((t) => t.duration));
           return Column(
             children: [
@@ -75,47 +112,21 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
                 ]),
               ),
               Padding(
-                padding: const EdgeInsets.all(8),
+                padding: const EdgeInsets.fromLTRB(14, 8, 14, 10),
                 child: Row(children: [
-                  FilledButton.icon(
-                    icon: const Icon(Icons.play_arrow),
-                    label: const Text('Play'),
-                    onPressed: () => context.read<PlayerModel>().playQueue(tracks),
+                  PlayRoundButton(
+                    onPressed: () => context.read<PlayerModel>().playQueue(
+                          tracks,
+                          shuffle: _shufflePref,
+                          anchorStart: false, // shuffled → the first song is random too
+                        ),
                   ),
-                  const SizedBox(width: 10),
-                  Consumer<PlayerModel>(
-                    builder: (context, player, _) => OutlinedButton.icon(
-                      icon: Icon(Icons.shuffle,
-                          size: 18, color: player.shuffleEnabled ? kAccent : null),
-                      label: const Text('Shuffle'),
-                      style: player.shuffleEnabled
-                          ? OutlinedButton.styleFrom(
-                              foregroundColor: kAccent, side: const BorderSide(color: kAccent))
-                          : null,
-                      onPressed: player.toggleShuffle,
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  if (downloads.supported)
-                    OutlinedButton.icon(
-                      icon: Icon(allDown ? LucideIcons.checkCircle : LucideIcons.download,
-                          size: 18, color: allDown ? kAccent : null),
-                      label: Text(allDown ? 'Downloaded' : 'Download'),
-                      onPressed: () async {
-                        if (allDown) {
-                          await downloads.removeAll(tracks, 'liked');
-                        } else {
-                          try {
-                            await downloads.downloadAll(tracks, 'liked', name: 'Liked Songs');
-                          } catch (e) {
-                            if (context.mounted) {
-                              ScaffoldMessenger.of(context)
-                                  .showSnackBar(SnackBar(content: Text('$e')));
-                            }
-                          }
-                        }
-                      },
-                    ),
+                  const SizedBox(width: 12),
+                  ShuffleToggleButton(on: _shufflePref, onPressed: _toggleShufflePref),
+                  const SizedBox(width: 12),
+                  AddToQueueButton(tracks: tracks, shuffle: _shufflePref),
+                  const SizedBox(width: 12),
+                  DownloadToggleButton(tracks: tracks, source: 'liked', name: 'Liked Songs'),
                 ]),
               ),
               Expanded(

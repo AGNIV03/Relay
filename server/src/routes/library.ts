@@ -1,13 +1,25 @@
-import express, { Router } from "express";
+import { Router } from "express";
 import { z } from "zod";
 import multer from "multer";
 import path from "node:path";
 import fs from "node:fs";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
-import { fetchAndStoreLyrics, ingestFile, translateAndStore } from "../services/scanner.js";
+import {
+  fetchAndStoreLyrics,
+  findOrCreateAlbum,
+  findOrCreateArtist,
+  ingestFile,
+  IngestRejectedError,
+  translateAndStore,
+} from "../services/scanner.js";
+import { looksLikeAudio } from "../services/audioCheck.js";
+import { queueAutotag } from "../services/autotag.js";
 import { env } from "../lib/env.js";
 import { rankTracks } from "../lib/search.js";
+import { qnum, qstr } from "../lib/query.js";
 
 const router = Router();
 router.use(requireAuth);
@@ -15,33 +27,6 @@ router.use(requireAuth);
 // Uploadable audio formats — all play natively on web, Android (ExoPlayer) and
 // desktop (media_kit). WMA/AIFF are deliberately excluded (poor web/Android support).
 const UPLOAD_EXT = new Set([".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wav"]);
-
-/**
- * Sniff the first bytes to confirm the file is genuinely audio — not a renamed
- * executable/script. Recognizes FLAC ("fLaC"), MP3 ("ID3" tag or MPEG/AAC-ADTS
- * frame sync), OGG ("OggS"), WAV ("RIFF"…"WAVE") and MP4/M4A/AAC ("…ftyp").
- */
-function looksLikeAudio(filePath: string): boolean {
-  let fd: number | undefined;
-  try {
-    fd = fs.openSync(filePath, "r");
-    const buf = Buffer.alloc(12);
-    const n = fs.readSync(fd, buf, 0, 12, 0);
-    if (n < 4) return false;
-    const head = buf.toString("latin1", 0, 4);
-    if (head === "fLaC") return true; // FLAC
-    if (buf.toString("latin1", 0, 3) === "ID3") return true; // MP3 with ID3v2
-    if (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0) return true; // MPEG / AAC-ADTS frame sync
-    if (head === "OggS") return true; // OGG (Vorbis / Opus)
-    if (head === "RIFF" && buf.toString("latin1", 8, 12) === "WAVE") return true; // WAV
-    if (buf.toString("latin1", 4, 8) === "ftyp") return true; // MP4 / M4A / AAC (incl. ALAC)
-    return false;
-  } catch {
-    return false;
-  } finally {
-    if (fd !== undefined) fs.closeSync(fd);
-  }
-}
 
 // Uploads are written verbatim to the music library — NO transcoding, so original
 // quality (incl. lossless) is preserved byte-for-byte. Any signed-in user may
@@ -93,7 +78,7 @@ router.get("/artists/:id", async (req, res) => {
 
 /** GET /api/library/albums?recent=1 */
 router.get("/albums", async (req, res) => {
-  const recent = req.query.recent === "1";
+  const recent = qstr(req.query.recent) === "1";
   const albums = await prisma.album.findMany({
     orderBy: recent ? { createdAt: "desc" } : { title: "asc" },
     take: recent ? 50 : undefined,
@@ -120,9 +105,9 @@ router.get("/albums/:id", async (req, res) => {
 
 /** GET /api/library/tracks?limit=&offset=&q= — flat list, optional search across title/artist/album */
 router.get("/tracks", async (req, res) => {
-  const limit = Math.min(Number(req.query.limit) || 100, 1000);
-  const offset = Number(req.query.offset) || 0;
-  const q = (req.query.q as string | undefined)?.trim();
+  const limit = Math.min(Math.max(qnum(req.query.limit) || 100, 1), 1000);
+  const offset = Math.max(qnum(req.query.offset) || 0, 0);
+  const q = qstr(req.query.q)?.trim();
   const contains = q ? { contains: q, mode: "insensitive" as const } : undefined;
   const where = contains
     ? {
@@ -166,7 +151,11 @@ router.get("/tracks", async (req, res) => {
 /** GET /api/library/tracks/by-ids?ids=a,b,c — hydrate specific tracks, preserving
  *  the requested order. Used by a Chorus host to resolve member-proposed queues. */
 router.get("/tracks/by-ids", async (req, res) => {
-  const ids = String(req.query.ids ?? "")
+  // `?ids=a,b` or repeated `?ids=a&ids=b` — both accepted.
+  const ids = [req.query.ids]
+    .flat()
+    .filter((s): s is string => typeof s === "string")
+    .join(",")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean)
@@ -188,11 +177,18 @@ router.post("/scrobble", async (req, res) => {
     .safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid input" });
   // playlistId records the playback context so Recently Played can show the
-  // playlist instead of its individual tracks. Verify it exists (FK) — ignore if not.
+  // playlist instead of its individual tracks. Only kept if it exists AND the
+  // caller can see it (public, owned, or a collaborator) — otherwise ignored.
+  const me = req.user!.id;
   let playlistId: string | null = parsed.data.playlistId ?? null;
   if (playlistId) {
-    const exists = await prisma.playlist.count({ where: { id: playlistId } });
-    if (!exists) playlistId = null;
+    const visible = await prisma.playlist.count({
+      where: {
+        id: playlistId,
+        OR: [{ isPublic: true }, { userId: me }, { collaborators: { some: { userId: me } } }],
+      },
+    });
+    if (!visible) playlistId = null;
   }
   await prisma.playHistory.create({
     data: { userId: req.user!.id, trackId: parsed.data.trackId, playlistId },
@@ -205,9 +201,9 @@ router.post("/scrobble", async (req, res) => {
  *  (deduped) instead of showing the individual songs; standalone plays show the
  *  track. Items: {type:'track', track} | {type:'playlist', playlist}. */
 router.get("/recently-played", async (req, res) => {
-  const limit = Math.min(Number(req.query.limit) || 12, 50);
+  const limit = Math.min(Math.max(qnum(req.query.limit) || 12, 1), 50);
   // Legacy shape (Track[]) for older app builds that don't pass ?grouped=1.
-  if (req.query.grouped !== "1") {
+  if (qstr(req.query.grouped) !== "1") {
     const groups = await prisma.playHistory.groupBy({
       by: ["trackId"],
       where: { userId: req.user!.id },
@@ -281,7 +277,7 @@ router.get("/recently-played", async (req, res) => {
 
 /** GET /api/library/most-played — top tracks by play count */
 router.get("/most-played", async (req, res) => {
-  const limit = Math.min(Number(req.query.limit) || 12, 50);
+  const limit = Math.min(Math.max(qnum(req.query.limit) || 12, 1), 50);
   const groups = await prisma.playHistory.groupBy({
     by: ["trackId"],
     where: { userId: req.user!.id },
@@ -358,7 +354,7 @@ router.get("/stats/me", async (req, res) => {
 router.get("/stats/wrapped", async (req, res) => {
   const userId = req.user!.id;
   const nowYear = new Date().getUTCFullYear();
-  const year = Math.min(Math.max(Number(req.query.year) || nowYear, 2000), 3000);
+  const year = Math.min(Math.max(qnum(req.query.year) || nowYear, 2000), 3000);
   const start = new Date(Date.UTC(year, 0, 1));
   const end = new Date(Date.UTC(year + 1, 0, 1));
 
@@ -381,18 +377,43 @@ router.get("/stats/wrapped", async (req, res) => {
   const artistCounts = new Map<string, number>();
   const genreCounts = new Map<string, number>();
   const monthSeconds = new Array(12).fill(0);
+  // Per-group play counts per track, so each top artist / genre / the peak month
+  // can name its most-played track (the Rewind plays it + shows its cover).
+  const artistTracks = new Map<string, Map<string, number>>();
+  const genreTracks = new Map<string, Map<string, number>>();
+  const monthTracks: Map<string, number>[] = Array.from({ length: 12 }, () => new Map());
+  const bump = (outer: Map<string, Map<string, number>>, key: string, id: string) => {
+    const inner = outer.get(key) ?? new Map<string, number>();
+    inner.set(id, (inner.get(id) ?? 0) + 1);
+    outer.set(key, inner);
+  };
   for (const r of rows) {
     const t = byId.get(r.trackId);
     if (!t) continue;
     totalPlays += 1;
     totalSeconds += t.duration || 0;
-    monthSeconds[new Date(r.playedAt).getUTCMonth()] += t.duration || 0;
+    const month = new Date(r.playedAt).getUTCMonth();
+    monthSeconds[month] += t.duration || 0;
+    monthTracks[month].set(t.id, (monthTracks[month].get(t.id) ?? 0) + 1);
     const an = t.artist?.name;
-    if (an) artistCounts.set(an, (artistCounts.get(an) ?? 0) + 1);
-    if (t.genre) genreCounts.set(t.genre, (genreCounts.get(t.genre) ?? 0) + 1);
+    if (an) {
+      artistCounts.set(an, (artistCounts.get(an) ?? 0) + 1);
+      bump(artistTracks, an, t.id);
+    }
+    if (t.genre) {
+      genreCounts.set(t.genre, (genreCounts.get(t.genre) ?? 0) + 1);
+      bump(genreTracks, t.genre, t.id);
+    }
   }
-  const top = (m: Map<string, number>, n: number) =>
-    [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(([name, count]) => ({ name, count }));
+  const topOf = (m: Map<string, number> | undefined): string | null => {
+    if (!m || m.size === 0) return null;
+    return [...m.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  };
+  const top = (m: Map<string, number>, n: number, tracksBy: Map<string, Map<string, number>>) =>
+    [...m.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, n)
+      .map(([name, count]) => ({ name, count, trackId: topOf(tracksBy.get(name)) }));
 
   const topTracks = [...trackCounts.entries()]
     .map(([id, c]) => ({ t: byId.get(id), c }))
@@ -413,10 +434,11 @@ router.get("/stats/wrapped", async (req, res) => {
     distinctTracks: trackCounts.size,
     distinctArtists: artistCounts.size,
     topTracks,
-    topArtists: top(artistCounts, 5),
-    topGenres: top(genreCounts, 5),
+    topArtists: top(artistCounts, 5, artistTracks),
+    topGenres: top(genreCounts, 5, genreTracks),
     monthMinutes,
     peakMonth,
+    peakMonthTrackId: topOf(monthTracks[peakMonth]),
   });
 });
 
@@ -508,6 +530,133 @@ router.delete("/tracks/:id", async (req, res) => {
   res.status(204).end();
 });
 
+const trackMetaSchema = z.object({
+  title: z.string().trim().min(1).max(300).optional(),
+  artist: z.string().trim().min(1).max(300).optional(),
+  album: z.string().trim().max(300).optional(),
+  year: z.number().int().min(0).max(3000).nullable().optional(),
+  genre: z.string().trim().max(100).optional(),
+  trackNo: z.number().int().min(1).max(999).nullable().optional(),
+  discNo: z.number().int().min(1).max(99).nullable().optional(),
+});
+
+/** PATCH /api/library/tracks/:id { title?, artist?, album?, year?, genre?, trackNo?, discNo? }
+ *  Edit a track's metadata (DB only — the audio file is never touched). Allowed
+ *  for an ADMIN or the track's uploader. Artist/album changes re-link the track
+ *  (find-or-create, same keying as ingest) and tidy up rows left empty. */
+router.patch("/tracks/:id", async (req, res) => {
+  const parsed = trackMetaSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: "Invalid input" });
+  const body = parsed.data;
+
+  const t = await prisma.track.findUnique({
+    where: { id: req.params.id },
+    include: { artist: true, album: true },
+  });
+  if (!t) return res.status(404).json({ error: "Not found" });
+  const isAdmin = req.user!.role === "ADMIN";
+  if (!isAdmin && t.uploaderId !== req.user!.id) {
+    return res.status(403).json({ error: "You can only edit songs you uploaded" });
+  }
+
+  // Artist: exact-name find-or-create (same as ingest).
+  const artistId =
+    body.artist !== undefined && body.artist !== t.artist.name
+      ? await findOrCreateArtist(body.artist)
+      : t.artistId;
+
+  // Album: keyed by (title, artist). An explicit title wins; otherwise a moved
+  // artist takes the current album title along with it.
+  let albumId = t.albumId;
+  const albumTitle =
+    body.album !== undefined ? body.album || "Unknown Album" : (t.album?.title ?? null);
+  if (albumTitle !== null && (albumTitle !== t.album?.title || artistId !== t.artistId)) {
+    albumId = await findOrCreateAlbum(
+      albumTitle,
+      artistId,
+      body.year ?? t.album?.year ?? undefined,
+    );
+  }
+  if (albumId && albumId !== t.albumId && t.album?.coverPath) {
+    await inheritCover(albumId, t.album.coverPath);
+  }
+  // Year is an album property: apply it to whichever album the track ends up on.
+  if (albumId && body.year !== undefined) {
+    await prisma.album.update({ where: { id: albumId }, data: { year: body.year } });
+  }
+
+  const title = body.title ?? t.title;
+  const retagged = title !== t.title || artistId !== t.artistId;
+  await prisma.track.update({
+    where: { id: t.id },
+    data: {
+      title,
+      artistId,
+      albumId,
+      ...(body.genre !== undefined ? { genre: body.genre || null } : {}),
+      ...(body.trackNo !== undefined ? { trackNo: body.trackNo } : {}),
+      ...(body.discNo !== undefined ? { discNo: body.discNo } : {}),
+      // Lyrics were looked up under the old title/artist — redo them.
+      ...(retagged
+        ? {
+            lyricsChecked: false,
+            lyricsTransChecked: false,
+            lyricsPlain: null,
+            lyricsSynced: null,
+            lyricsTranslated: null,
+            lyricsLang: null,
+          }
+        : {}),
+    },
+  });
+
+  // Tidy up rows the re-link may have emptied.
+  if (t.albumId && albumId !== t.albumId) {
+    const left = await prisma.track.count({ where: { albumId: t.albumId } });
+    if (left === 0) {
+      if (t.album?.coverPath) {
+        try {
+          fs.rmSync(path.resolve(env.dataPath, t.album.coverPath), { force: true });
+        } catch {
+          /* ignore */
+        }
+      }
+      await prisma.album.delete({ where: { id: t.albumId } }).catch(() => {});
+    }
+  }
+  if (artistId !== t.artistId) {
+    const [tracksLeft, albumsLeft] = await Promise.all([
+      prisma.track.count({ where: { artistId: t.artistId } }),
+      prisma.album.count({ where: { artistId: t.artistId } }),
+    ]);
+    if (tracksLeft === 0 && albumsLeft === 0) {
+      await prisma.artist.delete({ where: { id: t.artistId } }).catch(() => {});
+    }
+  }
+
+  if (retagged) void fetchAndStoreLyrics(t.id).catch(() => {}); // fire-and-forget
+
+  const updated = await prisma.track.findUnique({
+    where: { id: t.id },
+    include: { artist: true, album: true, uploader: { select: { username: true } } },
+  });
+  res.json(updated);
+});
+
+/** Give a newly-linked album the old album's cover if it has none (copied, since
+ *  cover files are named per album). Best-effort. */
+async function inheritCover(albumId: string, oldRel: string) {
+  try {
+    const album = await prisma.album.findUnique({ where: { id: albumId } });
+    if (!album || album.coverPath) return;
+    const rel = path.join("covers", `${albumId}${path.extname(oldRel) || ".jpg"}`);
+    await fs.promises.copyFile(path.resolve(env.dataPath, oldRel), path.join(env.dataPath, rel));
+    await prisma.album.update({ where: { id: albumId }, data: { coverPath: rel } });
+  } catch {
+    /* no cover is fine */
+  }
+}
+
 /** POST /api/library/tracks/bulk-delete { ids } — delete many tracks at once.
  *  Each must be admin-owned or uploaded by the caller; others are skipped and
  *  counted in `forbidden`. */
@@ -581,11 +730,13 @@ router.delete("/like/:trackId", async (req, res) => {
 // ---- Uploads (any signed-in user) -----------------------------------------
 
 type UploadStatus = "added" | "duplicate" | "failed";
+/** `reason` is set when a file was refused for a user-explainable cause. */
+type UploadOutcome = { status: UploadStatus; reason?: string };
 
 /** Validate + ingest one already-saved upload file; auto-likes it for the
  *  uploader. Deletes the file on rejection or duplicate. Shared by the multipart
  *  and chunked upload paths. */
-async function processUploadedFile(filePath: string, uploaderId: string): Promise<UploadStatus> {
+async function processUploadedFile(filePath: string, uploaderId: string): Promise<UploadOutcome> {
   const like = (trackId: string) =>
     prisma.favorite
       .upsert({
@@ -595,31 +746,36 @@ async function processUploadedFile(filePath: string, uploaderId: string): Promis
       })
       .catch(() => {});
   try {
-    // Reject anything that isn't genuinely MP3/FLAC (e.g. a renamed executable).
+    // Reject anything that isn't genuinely audio (e.g. a renamed executable).
     if (!looksLikeAudio(filePath)) {
       fs.rmSync(filePath, { force: true });
-      return "failed";
+      return { status: "failed", reason: "Not a recognised audio file" };
     }
     const r = await ingestFile(filePath, uploaderId, true /* dedupe */);
-    if (!r) return "failed";
+    if (!r) return { status: "failed" };
     await like(r.trackId); // uploads are auto-liked
     if (r.duplicate) {
       fs.rmSync(filePath, { force: true }); // same song already present
-      return "duplicate";
+      return { status: "duplicate" };
     }
     if (r.created) {
       await fetchAndStoreLyrics(r.trackId).catch(() => {});
-      return "added";
+      queueAutotag(r.trackId); // background; no-op unless enabled
+      return { status: "added" };
     }
-    return "duplicate"; // unchanged file already at this path
+    return { status: "duplicate" }; // unchanged file already at this path
   } catch (e) {
     fs.rmSync(filePath, { force: true });
+    if (e instanceof IngestRejectedError) {
+      console.warn(`[upload] rejected ${filePath}: ${e.reason}`);
+      return { status: "failed", reason: e.reason };
+    }
     console.error(`[upload] ingest failed for ${filePath}:`, (e as Error).message);
-    return "failed";
+    return { status: "failed" };
   }
 }
 
-function tally(statuses: { name: string; status: UploadStatus }[]) {
+function tally(statuses: ({ name: string } & UploadOutcome)[]) {
   const pick = (s: UploadStatus) => statuses.filter((x) => x.status === s).map((x) => x.name);
   const added = pick("added");
   const failed = pick("failed");
@@ -631,6 +787,10 @@ function tally(statuses: { name: string; status: UploadStatus }[]) {
     addedNames: added,
     failedNames: failed,
     duplicateNames: duplicates,
+    // Subset of `failed` refused for a specific reason (broken audio, not audio).
+    rejected: statuses
+      .filter((x) => x.status === "failed" && x.reason)
+      .map((x) => ({ name: x.name, reason: x.reason! })),
   };
 }
 
@@ -653,9 +813,9 @@ router.post("/upload", upload.array("files", 50), async (req, res) => {
   const files = (req.files as Express.Multer.File[]) ?? [];
   if (files.length === 0) return res.status(400).json({ error: "No audio files uploaded" });
   const uploaderId = req.user!.id;
-  const results: { name: string; status: UploadStatus }[] = [];
+  const results: ({ name: string } & UploadOutcome)[] = [];
   for (const f of files) {
-    results.push({ name: f.originalname, status: await processUploadedFile(f.path, uploaderId) });
+    results.push({ name: f.originalname, ...(await processUploadedFile(f.path, uploaderId)) });
   }
   res.status(201).json(tally(results));
 });
@@ -663,32 +823,163 @@ router.post("/upload", upload.array("files", 50), async (req, res) => {
 // ---- Chunked upload (for files larger than the CDN's request-body cap) -----
 // Cloudflare caps a single request body at ~100MB, so large songs are uploaded
 // in chunks (each well under the cap) and reassembled here.
-const _chunkId = /^[A-Za-z0-9_-]{1,80}$/;
+//
+// Each upload's temp file is namespaced by the authenticated user id, so nobody
+// can append to / finalize someone else's upload by guessing its uploadId.
+// Chunk bodies stream straight to disk (never buffered in RAM).
+const CHUNK_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const MAX_CHUNK_BYTES = 120 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB per file
+const MAX_CHUNKS = 2000;
+const MAX_ACTIVE_UPLOADS = 4; // in-progress chunked uploads per user
+const STALE_UPLOAD_MS = 60 * 60_000; // untouched this long → swept
 const chunkTmpDir = () => path.join(env.musicPath, "tmp");
 
-/** POST /api/library/upload/chunk?uploadId=&index= — append one raw chunk. */
-router.post(
-  "/upload/chunk",
-  express.raw({ type: () => true, limit: 120 * 1024 * 1024 }),
-  (req, res) => {
-    const uploadId = String(req.query.uploadId ?? "");
-    const index = Number(req.query.index);
-    if (!_chunkId.test(uploadId) || !Number.isInteger(index) || index < 0) {
-      return res.status(400).json({ error: "Invalid chunk" });
+interface ChunkedUpload {
+  userId: string;
+  next: number; // index of the next expected chunk
+  size: number; // bytes on disk so far
+  offsets: number[]; // start offset of each received chunk (to rewind on retry)
+  busy: boolean; // a chunk is being written right now
+  touched: number; // epoch ms of the last activity
+}
+const chunkedUploads = new Map<string, ChunkedUpload>(); // temp path -> state
+
+class UploadTooLargeError extends Error {}
+
+function chunkTmpPath(userId: string, uploadId: string) {
+  return path.join(chunkTmpDir(), `${userId.replace(/[^A-Za-z0-9_-]/g, "_")}_${uploadId}.part`);
+}
+
+function activeUploads(userId: string) {
+  const cutoff = Date.now() - STALE_UPLOAD_MS;
+  let n = 0;
+  for (const u of chunkedUploads.values()) if (u.userId === userId && u.touched > cutoff) n++;
+  return n;
+}
+
+/** Stream the request body onto the end of `file`, failing past `limit` bytes. */
+async function appendBody(req: import("express").Request, file: string, limit: number) {
+  let n = 0;
+  const counter = new Transform({
+    transform(chunk: Buffer, _enc, cb) {
+      n += chunk.length;
+      if (n > limit) cb(new UploadTooLargeError("Upload too large"));
+      else cb(null, chunk);
+    },
+  });
+  await pipeline(req, counter, fs.createWriteStream(file, { flags: "a" }));
+  return n;
+}
+
+/** Delete temp parts (and their state) untouched for over an hour. */
+function sweepStaleUploads() {
+  const cutoff = Date.now() - STALE_UPLOAD_MS;
+  for (const [p, u] of chunkedUploads) if (!u.busy && u.touched < cutoff) chunkedUploads.delete(p);
+  let names: string[];
+  try {
+    names = fs.readdirSync(chunkTmpDir());
+  } catch {
+    return; // no tmp dir yet
+  }
+  for (const name of names) {
+    if (!name.endsWith(".part")) continue;
+    const p = path.join(chunkTmpDir(), name);
+    if (chunkedUploads.get(p)?.busy) continue;
+    try {
+      if (fs.statSync(p).mtimeMs < cutoff) {
+        fs.rmSync(p, { force: true });
+        chunkedUploads.delete(p);
+      }
+    } catch {
+      /* raced with finalize — fine */
     }
-    const body = req.body as Buffer;
-    if (!Buffer.isBuffer(body) || body.length === 0) {
-      return res.status(400).json({ error: "Empty chunk" });
+  }
+}
+sweepStaleUploads();
+setInterval(sweepStaleUploads, 30 * 60_000).unref();
+
+/** POST /api/library/upload/chunk?uploadId=&index= — append one raw chunk.
+ *  Chunks arrive in order; re-sending an already-received index rewinds to it
+ *  (so a client retry can't duplicate data). */
+router.post("/upload/chunk", async (req, res) => {
+  const userId = req.user!.id;
+  const uploadId = qstr(req.query.uploadId) ?? "";
+  const index = qnum(req.query.index);
+  if (!CHUNK_ID.test(uploadId) || !Number.isInteger(index) || index < 0) {
+    return res.status(400).json({ error: "Invalid chunk" });
+  }
+  if (index >= MAX_CHUNKS) return res.status(413).json({ error: "Too many chunks" });
+  const declared = Number(req.headers["content-length"]);
+  if (Number.isFinite(declared) && declared > MAX_CHUNK_BYTES) {
+    return res.status(413).json({ error: "Chunk too large" });
+  }
+
+  const tmp = chunkTmpPath(userId, uploadId);
+  let up = chunkedUploads.get(tmp);
+  if (up?.busy) return res.status(409).json({ error: "Chunk already in progress" });
+  if (index === 0) {
+    if (!up && activeUploads(userId) >= MAX_ACTIVE_UPLOADS) {
+      return res.status(429).json({ error: "Too many uploads in progress" });
     }
-    const dir = chunkTmpDir();
-    fs.mkdirSync(dir, { recursive: true });
-    const tmp = path.join(dir, `${uploadId}.part`);
-    // The first chunk truncates; the rest append (client uploads in order).
-    if (index === 0) fs.writeFileSync(tmp, body);
-    else fs.appendFileSync(tmp, body);
+    up = { userId, next: 0, size: 0, offsets: [], busy: false, touched: Date.now() };
+    chunkedUploads.set(tmp, up);
+  } else if (!up) {
+    // State lost (server restart) — adopt the caller's own temp file, if any.
+    let size: number;
+    try {
+      size = fs.statSync(tmp).size;
+    } catch {
+      return res.status(400).json({ error: "Unknown upload" });
+    }
+    if (activeUploads(userId) >= MAX_ACTIVE_UPLOADS) {
+      return res.status(429).json({ error: "Too many uploads in progress" });
+    }
+    up = { userId, next: index, size, offsets: [], busy: false, touched: Date.now() };
+    chunkedUploads.set(tmp, up);
+  }
+
+  const start = index === up.next ? up.size : up.offsets[index];
+  if (index > up.next || start === undefined) {
+    return res.status(400).json({ error: "Out-of-order chunk" });
+  }
+
+  up.busy = true;
+  up.touched = Date.now();
+  try {
+    fs.mkdirSync(chunkTmpDir(), { recursive: true });
+    if (index === 0) fs.writeFileSync(tmp, "");
+    else if (start < up.size) fs.truncateSync(tmp, start);
+    up.size = start;
+    up.next = index;
+    up.offsets.length = index;
+
+    const written = await appendBody(req, tmp, Math.min(MAX_CHUNK_BYTES, MAX_UPLOAD_BYTES - start));
+    if (written === 0) return res.status(400).json({ error: "Empty chunk" });
+    up.offsets[index] = start;
+    up.size = start + written;
+    up.next = index + 1;
+    up.touched = Date.now();
     res.status(204).end();
-  },
-);
+  } catch (e) {
+    if (e instanceof UploadTooLargeError) {
+      // Over the per-chunk or per-file cap: abandon the whole upload.
+      fs.rmSync(tmp, { force: true });
+      chunkedUploads.delete(tmp);
+      if (!res.headersSent) res.status(413).json({ error: "Upload too large" });
+      return;
+    }
+    // Aborted / I/O error: rewind so the client can retry this chunk.
+    try {
+      fs.truncateSync(tmp, start);
+    } catch {
+      /* ignore */
+    }
+    if (!res.headersSent) res.status(400).json({ error: "Chunk upload failed" });
+  } finally {
+    up.busy = false;
+  }
+});
 
 /** POST /api/library/upload/finalize { uploadId, filename } — assemble + ingest. */
 router.post("/upload/finalize", async (req, res) => {
@@ -697,18 +988,21 @@ router.post("/upload/finalize", async (req, res) => {
     .safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Invalid input" });
   const { uploadId, filename } = parsed.data;
-  const tmp = path.join(chunkTmpDir(), `${uploadId}.part`);
-  if (!_chunkId.test(uploadId) || !fs.existsSync(tmp)) {
-    return res.status(400).json({ error: "No upload data" });
+  if (!CHUNK_ID.test(uploadId)) return res.status(400).json({ error: "Invalid input" });
+  const tmp = chunkTmpPath(req.user!.id, uploadId); // only ever the caller's own upload
+  if (chunkedUploads.get(tmp)?.busy) {
+    return res.status(409).json({ error: "Chunk upload still in progress" });
   }
+  if (!fs.existsSync(tmp)) return res.status(400).json({ error: "No upload data" });
+  chunkedUploads.delete(tmp);
   if (!UPLOAD_EXT.has(path.extname(filename).toLowerCase())) {
     fs.rmSync(tmp, { force: true });
     return res.status(400).json({ error: "Only MP3 and FLAC files are allowed" });
   }
   const dest = uniqueUploadPath(filename);
   fs.renameSync(tmp, dest);
-  const status = await processUploadedFile(dest, req.user!.id);
-  res.status(201).json(tally([{ name: path.basename(filename), status }]));
+  const outcome = await processUploadedFile(dest, req.user!.id);
+  res.status(201).json(tally([{ name: path.basename(filename), ...outcome }]));
 });
 
 export default router;

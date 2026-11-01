@@ -102,6 +102,9 @@ Future<void> main() async {
   } catch (e) {
     debugPrint('downloads init failed: $e');
   }
+  // Android Auto: lets the browse tree list/play downloads (and fall back to them
+  // offline). Static, so PlayerModel's own AutoBrowse instances see it too.
+  AutoBrowse.downloads = downloads;
 
   // Create the player EAGERLY (not lazily via Provider) so its constructor
   // re-registers browsing (incl. playFromMediaId) and restores the last session,

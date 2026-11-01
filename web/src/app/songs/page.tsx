@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
-import { Search, Upload, RefreshCw, Play, Music, X, Shuffle } from "lucide-react";
-import { api, coverUrl, uploadManyFiles } from "@/lib/api";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { Search, Upload, RefreshCw, Play, Music, X, Shuffle, TriangleAlert } from "lucide-react";
+import { api, coverUrl, uploadManyFiles, type RejectedUpload } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { usePlayer } from "@/context/PlayerContext";
 import { useLiked } from "@/context/LikedContext";
@@ -11,13 +11,29 @@ import type { Track } from "@/lib/types";
 import { AddToPlaylist } from "@/components/AddToPlaylist";
 import { LikeButton } from "@/components/LikeButton";
 import { BulkBar } from "@/components/BulkBar";
+import { SortMenu } from "@/components/SortMenu";
+import { pickSort, seededShuffle, type SortState } from "@/lib/trackSort";
+
+type SongOrder = "random" | "title" | "artist" | "album" | "added";
+const SONG_SORTS: { key: SongOrder; label: string }[] = [
+  { key: "random", label: "Shuffle" },
+  { key: "title", label: "Title" },
+  { key: "artist", label: "Artist" },
+  { key: "album", label: "Album" },
+  { key: "added", label: "Date added" },
+];
 
 export default function SongsPage() {
   const { user } = useAuth();
   const player = usePlayer();
   const liked = useLiked();
   const isAdmin = user?.role === "ADMIN";
-  const [tracks, setTracks] = useState<Track[]>([]);
+  const [loaded, setLoaded] = useState<Track[]>([]); // as returned by the server
+  // Songs default to a random order. A per-visit seed keeps it stable across
+  // re-renders/reloads; picking "Shuffle" in the sort menu reshuffles.
+  const [sort, setSort] = useState<SortState<SongOrder>>({ order: "random", asc: true });
+  const [seed, setSeed] = useState(() => Math.floor(Math.random() * 2 ** 32));
+  const [rejected, setRejected] = useState<RejectedUpload[]>([]);
   const [total, setTotal] = useState(0);
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
@@ -27,6 +43,38 @@ export default function SongsPage() {
   const [imgErr, setImgErr] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const fileInput = useRef<HTMLInputElement>(null);
+
+  // The displayed (and played) order.
+  const tracks = useMemo(() => {
+    if (sort.order === "random") return seededShuffle(loaded, seed);
+    const key = (t: Track): string => {
+      switch (sort.order) {
+        case "title":
+          return t.title.toLowerCase();
+        case "artist":
+          return (t.artist?.name ?? "").toLowerCase();
+        case "album":
+          return (t.album?.title ?? "").toLowerCase();
+        default:
+          return t.createdAt ?? "";
+      }
+    };
+    const l = [...loaded].sort((a, b) => {
+      const x = key(a);
+      const y = key(b);
+      return x < y ? -1 : x > y ? 1 : 0;
+    });
+    return sort.asc ? l : l.reverse();
+  }, [loaded, sort, seed]);
+
+  function onPickSort(o: SongOrder) {
+    if (o === "random") {
+      setSort({ order: "random", asc: true });
+      setSeed(Math.floor(Math.random() * 2 ** 32)); // re-randomize
+    } else {
+      setSort((s) => pickSort(s, o));
+    }
+  }
 
   const toggleSel = (id: string) =>
     setSelected((s) => {
@@ -55,10 +103,7 @@ export default function SongsPage() {
     const res = await api.get<{ tracks: Track[]; total: number }>(
       `/api/library/tracks?${params.toString()}`,
     );
-    const sorted = query.trim()
-      ? res.tracks
-      : [...res.tracks].sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
-    setTracks(sorted);
+    setLoaded(res.tracks);
     setTotal(res.total);
     setLoading(false);
   }, []);
@@ -98,10 +143,17 @@ export default function SongsPage() {
   async function onUpload(files: FileList | null) {
     if (!files || files.length === 0) return;
     setUploadPct(0);
+    setRejected([]);
     try {
       // Handles any count/size: small files batched under the CDN cap, large
       // files chunked individually.
-      const { added, duplicates, failed } = await uploadManyFiles(Array.from(files), setUploadPct);
+      const { added, duplicates, failed, rejected } = await uploadManyFiles(
+        Array.from(files),
+        setUploadPct,
+      );
+      // Files with no playable audio are refused by the server: list which ones
+      // and why (below the search bar) so the user knows to find a good copy.
+      setRejected(rejected);
       showToast(
         `Uploaded ${added} song${added === 1 ? "" : "s"}` +
           (duplicates ? `, ${duplicates} already in library` : "") +
@@ -129,7 +181,8 @@ export default function SongsPage() {
           {tracks.length > 0 && (
             <>
               <button
-                onClick={() => player.playQueue(tracks, 0)}
+                // With shuffle on, a whole-list Play randomizes the first song too.
+                onClick={() => player.playQueue(tracks, 0, { anchorStart: false })}
                 className="flex items-center gap-2 rounded-full bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--accent-ink)] hover:brightness-110"
               >
                 <Play size={16} /> Play all
@@ -173,24 +226,61 @@ export default function SongsPage() {
         onChange={(e) => onUpload(e.target.files)}
       />
 
-      {/* Search bar */}
-      <div className="relative mb-4 max-w-xl">
-        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted)]" />
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Search songs, artists, albums…"
-          className="w-full rounded-lg border border-[var(--border)] bg-[var(--panel)] py-2 pl-9 pr-9 outline-none focus:border-[var(--accent)]"
+      {/* Search bar + sort */}
+      <div className="mb-4 flex items-center gap-3">
+        <div className="relative max-w-xl flex-1">
+          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted)]" />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search songs, artists, albums…"
+            className="w-full rounded-lg border border-[var(--border)] bg-[var(--panel)] py-2 pl-9 pr-9 outline-none focus:border-[var(--accent)]"
+          />
+          {q && (
+            <button
+              onClick={() => setQ("")}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--muted)] hover:text-white"
+            >
+              <X size={16} />
+            </button>
+          )}
+        </div>
+        <SortMenu
+          options={SONG_SORTS}
+          order={sort.order}
+          asc={sort.asc}
+          onPick={onPickSort}
+          shuffleKey="random"
+          align="left"
         />
-        {q && (
-          <button
-            onClick={() => setQ("")}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--muted)] hover:text-white"
-          >
-            <X size={16} />
-          </button>
-        )}
       </div>
+
+      {rejected.length > 0 && (
+        <div className="mb-4 max-w-xl rounded-lg border border-red-400/40 bg-red-400/10 px-4 py-3 text-sm">
+          <div className="mb-1 flex items-center gap-2 font-medium text-red-300">
+            <TriangleAlert size={15} className="shrink-0" />
+            <span className="flex-1">
+              {rejected.length === 1
+                ? "1 file wasn't added"
+                : `${rejected.length} files weren't added`}
+            </span>
+            <button
+              onClick={() => setRejected([])}
+              className="text-[var(--muted)] hover:text-white"
+              title="Dismiss"
+            >
+              <X size={15} />
+            </button>
+          </div>
+          <ul className="space-y-0.5">
+            {rejected.map((r, i) => (
+              <li key={`${r.name}-${i}`} className="truncate text-[var(--muted)]">
+                <span className="text-[var(--text)]">{r.name}</span> — {r.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {uploadPct !== null && (
         <div className="mb-4 h-1 w-full overflow-hidden rounded bg-[var(--panel-2)]">
@@ -315,7 +405,7 @@ export default function SongsPage() {
                     <td className="px-3 py-2">
                       <div className="flex items-center justify-center gap-3">
                         <LikeButton trackId={t.id} />
-                        <AddToPlaylist trackId={t.id} track={t} onDeleted={() => load(q)} />
+                        <AddToPlaylist trackId={t.id} track={t} onDeleted={() => load(q)} onEdited={() => load(q)} />
                       </div>
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums text-[var(--muted)]">

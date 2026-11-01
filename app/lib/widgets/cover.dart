@@ -5,6 +5,23 @@ import 'package:provider/provider.dart';
 import '../downloads.dart';
 import '../theme.dart';
 
+/// Disk/memory cache key for a cover URL: the URL minus its `token` query
+/// parameter. Cover URLs embed the (short-lived) access token, so keying the
+/// cache by the raw URL threw every cached cover away on each token refresh.
+/// Other parameters (e.g. the playlist-cover version `v`) are kept, so a changed
+/// image still gets a new key.
+String coverCacheKey(String url) {
+  try {
+    final uri = Uri.parse(url);
+    if (!uri.queryParametersAll.containsKey('token')) return url;
+    final rest = Map.of(uri.queryParametersAll)..remove('token');
+    final base = url.split('?').first;
+    return rest.isEmpty ? base : '$base?${Uri(queryParameters: rest).query}';
+  } catch (_) {
+    return url; // unparseable — fall back to the raw URL (old behaviour)
+  }
+}
+
 /// Album/track cover with a graceful fallback when there's no art. When a
 /// [trackId] is given and that track is downloaded, the locally-saved cover is
 /// used (so art shows offline); otherwise it loads from [url].
@@ -48,8 +65,10 @@ class Cover extends StatelessWidget {
   // Disk + memory cached so scrolling lists / reopening the queue don't re-fetch
   // every cover from the network each time (they were uncached Image.network).
   // [px] = target decode width in physical pixels (see build) for crisp thumbnails.
+  // Keyed without the token (see [coverCacheKey]) so the cache survives refreshes.
   Widget _network(String u, int px) => CachedNetworkImage(
         imageUrl: u,
+        cacheKey: coverCacheKey(u),
         fit: BoxFit.cover,
         memCacheWidth: px,
         memCacheHeight: px,

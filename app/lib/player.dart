@@ -95,6 +95,7 @@ class PlayerModel extends ChangeNotifier {
 
   PlayerModel(this.api, this.downloads) {
     _player.currentIndexStream.listen((i) {
+      if (_previewing) return; // Rewind preview owns the engine; _index is the saved queue's
       if (i != null && i != _index) {
         _index = i;
         _scrobbled = false;
@@ -106,6 +107,10 @@ class PlayerModel extends ChangeNotifier {
       }
     });
     _player.playerStateStream.listen((st) {
+      if (_previewing) {
+        notifyListeners();
+        return;
+      }
       _saveSession();
       _postActivity();
       // Host: broadcast play/pause transitions (covers OS / lock-screen controls).
@@ -116,7 +121,7 @@ class PlayerModel extends ChangeNotifier {
       notifyListeners();
     });
     _player.processingStateStream.listen((st) {
-      if (st != ProcessingState.completed) return;
+      if (_previewing || st != ProcessingState.completed) return;
       // A stopped listen-along session finishes the current song then returns to
       // the user's own queue.
       if (_restoreAfterCurrent) {
@@ -129,11 +134,17 @@ class PlayerModel extends ChangeNotifier {
       if (!isChorusMember) _clearPlayback();
     });
     _player.positionStream.listen((pos) {
-      if (!_scrobbled && pos.inSeconds >= 5 && current != null) {
+      // Rewind previews never count as plays (they'd skew next year's stats).
+      if (!_previewing && !_scrobbled && pos.inSeconds >= 5 && current != null) {
         _scrobbled = true;
         api.scrobble(current!.id, playlistId: _playlistContext).catchError((_) {});
       }
-      notifyListeners();
+      // Position ticks go to their own notifier: only the progress bar, time
+      // labels, mini-player ring and lyrics listen to it. Notifying the whole
+      // model here rebuilt every PlayerModel watcher (player bar, track tables,
+      // friends panel, queue…) several times a second, which dominated CPU use on
+      // desktop. Track / play-state / queue changes still notifyListeners().
+      if (!isChorusMember) positionTick.value = pos;
     });
     // Surface playback errors (codec/network/auth) instead of silently failing.
     _player.playbackEventStream.listen(
@@ -166,6 +177,9 @@ class PlayerModel extends ChangeNotifier {
         resume: () => _player.play(),
       );
     }
+    // Session revoked server-side: stop audio + wipe the queue, exactly like a
+    // manual sign-out, so nothing keeps playing behind the login screen.
+    api.sessionRevoked.addListener(() => signOutReset());
     // Restore the last session on startup so a cold Android Auto launch shows the
     // last-played song + position (paused) without opening the app first.
     restoreSession();
@@ -181,10 +195,13 @@ class PlayerModel extends ChangeNotifier {
   }
 
   void _postActivity() {
+    if (_previewing) return; // don't broadcast Rewind previews to friends
     api
         .postActivity(
           trackId: current?.id,
           positionMs: position.inMilliseconds,
+          // Server-clock time at which that position was true (null until synced).
+          atServerMs: api.serverNowEstimate,
           playing: playing,
           listeningTo: listenHostId, // host we're listening-along to (or null)
         )
@@ -192,6 +209,11 @@ class PlayerModel extends ChangeNotifier {
   }
 
   bool get listeningAlong => listenHostId != null;
+
+  /// The playback position, updated several times a second while playing. Listen
+  /// to THIS (e.g. ValueListenableBuilder) for anything that tracks the play head;
+  /// the model itself only notifies on track / play-state / queue changes.
+  final ValueNotifier<Duration> positionTick = ValueNotifier(Duration.zero);
 
   AudioPlayer get raw => _player;
 
@@ -358,6 +380,51 @@ class PlayerModel extends ChangeNotifier {
     _broadcastChorus();
   }
 
+  /// Add a whole list (e.g. a playlist) to the user queue, in order, after the
+  /// current track and anything already queued. Starts playing it if nothing is
+  /// loaded.
+  Future<void> addAllToQueue(List<Track> tracks) async {
+    if (tracks.isEmpty) return;
+    if (isChorusMember) {
+      _sendCommand(
+          queue: [...chorus!.queueIds, ...tracks.map((t) => t.id)], index: chorus!.index);
+      return;
+    }
+    if (_source == null || _queue.isEmpty) return playQueue(tracks);
+    var at = _userQueueEnd();
+    for (final t in tracks) {
+      await _insertEntry(at++, t, true);
+    }
+    notifyListeners();
+    _broadcastChorus();
+    _saveSession();
+  }
+
+  /// Clear what's coming up; the current track keeps playing. With
+  /// [userQueueOnly] only the manually queued songs ("Next in queue") go and the
+  /// context (playlist/album) carries on; otherwise everything after the current
+  /// track is removed. User-queued items always form one contiguous block right
+  /// after the current track, so both cases are a single range removal.
+  Future<void> clearQueue({bool userQueueOnly = false}) async {
+    if (isChorusMember) {
+      // Members have no separate manual queue; ask the host to drop the upcoming.
+      final ids = chorus!.queueIds;
+      final keep = ids.sublist(0, (chorus!.index + 1).clamp(0, ids.length));
+      _sendCommand(queue: keep, index: chorus!.index);
+      return;
+    }
+    if (_source == null || _queue.isEmpty) return;
+    final start = _index + 1;
+    final end = userQueueOnly ? _userQueueEnd() : _queue.length;
+    if (end <= start) return;
+    _queue.removeRange(start, end);
+    _userQ.removeRange(start, end);
+    await _source!.removeRange(start, end);
+    notifyListeners();
+    _broadcastChorus();
+    _saveSession();
+  }
+
   /// Play next: jumps to the front of the user queue (right after the current
   /// track), ahead of anything already queued.
   Future<void> playNext(Track t) async {
@@ -439,6 +506,7 @@ class PlayerModel extends ChangeNotifier {
     _listenVersion = 0;
     await _player.setLoopMode(LoopMode.off);
     notifyListeners();
+    await api.syncClock(force: true); // measure clock offset before the first apply
     _listenLooping = true;
     _listenLoop();
   }
@@ -448,9 +516,20 @@ class PlayerModel extends ChangeNotifier {
     var backoffMs = 1000;
     while (_listenLooping && listenHostId != null) {
       final hostId = listenHostId!;
+      unawaited(api.syncClock()); // cached; re-measures every few minutes
       HostActivity a;
       try {
         a = await api.userActivityPoll(hostId, _listenVersion);
+      } on ApiException catch (e) {
+        if (e.status == 403) {
+          // They turned off sharing / listen-along: stop following instead of
+          // retrying forever.
+          if (listenHostId == hostId) stopListenAlong();
+          break;
+        }
+        await Future.delayed(Duration(milliseconds: backoffMs));
+        backoffMs = (backoffMs * 2).clamp(1000, 30000);
+        continue;
       } catch (_) {
         await Future.delayed(Duration(milliseconds: backoffMs));
         backoffMs = (backoffMs * 2).clamp(1000, 30000); // exponential backoff
@@ -463,6 +542,21 @@ class PlayerModel extends ChangeNotifier {
     }
   }
 
+  /// Where the host's playback is RIGHT NOW: their reported position plus the
+  /// time elapsed since it was true. With a measured clock offset that's
+  /// (our estimate of server now - updatedAt), which also covers the time this
+  /// response spent in transit; otherwise fall back to the server's own clock at
+  /// response time (misses the download leg).
+  int _hostTargetMs(HostActivity a) {
+    var advance = 0;
+    if (a.playing && a.updatedAt != null) {
+      final srvNow = api.serverNowEstimate ?? (a.serverNow > 0 ? a.serverNow : null);
+      if (srvNow != null) advance = srvNow - a.updatedAt!;
+    }
+    final t = a.positionMs + (advance > 0 ? advance : 0);
+    return t < 0 ? 0 : t;
+  }
+
   Future<void> _applyHostActivity(HostActivity a) async {
     if (listenHostId == null) return;
     if (!a.online) {
@@ -470,12 +564,7 @@ class PlayerModel extends ChangeNotifier {
       return;
     }
     if (a.track == null) return;
-    // Extrapolate to "now" using server clocks (skew-free), then to local now.
-    final advance = (a.playing && a.serverNow > 0 && a.updatedAt != null)
-        ? a.serverNow - a.updatedAt!
-        : 0;
-    var targetMs = a.positionMs + (advance > 0 ? advance : 0);
-    if (targetMs < 0) targetMs = 0;
+    var targetMs = _hostTargetMs(a);
     if (current?.id != a.track!.id) {
       _queue = [a.track!];
       _userQ
@@ -490,7 +579,18 @@ class PlayerModel extends ChangeNotifier {
         _source = ConcatenatingAudioSource(children: [_sourceFor(a.track!)]);
         await _player.setAudioSource(_source!, initialPosition: Duration(milliseconds: targetMs));
         if (a.playing) {
-          await _player.play();
+          // Not awaited: play() only resolves on pause. Once audio is actually
+          // running, re-seek to cover the time spent loading/buffering.
+          _player.play();
+          await _player.processingStateStream
+              .firstWhere((st) => st == ProcessingState.ready)
+              .timeout(const Duration(seconds: 15), onTimeout: () => ProcessingState.ready);
+          if (listenHostId != null && current?.id == a.track!.id) {
+            final fresh = _hostTargetMs(a);
+            if ((_player.position.inMilliseconds - fresh).abs() > 250) {
+              await _player.seek(Duration(milliseconds: fresh));
+            }
+          }
         } else {
           await _player.pause();
         }
@@ -498,7 +598,10 @@ class PlayerModel extends ChangeNotifier {
         debugPrint('listen-along load error: $e');
       }
     } else {
-      if ((_player.position.inMilliseconds - targetMs).abs() > 2000) {
+      // With a measured clock offset the estimate is good to a few hundred ms,
+      // so correct smaller drift; without one, keep the old loose threshold.
+      final tolerance = api.clockOffsetMs != null ? 700 : 2000;
+      if ((_player.position.inMilliseconds - targetMs).abs() > tolerance) {
         await _player.seek(Duration(milliseconds: targetMs));
       }
       if (a.playing && !_player.playing) await _player.play();
@@ -567,6 +670,7 @@ class PlayerModel extends ChangeNotifier {
 
   // ---- Chorus ----
   void _startChorusLoop() {
+    unawaited(api.syncClock(force: true)); // host stamps + member extrapolation
     if (_chorusLooping) return;
     _chorusLooping = true;
     _chorusLoop();
@@ -633,14 +737,20 @@ class PlayerModel extends ChangeNotifier {
   }
 
   void _setMemberBase(ChorusState c) {
-    final advance = (c.playing && c.serverNow > 0) ? (c.serverNow - c.updatedAt) : 0;
+    // Same idea as listen-along: extrapolate from when the host's position was
+    // true, using our server-clock estimate when we have one.
+    final srvNow = api.serverNowEstimate ?? (c.serverNow > 0 ? c.serverNow : null);
+    final advance = (c.playing && srvNow != null) ? (srvNow - c.updatedAt) : 0;
     _memberPosBaseMs = c.positionMs + (advance > 0 ? advance : 0);
     _memberPosBaseAt = DateTime.now().millisecondsSinceEpoch;
+    positionTick.value = Duration(milliseconds: _memberPositionMs());
   }
 
   void _ensureMemberTicker() {
     _memberTicker ??= Timer.periodic(const Duration(milliseconds: 300), (_) {
-      if (isChorusMember && chorus!.playing) notifyListeners();
+      if (isChorusMember && chorus!.playing) {
+        positionTick.value = Duration(milliseconds: _memberPositionMs());
+      }
     });
   }
 
@@ -782,6 +892,7 @@ class PlayerModel extends ChangeNotifier {
           _index,
           _player.position.inMilliseconds,
           _player.playing,
+          atServerMs: api.serverNowEstimate, // when that position was true
         )
         .catchError((_) {});
   }
@@ -904,6 +1015,7 @@ class PlayerModel extends ChangeNotifier {
       _sendCommand(positionMs: d.inMilliseconds);
       _memberPosBaseMs = d.inMilliseconds; // optimistic local UI
       _memberPosBaseAt = DateTime.now().millisecondsSinceEpoch;
+      positionTick.value = d;
       notifyListeners();
       return;
     }
@@ -1015,6 +1127,155 @@ class PlayerModel extends ChangeNotifier {
     await playQueue(tracks, playlistId: playlistId, shuffle: true, anchorStart: false);
   }
 
+  // ---- Preview mode (Rewind background music) ----
+  // The Android audio backend supports only ONE AudioPlayer, so Rewind can't own
+  // a player of its own. Instead it borrows this one: beginPreview() snapshots the
+  // real queue/position/state, previewTrack() crossfades between song snippets,
+  // and endPreview() puts the user's queue back exactly where it was. While
+  // previewing, nothing scrobbles, saves the session, broadcasts presence or
+  // triggers stall recovery / end-of-queue cleanup (see the _previewing guards).
+  bool _previewing = false;
+  List<Track> _pvQueue = [];
+  List<bool> _pvUserQ = [];
+  List<Track> _pvContext = [];
+  int _pvIndex = 0;
+  Duration _pvPos = Duration.zero;
+  bool _pvWasPlaying = false;
+  LoopMode _pvLoop = LoopMode.off;
+  double _pvVolume = 1.0;
+  String? _pvPlaylist;
+  int _pvToken = 0; // bumps on every preview op so a superseded fade/load bails out
+  double _pvTarget = 1.0; // preview loudness (0 when muted)
+
+  bool get previewing => _previewing;
+
+  /// Start borrowing the player for previews. Returns false (stay silent) while
+  /// in a Chorus or listen-along, where hijacking playback would break the session.
+  Future<bool> beginPreview() async {
+    if (_previewing) return true;
+    if (inChorus || listeningAlong) return false;
+    _pvQueue = List.of(_queue);
+    _pvUserQ = List.of(_userQ);
+    _pvContext = List.of(_contextOriginal);
+    _pvIndex = _index;
+    _pvPos = _player.position;
+    _pvWasPlaying = _player.playing;
+    _pvLoop = _player.loopMode;
+    _pvVolume = _player.volume;
+    _pvPlaylist = _playlistContext;
+    _pvTarget = _pvVolume > 0 ? _pvVolume : 1.0;
+    await _saveSession(); // persist the real session before the engine is touched
+    _previewing = true;
+    try {
+      if (_player.playing) await _fadeTo(0, 300);
+      await _player.pause();
+      // Loop the snippet so a short card never "completes" the source.
+      await _player.setLoopMode(LoopMode.one);
+    } catch (_) {}
+    return true;
+  }
+
+  /// Crossfade to [t], starting ~30% in (past most intros, often near a chorus).
+  Future<void> previewTrack(Track t) async {
+    if (!_previewing) return;
+    final token = ++_pvToken;
+    try {
+      if (_player.playing) await _fadeTo(0, 350, token: token);
+      if (token != _pvToken) return;
+      await _player.setAudioSource(_sourceFor(t), initialPosition: _previewStart(t));
+      if (token != _pvToken) return;
+      await _player.setVolume(0);
+      _player.play(); // not awaited: just_audio's play() resolves only on pause/stop
+      await _fadeTo(_pvTarget, 700, token: token);
+    } catch (e) {
+      debugPrint('preview error: $e');
+    }
+  }
+
+  Duration _previewStart(Track t) {
+    final secs = t.duration;
+    if (secs <= 0) return Duration.zero;
+    final s = (secs * 0.3).clamp(0, 75);
+    return Duration(milliseconds: (s * 1000).round());
+  }
+
+  /// Hold-to-pause on a Rewind card pauses the music too.
+  Future<void> setPreviewPaused(bool paused) async {
+    if (!_previewing) return;
+    if (paused) {
+      await _player.pause();
+    } else {
+      _player.play();
+    }
+  }
+
+  Future<void> setPreviewMuted(bool muted) async {
+    if (!_previewing) return;
+    _pvTarget = muted ? 0 : (_pvVolume > 0 ? _pvVolume : 1.0);
+    ++_pvToken; // cancel any in-flight fade so it doesn't override the mute
+    await _player.setVolume(_pvTarget);
+  }
+
+  /// Stop previewing and restore the user's queue, position, repeat mode, volume
+  /// and play state exactly as they were before Rewind opened.
+  Future<void> endPreview() async {
+    if (!_previewing) return;
+    final token = ++_pvToken;
+    try {
+      if (_player.playing) await _fadeTo(0, 300, token: token);
+      await _player.pause();
+    } catch (_) {}
+    _queue = _pvQueue;
+    _userQ
+      ..clear()
+      ..addAll(_pvUserQ);
+    _contextOriginal = _pvContext;
+    _index = _pvIndex;
+    _playlistContext = _pvPlaylist;
+    try {
+      await _player.setLoopMode(_pvLoop);
+      if (_queue.isNotEmpty) {
+        _source = ConcatenatingAudioSource(children: _queue.map(_sourceFor).toList());
+        await _player.setAudioSource(_source!,
+            initialIndex: _index, initialPosition: _pvPos, preload: _pvWasPlaying);
+      } else {
+        _source = null;
+        await _player.stop();
+      }
+      await _player.setVolume(_pvVolume);
+    } catch (e) {
+      debugPrint('preview restore error: $e');
+    }
+    _previewing = false;
+    _lastPos = _pvPos;
+    _frozenTicks = 0;
+    if (_queue.isNotEmpty) {
+      if (_pvWasPlaying) {
+        _player.play();
+      } else if (!kIsWeb && Platform.isAndroid) {
+        // Paused + not preloaded: republish so the notification / car card shows
+        // the user's own song again instead of the last preview.
+        setMediaBrowsingNowPlaying(
+          item: _mediaItemFor(_queue[_index]),
+          queue: _queue.map(_mediaItemFor).toList(),
+          index: _index,
+          position: _pvPos,
+        );
+      }
+    }
+    notifyListeners();
+  }
+
+  Future<void> _fadeTo(double target, int ms, {int? token}) async {
+    final from = _player.volume;
+    const steps = 12;
+    for (var i = 1; i <= steps; i++) {
+      if (token != null && token != _pvToken) return;
+      await _player.setVolume(from + (target - from) * i / steps);
+      await Future.delayed(Duration(milliseconds: ms ~/ steps));
+    }
+  }
+
   // ---- Lyrics ----
   Future<void> _loadLyrics() async {
     _lyrics = null;
@@ -1035,11 +1296,19 @@ class PlayerModel extends ChangeNotifier {
     }
     try {
       final l = await api.lyrics(t.id);
+      downloads.saveLyrics(t.id, l); // downloaded track → keep a copy for offline
       if (current?.id == t.id) {
         _lyrics = l;
         notifyListeners();
       }
-    } catch (_) {}
+    } catch (_) {
+      // Unreachable (e.g. offline with no saved copy): show "No lyrics" instead
+      // of an endless "Loading lyrics…".
+      if (current?.id == t.id) {
+        _lyrics = Lyrics();
+        notifyListeners();
+      }
+    }
   }
 
   // ---- Stall recovery (cutout mitigation) ----
@@ -1049,6 +1318,7 @@ class PlayerModel extends ChangeNotifier {
   //   • buffering + position frozen → the stream stalled / connection dropped and
   //     never resumes (recover after ~16s, allowing for genuinely slow networks)
   void _checkStall() {
+    if (_previewing) return; // a preview isn't the saved queue — never "recover" it
     if (isChorusMember) return; // members have no local audio to watch
     if (listenHostId != null) return; // playback is host-driven while following
     final t = current;
@@ -1130,7 +1400,7 @@ class PlayerModel extends ChangeNotifier {
 
   // ---- Resume persistence ----
   Future<void> _saveSession() async {
-    if (_queue.isEmpty) return;
+    if (_previewing || _queue.isEmpty) return;
     try {
       final p = await SharedPreferences.getInstance();
       await p.setString(
@@ -1215,6 +1485,7 @@ class PlayerModel extends ChangeNotifier {
     _memberTicker?.cancel();
     _listenLooping = false;
     _chorusLooping = false;
+    positionTick.dispose();
     _player.dispose();
     super.dispose();
   }

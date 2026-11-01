@@ -5,7 +5,7 @@ import multer from "multer";
 import path from "node:path";
 import fs from "node:fs";
 import { prisma } from "../lib/prisma.js";
-import { requireAuth, requireAdmin } from "../middleware/auth.js";
+import { requireAuth, requireAdmin, invalidateAuthCache } from "../middleware/auth.js";
 import { runScan, getScanStatus, ingestFile, fetchAndStoreLyrics } from "../services/scanner.js";
 import { env } from "../lib/env.js";
 
@@ -54,7 +54,7 @@ router.post("/users", async (req, res) => {
   const parsed = z
     .object({
       username: z.string().min(2).max(40),
-      password: z.string().min(6).max(200),
+      password: z.string().min(10).max(200),
       role: z.enum(["ADMIN", "USER"]).default("USER"),
     })
     .safeParse(req.body);
@@ -81,36 +81,77 @@ router.patch("/users/:id/role", async (req, res) => {
   if (req.params.id === req.user!.id) {
     return res.status(400).json({ error: "You cannot change your own role" });
   }
+  // Bumping tokenVersion revokes the user's existing tokens so they re-login with
+  // the new role (requireAuth reads the role from the DB anyway; this also stops
+  // clients from caching a stale role).
   const user = await prisma.user
     .update({
       where: { id: req.params.id },
-      data: { role: parsed.data.role },
+      data: { role: parsed.data.role, tokenVersion: { increment: 1 } },
       select: { id: true, username: true, role: true, createdAt: true },
     })
     .catch(() => null);
+  invalidateAuthCache(req.params.id);
   if (!user) return res.status(404).json({ error: "User not found" });
   res.json(user);
 });
 
 /** POST /api/admin/upload (multipart "files") — add audio to the library, lossless */
 router.post("/upload", upload.array("files", 50), async (req, res) => {
+  // Imported here (already-loaded modules, so this is cheap) to keep this
+  // handler self-contained.
+  const { looksLikeAudio, IngestRejectedError } = await import("../services/audioCheck.js");
+  const { queueAutotag } = await import("../services/autotag.js");
   const files = (req.files as Express.Multer.File[]) ?? [];
   if (files.length === 0) return res.status(400).json({ error: "No audio files uploaded" });
   const added: string[] = [];
   const failed: string[] = [];
+  const duplicates: string[] = [];
+  const rejected: { name: string; reason: string }[] = [];
+  const drop = (p: string) => fs.rmSync(p, { force: true });
   for (const f of files) {
     try {
+      // Same magic-byte sniff as user uploads (a renamed executable isn't audio).
+      if (!looksLikeAudio(f.path)) {
+        drop(f.path);
+        failed.push(f.originalname);
+        rejected.push({ name: f.originalname, reason: "Not a recognised audio file" });
+        continue;
+      }
       const r = await ingestFile(f.path);
-      if (r?.created) {
+      if (!r) {
+        drop(f.path);
+        failed.push(f.originalname);
+      } else if (r.duplicate) {
+        drop(f.path); // byte-identical to a track already in the library
+        duplicates.push(f.originalname);
+      } else if (r.created) {
         added.push(f.originalname);
         await fetchAndStoreLyrics(r.trackId).catch(() => {});
+        queueAutotag(r.trackId); // background; no-op unless enabled
+      } else {
+        duplicates.push(f.originalname); // already in the library (file kept: it's in use)
       }
     } catch (e) {
+      drop(f.path); // don't leave unusable files behind in the library
       failed.push(f.originalname);
-      console.error(`[upload] ingest failed for ${f.originalname}:`, (e as Error).message);
+      if (e instanceof IngestRejectedError) {
+        rejected.push({ name: f.originalname, reason: e.reason });
+        console.warn(`[upload] rejected ${f.originalname}: ${e.reason}`);
+      } else {
+        console.error(`[upload] ingest failed for ${f.originalname}:`, (e as Error).message);
+      }
     }
   }
-  res.status(201).json({ added: added.length, failed: failed.length, addedNames: added, failedNames: failed });
+  res.status(201).json({
+    added: added.length,
+    failed: failed.length,
+    addedNames: added,
+    failedNames: failed,
+    duplicates: duplicates.length,
+    duplicateNames: duplicates,
+    rejected,
+  });
 });
 
 /** DELETE /api/admin/users/:id */
@@ -119,6 +160,7 @@ router.delete("/users/:id", async (req, res) => {
     return res.status(400).json({ error: "You cannot delete your own account" });
   }
   await prisma.user.delete({ where: { id: req.params.id } }).catch(() => {});
+  invalidateAuthCache(req.params.id); // their tokens stop working immediately
   res.status(204).end();
 });
 

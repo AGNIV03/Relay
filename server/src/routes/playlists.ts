@@ -10,6 +10,7 @@ import {
   generatePlaylistCollage,
   saveCustomPlaylistCover,
   refreshAutoCollage,
+  ImageRejectedError,
 } from "../services/playlistCover.js";
 
 const router = Router();
@@ -85,12 +86,17 @@ router.get("/public", async (_req, res) => {
   );
 });
 
-/** GET /api/playlists/:id — playlist with ordered tracks. Any signed-in user may
- *  VIEW any playlist (they're already listed on public profiles in this sharing
- *  app); the `owned` flag gates edit controls. Mutations stay owner/collaborator-only. */
+/** GET /api/playlists/:id — playlist with ordered tracks. Viewable by the owner,
+ *  a collaborator, or — if it's public — any signed-in user; a private playlist
+ *  is a 404 to everyone else (no existence leak). The `owned` flag gates edit
+ *  controls. Mutations stay owner/collaborator-only. */
 router.get("/:id", async (req, res) => {
+  const userId = req.user!.id;
   const playlist = await prisma.playlist.findFirst({
-    where: { id: String(req.params.id) },
+    where: {
+      id: String(req.params.id),
+      OR: [{ isPublic: true }, { userId }, { collaborators: { some: { userId } } }],
+    },
     include: {
       tracks: {
         orderBy: { position: "asc" },
@@ -104,7 +110,7 @@ router.get("/:id", async (req, res) => {
   const { user, collaborators, ...rest } = playlist;
   res.json({
     ...rest,
-    owned: playlist.userId === req.user!.id,
+    owned: playlist.userId === userId,
     owner: user,
     collaborators: collaborators.map((c) => c.user),
   });
@@ -272,8 +278,17 @@ router.delete("/:id/tracks/:trackId", async (req, res) => {
 
 /** GET /api/playlists/:id/cover — collage (auto-generated on demand) or custom image */
 router.get("/:id/cover", async (req, res) => {
+  // Public (curated) playlists' covers are visible to everyone signed in — the
+  // Home "Curated playlists" row shows other users' public playlists.
   const pl = await prisma.playlist.findFirst({
-    where: accessibleWhere(req.params.id, req.user!.id),
+    where: {
+      id: req.params.id,
+      OR: [
+        { isPublic: true },
+        { userId: req.user!.id },
+        { collaborators: { some: { userId: req.user!.id } } },
+      ],
+    },
   });
   if (!pl) return res.status(404).end();
   let rel = pl.coverPath;
@@ -313,8 +328,10 @@ router.post("/:id/cover", coverUpload.single("cover"), async (req, res) => {
   try {
     await saveCustomPlaylistCover(pl.id, req.file.buffer);
     res.json({ ok: true });
-  } catch {
-    res.status(400).json({ error: "Could not process image" });
+  } catch (e) {
+    // Oversized (decompression-bomb guard) / non-PNG-JPEG → explain; else generic.
+    const msg = e instanceof ImageRejectedError ? e.message : "Could not process image";
+    res.status(400).json({ error: msg });
   }
 });
 

@@ -2,12 +2,13 @@ import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import { rankTracks, rankByName } from "../lib/search.js";
+import { qstr } from "../lib/query.js";
 
 const router = Router();
 
 /** GET /api/search?q=... — searches tracks, albums, and artists */
 router.get("/", requireAuth, async (req, res) => {
-  const q = (req.query.q as string | undefined)?.trim();
+  const q = qstr(req.query.q)?.trim();
   if (!q) return res.json({ tracks: [], albums: [], artists: [] });
 
   const contains = { contains: q, mode: "insensitive" as const };

@@ -30,14 +30,33 @@ class ApiError extends Error {
   }
 }
 
+/** The session was revoked server-side (password change / "sign out of all
+ *  devices" / role change): the tokens are dead for good, so drop them and go to
+ *  the login page. The full navigation also stops any playback. */
+function onSessionRevoked() {
+  tokens.clear();
+  if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+    window.location.href = "/login";
+  }
+}
+
 async function refreshAccessToken(): Promise<boolean> {
   const refresh = tokens.refresh;
   if (!refresh) return false;
-  const res = await fetch(`${API_URL}/api/auth/refresh`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ refreshToken: refresh }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}/api/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refreshToken: refresh }),
+    });
+  } catch {
+    return false; // network error: keep the tokens, the session may still be fine
+  }
+  if (res.status === 401) {
+    onSessionRevoked();
+    return false;
+  }
   if (!res.ok) return false;
   const data = await res.json();
   tokens.set(data.accessToken, data.refreshToken);
@@ -83,11 +102,83 @@ export const api = {
   del: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 };
 
+// ---- Clock sync (listen-along / Chorus) ----
+// Offset of the server clock from ours (serverMs - localMs), estimated NTP-style
+// from quick pings to /api/social/time. Null until measured (or on an older
+// server without that endpoint) — callers then fall back to the
+// server-timestamp-only behaviour.
+let clockOffsetMs: number | null = null;
+let clockSyncedAt = 0;
+let clockSyncing: Promise<void> | null = null;
+
+export const clock = {
+  /** Measured server-minus-local offset in ms, or null if not yet synced. */
+  get offsetMs() {
+    return clockOffsetMs;
+  },
+  /** Best estimate of the server's clock right now, or null if not yet synced. */
+  serverNow(): number | null {
+    return clockOffsetMs == null ? null : Date.now() + clockOffsetMs;
+  },
+};
+
+/** Measure the clock offset: a few pings, keeping the one with the smallest
+ *  round trip (least queueing noise); offset = serverNow - midpoint(send, receive).
+ *  Cheap and cached for 5 minutes unless `force`. */
+export function syncClock(force = false): Promise<void> {
+  if (!force && clockOffsetMs != null && Date.now() - clockSyncedAt < 5 * 60 * 1000) {
+    return Promise.resolve();
+  }
+  if (clockSyncing) return clockSyncing; // one measurement at a time
+  clockSyncing = (async () => {
+    let bestRtt: number | null = null;
+    let bestOffset: number | null = null;
+    for (let i = 0; i < 4; i++) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 4000);
+      try {
+        const t0 = Date.now();
+        const res = await fetch(`${API_URL}/api/social/time`, {
+          headers: tokens.access ? { Authorization: `Bearer ${tokens.access}` } : {},
+          cache: "no-store",
+          signal: ctrl.signal,
+        });
+        const t3 = Date.now();
+        if (!res.ok) return; // older server: no time endpoint
+        const serverNow = Number((await res.json()).serverNow);
+        if (!Number.isFinite(serverNow)) return;
+        const rtt = t3 - t0;
+        if (bestRtt == null || rtt < bestRtt) {
+          bestRtt = rtt;
+          bestOffset = Math.round(serverNow - (t0 + t3) / 2);
+        }
+      } catch {
+        return;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    if (bestOffset != null) {
+      clockOffsetMs = bestOffset;
+      clockSyncedAt = Date.now();
+    }
+  })().finally(() => {
+    clockSyncing = null;
+  });
+  return clockSyncing;
+}
+
+/** A file the server refused because it holds no playable audio. */
+export interface RejectedUpload {
+  name: string;
+  reason: string;
+}
+
 /** Upload audio files (multipart) with progress. Originals are preserved (no transcode). */
 export function uploadFiles(
   files: File[],
   onProgress?: (pct: number) => void,
-): Promise<{ added: number; failed: number; duplicates?: number; addedNames: string[]; failedNames: string[] }> {
+): Promise<UploadResult> {
   return new Promise((resolve, reject) => {
     const form = new FormData();
     for (const f of files) form.append("files", f);
@@ -131,6 +222,7 @@ interface UploadResult {
   duplicates?: number;
   addedNames: string[];
   failedNames: string[];
+  rejected?: RejectedUpload[]; // subset of failed, with the reason (older servers omit it)
 }
 
 /** Upload one large file in chunks (each well under the CDN cap), then finalize. */
@@ -181,6 +273,7 @@ export interface UploadTotals {
   duplicates: number;
   addedNames: string[];
   failedNames: string[];
+  rejected: RejectedUpload[];
 }
 
 /**
@@ -194,7 +287,14 @@ export async function uploadManyFiles(
   files: File[],
   onProgress?: (pct: number) => void,
 ): Promise<UploadTotals> {
-  const totals: UploadTotals = { added: 0, failed: 0, duplicates: 0, addedNames: [], failedNames: [] };
+  const totals: UploadTotals = {
+    added: 0,
+    failed: 0,
+    duplicates: 0,
+    addedNames: [],
+    failedNames: [],
+    rejected: [],
+  };
   if (!files.length) return totals;
   const totalBytes = files.reduce((n, f) => n + f.size, 0) || 1;
   let doneBytes = 0;
@@ -226,6 +326,7 @@ export async function uploadManyFiles(
     totals.duplicates += r.duplicates ?? 0;
     totals.addedNames.push(...r.addedNames);
     totals.failedNames.push(...r.failedNames);
+    totals.rejected.push(...(r.rejected ?? []));
   };
 
   for (const batch of batches) {

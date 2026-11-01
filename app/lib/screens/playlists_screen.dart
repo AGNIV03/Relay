@@ -10,6 +10,8 @@ import '../theme.dart';
 import 'liked_songs_screen.dart';
 import 'playlist_detail_screen.dart';
 
+enum _PlOrder { shuffle, name, songs }
+
 class PlaylistsScreen extends StatefulWidget {
   const PlaylistsScreen({super.key});
   @override
@@ -22,8 +24,66 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
   String _q = '';
   Timer? _sync;
   // Default order is random. A fixed per-session seed keeps that random order
-  // stable across rebuilds (so it doesn't reshuffle on every frame or poll).
-  final int _shuffleSeed = DateTime.now().millisecondsSinceEpoch;
+  // stable across rebuilds (so it doesn't reshuffle on every frame or poll);
+  // picking "Shuffle" in the sort menu reshuffles.
+  int _shuffleSeed = DateTime.now().millisecondsSinceEpoch;
+  _PlOrder _order = _PlOrder.shuffle;
+  bool _asc = true;
+
+  List<Playlist> _ordered(List<Playlist> list) {
+    final l = List<Playlist>.of(list);
+    switch (_order) {
+      case _PlOrder.shuffle:
+        return l..shuffle(Random(_shuffleSeed));
+      case _PlOrder.name:
+        l.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+      case _PlOrder.songs:
+        l.sort((a, b) => b.trackCount.compareTo(a.trackCount)); // most first
+    }
+    return _asc ? l : l.reversed.toList();
+  }
+
+  Widget _sortButton() {
+    const labels = {
+      _PlOrder.shuffle: 'Shuffle',
+      _PlOrder.name: 'Name',
+      _PlOrder.songs: 'Most songs',
+    };
+    return PopupMenuButton<_PlOrder>(
+      icon: const Icon(LucideIcons.arrowDownUp, size: 20),
+      tooltip: 'Sort',
+      color: kPanel2,
+      onSelected: (o) => setState(() {
+        if (o == _PlOrder.shuffle) {
+          _order = o;
+          _shuffleSeed = DateTime.now().millisecondsSinceEpoch;
+        } else if (o == _order) {
+          _asc = !_asc;
+        } else {
+          _order = o;
+          _asc = true;
+        }
+      }),
+      itemBuilder: (_) => [
+        for (final e in labels.entries)
+          PopupMenuItem(
+            value: e.key,
+            child: Row(children: [
+              Expanded(
+                child: Text(e.value, style: TextStyle(color: _order == e.key ? kAccent : null)),
+              ),
+              if (_order == e.key)
+                Icon(
+                    e.key == _PlOrder.shuffle
+                        ? LucideIcons.shuffle
+                        : (_asc ? LucideIcons.arrowUp : LucideIcons.arrowDown),
+                    size: 15,
+                    color: kAccent),
+            ]),
+          ),
+      ],
+    );
+  }
 
   @override
   void initState() {
@@ -42,11 +102,22 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
     super.dispose();
   }
 
-  void _reload() {
-    if (mounted) setState(_load);
+  String _sig = '';
+
+  /// Background sync: fetch, and only rebuild the grid if the list changed.
+  Future<void> _reload() async {
+    try {
+      final pls = await context.read<Api>().playlists();
+      final sig = pls.map((p) => '${p.id}|${p.name}|${p.trackCount}').join(';');
+      if (!mounted || sig == _sig) return;
+      _sig = sig;
+      setState(() => _future = Future.value(pls));
+    } catch (_) {}
   }
 
-  void _load() => _future = context.read<Api>().playlists();
+  void _load() => _future = context.read<Api>().playlists()
+    ..then((pls) => _sig = pls.map((p) => '${p.id}|${p.name}|${p.trackCount}').join(';'))
+        .ignore();
 
   Future<void> _create() async {
     final controller = TextEditingController();
@@ -101,8 +172,10 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
       body: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
-            child: TextField(
+            padding: const EdgeInsets.fromLTRB(12, 10, 4, 4),
+            child: Row(children: [
+              Expanded(
+                child: TextField(
               controller: _searchController,
               onChanged: (v) => setState(() => _q = v.trim()),
               decoration: InputDecoration(
@@ -118,7 +191,10 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
                         },
                       ),
               ),
-            ),
+                ),
+              ),
+              _sortButton(),
+            ]),
           ),
           Expanded(
             child: FutureBuilder<List<Playlist>>(
@@ -126,11 +202,9 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
               builder: (context, snap) {
                 if (!snap.hasData) return const Center(child: CircularProgressIndicator());
                 final ql = _q.toLowerCase();
-                final playlists = (ql.isEmpty
-                    ? List<Playlist>.of(snap.data!)
-                    : snap.data!.where((p) => p.name.toLowerCase().contains(ql)).toList())
-                  // Default to a random order (stable within this session).
-                  ..shuffle(Random(_shuffleSeed));
+                final playlists = _ordered(ql.isEmpty
+                    ? snap.data!
+                    : snap.data!.where((p) => p.name.toLowerCase().contains(ql)).toList());
                 // The permanent Liked Songs tile shows when not filtering (or if it matches).
                 final showLiked = ql.isEmpty || 'liked songs'.contains(ql);
                 return GridView.builder(

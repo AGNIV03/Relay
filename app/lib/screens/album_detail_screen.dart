@@ -67,7 +67,10 @@ class _AlbumDetailScreenState extends State<AlbumDetailScreen> {
                                 label: const Text('Play'),
                                 onPressed: tracks.isEmpty
                                     ? null
-                                    : () => context.read<PlayerModel>().playQueue(tracks),
+                                    : () => context.read<PlayerModel>().playQueue(tracks,
+                                        // whole-album Play: with shuffle on, the
+                                        // first song is random too
+                                        anchorStart: false),
                               ),
                               Consumer<PlayerModel>(
                                 builder: (context, player, _) => OutlinedButton.icon(

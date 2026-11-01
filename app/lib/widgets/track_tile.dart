@@ -86,9 +86,11 @@ class TrackTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final api = context.read<Api>();
-    final player = context.watch<PlayerModel>();
+    // Rebuild only when this row's "current / playing" state changes.
+    final (isCurrent, isPlaying) = context.select<PlayerModel, (bool, bool)>(
+        (p) => (p.current?.id == track.id, p.current?.id == track.id && p.playing));
+    final player = context.read<PlayerModel>();
     final downloads = context.watch<DownloadManager>();
-    final isCurrent = player.current?.id == track.id;
     final selectable = onSelectToggle != null;
     final selectionMode = selectable && selectedIds.isNotEmpty;
     final isSelected = selectedIds.contains(track.id);
@@ -111,7 +113,7 @@ class TrackTile extends StatelessWidget {
               : SizedBox(
                   width: 28,
                   child: Center(
-                    child: isCurrent && player.playing
+                    child: isPlaying
                         ? const Icon(LucideIcons.music2, size: 15, color: kAccent)
                         : Text("${index + 1}", style: const TextStyle(color: kMuted)),
                   ),
