@@ -64,6 +64,13 @@ class MediaKitPlayer extends AudioPlayerPlatform {
     if (JustAudioMediaKit.prefetchPlaylist) {
       setProperty(_player, 'prefetch-playlist', 'yes');
     }
+    // PATCH(relay): gapless between playlist entries. `weak` (pinned explicitly,
+    // it's also mpv's default) keeps the audio device open across tracks that
+    // share a sample format, so consecutive tracks join with no gap. `yes` would
+    // force every later track into the FIRST track's format, i.e. resample a
+    // 96 kHz album down to 44.1 kHz if a CD-quality song played first; `weak`
+    // reopens the device at the new rate instead, so quality is never reduced.
+    setProperty(_player, 'gapless-audio', 'weak');
 
     _streamSubscriptions = [
       _player.stream.duration.listen((duration) {

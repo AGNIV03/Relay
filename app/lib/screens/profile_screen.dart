@@ -7,6 +7,7 @@ import '../player.dart';
 import '../theme.dart';
 import '../widgets/friends_panel.dart';
 import 'rewind_screen.dart';
+import 'settings_screen.dart';
 
 /// Profile: the signed-in user, change password, sign out, and (on mobile)
 /// friend activity. Used as the mobile Profile tab and the desktop profile page.
@@ -98,10 +99,12 @@ class ProfileScreen extends StatelessWidget {
             label: 'Change password',
             onTap: () => _changePassword(context),
           ),
+          // Playback, downloads, scrobbling, privacy and "sign out everywhere".
           _tile(
-            icon: Icons.shield_outlined,
-            label: 'Privacy & sharing',
-            onTap: () => _privacySheet(context),
+            icon: Icons.tune,
+            label: 'Settings',
+            onTap: () => Navigator.of(context)
+                .push(MaterialPageRoute(builder: (_) => const SettingsScreen())),
           ),
         ]),
         // Sign out (destructive), in its own card.
@@ -110,13 +113,7 @@ class ProfileScreen extends StatelessWidget {
             icon: LucideIcons.logOut,
             label: 'Sign out',
             color: const Color(0xFFEF4444),
-            onTap: () => _signOut(context),
-          ),
-          _tile(
-            icon: Icons.devices_other,
-            label: 'Sign out of all devices',
-            color: const Color(0xFFEF4444),
-            onTap: () => _signOutEverywhere(context),
+            onTap: () => signOutAndReset(context),
           ),
         ]),
         if (showFriends) ...[
@@ -154,51 +151,6 @@ class ProfileScreen extends StatelessWidget {
         onTap: onTap,
       );
 
-  Future<void> _signOut(BuildContext context) async {
-    // Stop + wipe the player BEFORE logging out, otherwise audio keeps playing
-    // with no UI to stop it once we're on the login screen.
-    final player = context.read<PlayerModel>();
-    final appState = context.read<AppState>();
-    await player.signOutReset();
-    await appState.logout();
-  }
-
-  Future<void> _signOutEverywhere(BuildContext context) async {
-    final api = context.read<Api>();
-    final messenger = ScaffoldMessenger.of(context);
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: kPanel,
-        title: const Text('Sign out of all devices?'),
-        content: const Text('Every phone, computer and browser signed in to this account '
-            'will be signed out, including this one.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Sign out everywhere', style: TextStyle(color: Color(0xFFEF4444))),
-          ),
-        ],
-      ),
-    );
-    if (ok != true || !context.mounted) return;
-    try {
-      await api.logoutAll();
-    } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text("Couldn't sign out everywhere: $e")));
-      return;
-    }
-    if (context.mounted) await _signOut(context);
-  }
-
-  void _privacySheet(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: kPanel,
-      builder: (_) => const SafeArea(child: _PrivacySettings()),
-    );
-  }
 
   void _changePassword(BuildContext context) {
     final current = TextEditingController();
@@ -274,15 +226,63 @@ class ProfileScreen extends StatelessWidget {
   }
 }
 
-/// Privacy toggles (bottom sheet): whether others can see what you're playing
-/// (plus your history and likes), and whether they can listen along with you.
-class _PrivacySettings extends StatefulWidget {
-  const _PrivacySettings();
-  @override
-  State<_PrivacySettings> createState() => _PrivacySettingsState();
+/// Sign out on this device. Stops + wipes the player BEFORE logging out,
+/// otherwise audio keeps playing with no UI to stop it on the login screen.
+Future<void> signOutAndReset(BuildContext context) async {
+  final player = context.read<PlayerModel>();
+  final appState = context.read<AppState>();
+  await player.signOutReset();
+  await appState.logout();
 }
 
-class _PrivacySettingsState extends State<_PrivacySettings> {
+/// Confirm, revoke every session on the server, then sign out here too.
+Future<void> signOutEverywhere(BuildContext context) async {
+  final api = context.read<Api>();
+  final messenger = ScaffoldMessenger.of(context);
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      backgroundColor: kPanel,
+      title: const Text('Sign out of all devices?'),
+      content: const Text('Every phone, computer and browser signed in to this account '
+          'will be signed out, including this one.'),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, true),
+          child: const Text('Sign out everywhere', style: TextStyle(color: Color(0xFFEF4444))),
+        ),
+      ],
+    ),
+  );
+  if (ok != true || !context.mounted) return;
+  try {
+    await api.logoutAll();
+  } catch (e) {
+    messenger.showSnackBar(SnackBar(content: Text("Couldn't sign out everywhere: $e")));
+    return;
+  }
+  if (context.mounted) await signOutAndReset(context);
+}
+
+/// The privacy toggles as a bottom sheet.
+void showPrivacySheet(BuildContext context) {
+  showModalBottomSheet(
+    context: context,
+    backgroundColor: kPanel,
+    builder: (_) => const SafeArea(child: PrivacySettings()),
+  );
+}
+
+/// Privacy toggles (bottom sheet): whether others can see what you're playing
+/// (plus your history and likes), and whether they can listen along with you.
+class PrivacySettings extends StatefulWidget {
+  const PrivacySettings({super.key});
+  @override
+  State<PrivacySettings> createState() => _PrivacySettingsState();
+}
+
+class _PrivacySettingsState extends State<PrivacySettings> {
   bool? _share;
   bool? _listen;
   bool _saving = false;

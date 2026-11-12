@@ -27,19 +27,27 @@ const nextConfig: NextConfig = {
   // talks to /api on its own origin via the proxy above, and loads audio/cover art
   // from there too). 'unsafe-inline'/'unsafe-eval' are required by Next.js's
   // runtime + Tailwind's inline styles.
+  //
+  // Chromecast: the Google Cast web sender SDK is loaded on demand (Chromium only)
+  // from www.gstatic.com (cast_sender.js, which pulls cast_framework.js from the
+  // same host), and in some Chrome builds it bootstraps from the browser's
+  // built-in Cast component extension. Only those exact origins are added. The
+  // receiver fetches media itself, so media-src stays same-origin.
   async headers() {
+    const castScript = "https://www.gstatic.com chrome-extension://pkedcjkdefgpdelpbcmbmeomcjbeemfm";
     const csp = [
       "default-src 'self'",
       "base-uri 'self'",
       "form-action 'self'",
       "frame-ancestors 'none'",
       "object-src 'none'",
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+      `script-src 'self' 'unsafe-inline' 'unsafe-eval' ${castScript}`,
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob:",
       "media-src 'self' blob:",
       "font-src 'self' data:",
-      "connect-src 'self'",
+      "connect-src 'self' https://www.gstatic.com",
+      "frame-src 'self' https://www.gstatic.com",
       "worker-src 'self' blob:",
       "manifest-src 'self'",
       "upgrade-insecure-requests",

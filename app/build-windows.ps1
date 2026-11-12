@@ -4,6 +4,8 @@
 # Output: build\windows\x64\runner\Release\stream_app.exe (+ DLLs in that folder)
 $ErrorActionPreference = "Stop"
 $flutter = "A:\stream\tools\flutter\bin\flutter.bat"
+# Plugins with native Java bits (jni) need a JDK at configure time: use the portable one.
+$env:JAVA_HOME = (Get-ChildItem "A:\stream\tools\jdk" -Directory | Where-Object { Test-Path "$($_.FullName)\bin\java.exe" } | Select-Object -First 1).FullName
 
 Write-Host "Building Windows release..."
 & $flutter build windows --release

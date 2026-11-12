@@ -6,6 +6,8 @@ import '../app_state.dart';
 import '../downloads.dart';
 import '../models.dart';
 import '../player.dart';
+import '../screens/album_detail_screen.dart';
+import '../screens/artist_screen.dart';
 import '../theme.dart';
 import 'cover.dart';
 import 'like_button.dart';
@@ -140,8 +142,11 @@ class TrackTile extends StatelessWidget {
                 if (showDownload && downloads.supported)
                   _downloadButton(context, track, downloads)
                 else if (downloads.isDownloading(track.id))
-                  const SizedBox(
-                      width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                  SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, value: downloads.progressOf(track.id)))
                 else if (downloads.isDownloaded(track.id))
                   const Icon(LucideIcons.checkCircle, size: 17, color: kAccent),
                 if (showMenu) TrackMenu(track: track, onChanged: onChanged),
@@ -155,10 +160,21 @@ class TrackTile extends StatelessWidget {
   /// Inline download/remove toggle for a single track.
   Widget _downloadButton(BuildContext context, Track track, DownloadManager downloads) {
     if (downloads.isDownloading(track.id)) {
-      return const SizedBox(
-        width: 40,
-        height: 40,
-        child: Padding(padding: EdgeInsets.all(11), child: CircularProgressIndicator(strokeWidth: 2)),
+      // Determinate ring for the active download, spinner while queued.
+      final p = downloads.progressOf(track.id);
+      return Tooltip(
+        message: downloads.pausedForWifi
+            ? 'Waiting for Wi-Fi'
+            : p == null
+                ? 'Queued'
+                : 'Downloading ${(p * 100).round()}%',
+        child: SizedBox(
+          width: 40,
+          height: 40,
+          child: Padding(
+              padding: const EdgeInsets.all(11),
+              child: CircularProgressIndicator(strokeWidth: 2, value: p)),
+        ),
       );
     }
     final done = downloads.isDownloaded(track.id);
@@ -223,6 +239,21 @@ class TrackMenu extends StatelessWidget {
           case 'playlist':
             if (context.mounted) await _addToPlaylist(context, track);
             break;
+          case 'artist':
+            // Push within the current tab's navigator (bottom nav / sidebar stay).
+            final artist = track.artist;
+            if (artist != null && context.mounted) {
+              Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => ArtistScreen(artistId: artist.id, artistName: artist.name)));
+            }
+            break;
+          case 'album':
+            final album = track.album;
+            if (album != null && context.mounted) {
+              Navigator.of(context)
+                  .push(MaterialPageRoute(builder: (_) => AlbumDetailScreen(albumId: album.id)));
+            }
+            break;
           case 'delete':
             if (context.mounted) await _delete(context);
             break;
@@ -253,6 +284,24 @@ class TrackMenu extends StatelessWidget {
             Text("Add to playlist"),
           ]),
         ),
+        if (track.artist != null && track.artist!.id.isNotEmpty)
+          const PopupMenuItem(
+            value: 'artist',
+            child: Row(children: [
+              Icon(LucideIcons.mic2, size: 16),
+              SizedBox(width: 10),
+              Text("Go to artist"),
+            ]),
+          ),
+        if (track.album != null && track.album!.id.isNotEmpty)
+          const PopupMenuItem(
+            value: 'album',
+            child: Row(children: [
+              Icon(LucideIcons.disc3, size: 16),
+              SizedBox(width: 10),
+              Text("Go to album"),
+            ]),
+          ),
         if (downloads.supported)
           downloads.isDownloaded(track.id)
               ? const PopupMenuItem(

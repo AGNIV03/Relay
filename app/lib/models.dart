@@ -58,6 +58,9 @@ class Track {
   final Album? album;
   final String? uploaderName;
   final String? createdAt;
+  // Integrated loudness (EBU R128, LUFS) for volume normalization; null until
+  // the server has measured it.
+  final double? loudnessLufs;
 
   Track({
     required this.id,
@@ -71,6 +74,7 @@ class Track {
     this.album,
     this.uploaderName,
     this.createdAt,
+    this.loudnessLufs,
   });
 
   factory Track.fromJson(Map<String, dynamic> j) => Track(
@@ -85,6 +89,7 @@ class Track {
         album: j['album'] != null ? Album.fromJson(j['album']) : null,
         uploaderName: j['uploader']?['username'] as String?,
         createdAt: j['createdAt'] as String?,
+        loudnessLufs: (j['loudnessLufs'] as num?)?.toDouble(),
       );
 
   String get artistName => artist?.name ?? '';
@@ -97,6 +102,7 @@ class Track {
         'trackNo': trackNo,
         'format': format,
         'bitrate': bitrate,
+        'loudnessLufs': loudnessLufs,
         'artist': artist == null ? null : {'id': artist!.id, 'name': artist!.name},
         'album': album == null
             ? null

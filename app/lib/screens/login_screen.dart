@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../api.dart';
 import '../app_state.dart';
 import '../theme.dart';
+import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -116,6 +117,18 @@ class _LoginScreenState extends State<LoginScreen> {
                         padding: const EdgeInsets.symmetric(vertical: 6),
                         child: Text(_busy ? 'Signing in…' : 'Sign in'),
                       ),
+                    ),
+                    const SizedBox(height: 8),
+                    TextButton(
+                      onPressed: _busy
+                          ? null
+                          : () => Navigator.of(context).push(MaterialPageRoute(
+                                builder: (_) => RegisterScreen(
+                                  initialServer:
+                                      _server.text.trim() == 'https://' ? '' : _server.text.trim(),
+                                ),
+                              )),
+                      child: const Text('Have an invite code? Create an account'),
                     ),
                   ],
                 ),

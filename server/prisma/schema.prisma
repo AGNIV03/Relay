@@ -34,6 +34,14 @@ model User {
   shareActivity    Boolean @default(true)
   allowListenAlong Boolean @default(true)
 
+  // Optional scrobble forwarding (server-side, so every client gets it).
+  listenBrainzToken String?
+  lastfmSessionKey  String?
+  lastfmUsername    String?
+
+  refreshTokens  RefreshToken[]
+  invitesCreated InviteCode[]   @relation("InviteCreator")
+
   playlists Playlist[]
   history   PlayHistory[]
   favorites Favorite[]
@@ -81,6 +89,9 @@ model Track {
   // Identity from AcoustID/MusicBrainz auto-tagging (only when enabled).
   acoustId        String?
   mbRecordingId   String?
+  // Integrated loudness (EBU R128, LUFS) measured once at ingest; clients use it
+  // for volume normalization (attenuation only, never boosting/clipping).
+  loudnessLufs    Float?
 
   // Lyrics (fetched from LRCLIB by track signature). lyricsSynced is LRC format
   // (timestamped lines) for karaoke-style sync; lyricsPlain is the fallback text.
@@ -196,3 +207,49 @@ model Setting {
   key   String @id
   value String
 }
+
+// Rotating refresh tokens. Each refresh consumes the presented token and issues
+// a new one in the same family; presenting an already-used token (reuse = likely
+// theft) revokes the whole family.
+model RefreshToken {
+  id         String    @id // the JWT's jti
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  familyId   String
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime
+  usedAt     DateTime?
+  revokedAt  DateTime?
+
+  @@index([userId])
+  @@index([familyId])
+}
+
+// Admin-issued invite codes for self-registration.
+model InviteCode {
+  id          String    @id @default(cuid())
+  code        String    @unique
+  createdById String?
+  createdBy   User?     @relation("InviteCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  role        Role      @default(USER)
+  maxUses     Int       @default(1)
+  uses        Int       @default(0)
+  note        String?
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+}
+
+// Files refused at ingest (no playable audio, not audio, ...), for the admin
+// dashboard. Capped/pruned by the server.
+model IngestRejection {
+  id        String   @id @default(cuid())
+  name      String
+  reason    String
+  source    String // "upload" | "admin" | "scan"
+  userId    String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+

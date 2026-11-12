@@ -124,14 +124,18 @@ class DownloadToggleButton extends StatelessWidget {
       icon = Icon(allDown ? LucideIcons.checkCircle : LucideIcons.download,
           color: allDown ? kAccentInk : kAccent, size: 22);
     }
-    return _roundButton(
+    // Wi-Fi only and on mobile data: the queue is held, so say so on the button.
+    final waitingWifi = !allDown && downloads.wifiBlocked;
+    final button = _roundButton(
       tooltip: allDown
           ? 'Downloaded (tap to remove)'
-          : pending
-              ? 'Downloading $done of ${tracks.length}'
-              : done > 0
-                  ? 'Download ($done of ${tracks.length} saved)'
-                  : 'Download',
+          : waitingWifi
+              ? 'Waiting for Wi-Fi ($done of ${tracks.length} saved)'
+              : pending
+                  ? 'Downloading $done of ${tracks.length}'
+                  : done > 0
+                      ? 'Download ($done of ${tracks.length} saved)'
+                      : 'Download',
       filled: allDown,
       icon: icon,
       onPressed: tracks.isEmpty
@@ -141,8 +145,33 @@ class DownloadToggleButton extends StatelessWidget {
                 await downloads.removeAll(tracks, source);
               } else {
                 await downloads.downloadAll(tracks, source, name: name);
+                if (downloads.wifiBlocked && context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text('Queued. Downloads start when you are on Wi-Fi '
+                        '(change this in Settings).'),
+                  ));
+                }
               }
             },
     );
+    if (!waitingWifi) return button;
+    return Stack(clipBehavior: Clip.none, children: [
+      button,
+      Positioned(
+        right: -2,
+        bottom: -2,
+        child: IgnorePointer(
+          child: Container(
+            padding: const EdgeInsets.all(3),
+            decoration: BoxDecoration(
+              color: kPanel2,
+              shape: BoxShape.circle,
+              border: Border.all(color: kBorder),
+            ),
+            child: const Icon(Icons.wifi_off, size: 12, color: kMuted),
+          ),
+        ),
+      ),
+    ]);
   }
 }

@@ -3,8 +3,16 @@ import bcrypt from "bcryptjs";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
-import { signAccessToken, signRefreshToken, verifyToken, tokenVersionOf } from "../lib/jwt.js";
+import { signAccessToken, signMediaToken, verifyToken } from "../lib/jwt.js";
 import { requireAuth, invalidateAuthCache } from "../middleware/auth.js";
+import {
+  issueRefreshToken,
+  rotateRefreshToken,
+  revokeAllRefreshTokens,
+  RefreshRejectedError,
+} from "../lib/refreshTokens.js";
+import { ipLimiter, userLimiter } from "../lib/rateLimit.js";
+import { findUsableInvite, normalizeInviteCode, consumeInvite, InviteError } from "../lib/invites.js";
 
 const router = Router();
 
@@ -59,14 +67,21 @@ function recordFailure(username: string) {
   failures.set(key, { count, last: now, lockedUntil });
 }
 
-/** The token pair + user shape returned by /login and /change-password. */
-function sessionFor(user: { id: string; username: string; role: "ADMIN" | "USER"; tokenVersion: number }) {
+/** The token pair + user shape returned by /login, /register and /change-password.
+ *  Starts a new refresh-token family. */
+async function sessionFor(user: { id: string; username: string; role: "ADMIN" | "USER"; tokenVersion: number }) {
   return {
     accessToken: signAccessToken(user.id, user.role, user.tokenVersion),
-    refreshToken: signRefreshToken(user.id, user.role, user.tokenVersion),
+    refreshToken: await issueRefreshToken(user),
     user: { id: user.id, username: user.username, role: user.role },
   };
 }
+
+// Generous per-user / per-IP caps (Cloudflare is the edge limiter).
+const changePasswordLimiter = userLimiter(15 * 60_000, 20);
+const mediaTokenLimiter = userLimiter(60 * 60_000, 60);
+const registerLimiter = ipLimiter(60 * 60_000, 10);
+const inviteCheckLimiter = ipLimiter(15 * 60_000, 30);
 
 router.post("/login", async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
@@ -86,26 +101,30 @@ router.post("/login", async (req, res) => {
   }
 
   failures.delete(failKey(username));
-  res.json(sessionFor(user));
+  res.json(await sessionFor(user));
 });
 
+/** POST /api/auth/refresh { refreshToken } -> { accessToken, refreshToken }
+ *  Rotates: the presented token is consumed and a new one returned (clients must
+ *  store it). Reusing a consumed token revokes its whole family (see
+ *  lib/refreshTokens.ts). */
 router.post("/refresh", async (req, res) => {
   const token = z.object({ refreshToken: z.string() }).safeParse(req.body);
   if (!token.success) return res.status(400).json({ error: "Invalid input" });
+  let payload;
   try {
-    const payload = verifyToken(token.data.refreshToken);
-    if (payload.type !== "refresh") return res.status(401).json({ error: "Invalid token type" });
-    const user = await prisma.user.findUnique({ where: { id: payload.sub } });
-    if (!user) return res.status(401).json({ error: "User no longer exists" });
-    // Revoked (password change / sign out everywhere / role change).
-    if (tokenVersionOf(payload) !== user.tokenVersion) {
-      return res.status(401).json({ error: "Invalid or expired refresh token" });
-    }
-    res.json({
-      accessToken: signAccessToken(user.id, user.role, user.tokenVersion),
-      refreshToken: signRefreshToken(user.id, user.role, user.tokenVersion),
-    });
+    payload = verifyToken(token.data.refreshToken);
   } catch {
+    return res.status(401).json({ error: "Invalid or expired refresh token" });
+  }
+  if (payload.type !== "refresh") return res.status(401).json({ error: "Invalid token type" });
+  const user = await prisma.user.findUnique({ where: { id: payload.sub } });
+  if (!user) return res.status(401).json({ error: "User no longer exists" });
+  try {
+    const refreshToken = await rotateRefreshToken(payload, token.data.refreshToken, user);
+    res.json({ accessToken: signAccessToken(user.id, user.role, user.tokenVersion), refreshToken });
+  } catch (e) {
+    if (!(e instanceof RefreshRejectedError)) throw e;
     return res.status(401).json({ error: "Invalid or expired refresh token" });
   }
 });
@@ -113,7 +132,7 @@ router.post("/refresh", async (req, res) => {
 /** POST /api/auth/change-password { currentPassword, newPassword }
  *  Revokes every other session (bumps tokenVersion) and returns a fresh token
  *  pair for the caller: { ok, accessToken, refreshToken, user }. */
-router.post("/change-password", requireAuth, async (req, res) => {
+router.post("/change-password", requireAuth, changePasswordLimiter, async (req, res) => {
   const parsed = z
     .object({
       currentPassword: z.string().min(1),
@@ -135,7 +154,8 @@ router.post("/change-password", requireAuth, async (req, res) => {
     data: { passwordHash, tokenVersion: { increment: 1 } },
   });
   invalidateAuthCache(user.id);
-  res.json({ ok: true, ...sessionFor(updated) });
+  await revokeAllRefreshTokens(user.id);
+  res.json({ ok: true, ...(await sessionFor(updated)) });
 });
 
 /** POST /api/auth/logout-all — "sign out of all devices": revokes every token
@@ -146,7 +166,74 @@ router.post("/logout-all", requireAuth, async (req, res) => {
     data: { tokenVersion: { increment: 1 } },
   });
   invalidateAuthCache(req.user!.id);
+  await revokeAllRefreshTokens(req.user!.id);
   res.status(204).end();
+});
+
+/** POST /api/auth/media-token -> { token, expiresAt }
+ *  A 7-day token accepted ONLY as `?token=` on the stream/cover routes, so the
+ *  access token never has to appear in a URL. Revoked with the user's other
+ *  tokens (it carries tokenVersion). */
+router.post("/media-token", requireAuth, mediaTokenLimiter, async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where: { id: req.user!.id },
+    select: { id: true, role: true, tokenVersion: true },
+  });
+  if (!user) return res.status(401).json({ error: "Invalid or expired token" });
+  const { token, expiresAt } = signMediaToken(user.id, user.role, user.tokenVersion);
+  res.json({ token, expiresAt: expiresAt.toISOString() });
+});
+
+// ---- Invite-based registration ---------------------------------------------
+
+/** GET /api/auth/invite/:code -> { valid, role? } — check a code without using it. */
+router.get("/invite/:code", inviteCheckLimiter, async (req, res) => {
+  const invite = await findUsableInvite(normalizeInviteCode(String(req.params.code)));
+  res.json(invite ? { valid: true, role: invite.role } : { valid: false });
+});
+
+const USERNAME_RE = /^[a-zA-Z0-9_.-]{3,32}$/;
+const registerSchema = z.object({
+  code: z.string().min(1).max(64),
+  username: z.string().trim().regex(USERNAME_RE),
+  password: z.string().min(10).max(200),
+});
+
+/** POST /api/auth/register { code, username, password } -> { accessToken, refreshToken, user }
+ *  Creates an account with the role the invite grants and uses up one of its uses. */
+router.post("/register", registerLimiter, async (req, res) => {
+  const parsed = registerSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error:
+        "Username must be 3-32 characters (letters, numbers, _ . -) and the password at least 10 characters",
+    });
+  }
+  const { username, password } = parsed.data;
+  const code = normalizeInviteCode(parsed.data.code);
+  const BAD_CODE = "This invite code is invalid or has expired";
+  if (!(await findUsableInvite(code))) return res.status(400).json({ error: BAD_CODE });
+  // Case-insensitive so "Admin" can't impersonate "admin".
+  const taken = await prisma.user.findFirst({
+    where: { username: { equals: username, mode: "insensitive" } },
+    select: { id: true },
+  });
+  if (taken) return res.status(400).json({ error: "Username already taken" });
+
+  const passwordHash = await bcrypt.hash(password, 12);
+  try {
+    const user = await prisma.$transaction(async (tx) => {
+      const role = await consumeInvite(tx, code); // throws InviteError if no longer usable
+      return tx.user.create({ data: { username, passwordHash, role } });
+    });
+    res.json(await sessionFor(user));
+  } catch (e) {
+    if (e instanceof InviteError) return res.status(400).json({ error: BAD_CODE });
+    if ((e as { code?: string }).code === "P2002") {
+      return res.status(400).json({ error: "Username already taken" });
+    }
+    throw e;
+  }
 });
 
 router.get("/me", requireAuth, async (req, res) => {

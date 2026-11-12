@@ -42,14 +42,23 @@ class QueuePanel extends StatelessWidget {
 
     // Two layers: manually-queued songs ("Next in queue") play before the rest of
     // the context ("Next up") resumes.
+    // A third, trailing section holds the tracks autoplay appended when the
+    // queue ran out (similar songs from the radio endpoint).
     final inQueue = <int>[];
     final fromContext = <int>[];
+    final fromAutoplay = <int>[];
     for (var i = idx + 1; i < q.length; i++) {
-      (player.isUserQueuedAt(i) ? inQueue : fromContext).add(i);
+      if (player.isUserQueuedAt(i)) {
+        inQueue.add(i);
+      } else if (player.isAutoplayAt(i)) {
+        fromAutoplay.add(i);
+      } else {
+        fromContext.add(i);
+      }
     }
 
-    Widget header(String label, {VoidCallback? onClear}) => Padding(
-          padding: EdgeInsets.fromLTRB(16, onClear == null ? 18 : 8, 4, 2),
+    Widget header(String label, {VoidCallback? onClear, Widget? trailing}) => Padding(
+          padding: EdgeInsets.fromLTRB(16, onClear == null && trailing == null ? 18 : 8, 4, 2),
           child: Row(children: [
             Expanded(
               child: Text(label,
@@ -61,6 +70,7 @@ class QueuePanel extends StatelessWidget {
                 style: TextButton.styleFrom(foregroundColor: kAccent, visualDensity: VisualDensity.compact),
                 child: const Text('Clear'),
               ),
+            ?trailing,
           ]),
         );
 
@@ -96,6 +106,30 @@ class QueuePanel extends StatelessWidget {
         if (fromContext.isNotEmpty) ...[
           header('NEXT UP'),
           reorderSection(fromContext),
+        ],
+        // Autoplay: similar songs keep playing after the queue ends. The switch
+        // turns it off (and drops the upcoming autoplay tracks) or back on.
+        if (!player.isChorusMember && !player.listeningAlong) ...[
+          header('AUTOPLAY',
+              trailing: Transform.scale(
+                scale: 0.8,
+                child: Switch(
+                  value: player.autoplayEnabled,
+                  onChanged: player.setAutoplay,
+                ),
+              )),
+          if (fromAutoplay.isNotEmpty)
+            reorderSection(fromAutoplay)
+          else
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Text(
+                player.autoplayEnabled
+                    ? 'Similar songs will play when your queue ends.'
+                    : 'Turn on to keep playing similar songs when your queue ends.',
+                style: const TextStyle(color: kMuted, fontSize: 12),
+              ),
+            ),
         ],
       ],
     );

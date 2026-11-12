@@ -7,6 +7,7 @@ import '../app_icons.dart';
 import '../events.dart';
 import '../models.dart';
 import '../theme.dart';
+import 'import_playlist_screen.dart';
 import 'liked_songs_screen.dart';
 import 'playlist_detail_screen.dart';
 
@@ -145,6 +146,37 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
     }
   }
 
+  /// "+" menu: create an empty playlist or import one (M3U / list / Spotify).
+  Future<void> _addMenu() async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: kPanel,
+      builder: (ctx) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            leading: const Icon(LucideIcons.plus, size: 20),
+            title: const Text('New playlist'),
+            onTap: () => Navigator.pop(ctx, 'new'),
+          ),
+          ListTile(
+            leading: const Icon(Icons.playlist_add, size: 20),
+            title: const Text('Import playlist'),
+            subtitle: const Text('From an M3U file, a pasted list or a Spotify link'),
+            onTap: () => Navigator.pop(ctx, 'import'),
+          ),
+        ]),
+      ),
+    );
+    if (!mounted) return;
+    if (choice == 'new') {
+      await _create();
+    } else if (choice == 'import') {
+      await Navigator.of(context)
+          .push(MaterialPageRoute(builder: (_) => const ImportPlaylistScreen()));
+      if (mounted) setState(_load);
+    }
+  }
+
   Future<void> _delete(Playlist pl) async {
     final ok = await showDialog<bool>(
       context: context,
@@ -166,7 +198,8 @@ class _PlaylistsScreenState extends State<PlaylistsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       floatingActionButton: FloatingActionButton(
-        onPressed: _create,
+        tooltip: 'New or import playlist',
+        onPressed: _addMenu,
         child: const Icon(Icons.add),
       ),
       body: Column(

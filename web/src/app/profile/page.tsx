@@ -1,7 +1,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { LogOut, KeyRound, User, ShieldCheck, MonitorSmartphone } from "lucide-react";
+import Link from "next/link";
+import {
+  LogOut,
+  KeyRound,
+  User,
+  ShieldCheck,
+  MonitorSmartphone,
+  SlidersHorizontal,
+  ChevronRight,
+} from "lucide-react";
 import { api, tokens } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import type { Privacy } from "@/lib/types";
@@ -78,6 +87,18 @@ export default function ProfilePage() {
 
       {/* Last year's Rewind lives here from Jan 8 until the next one is on Home. */}
       <RewindProfileEntry className="mb-6" />
+
+      <Link
+        href="/settings"
+        className="mb-6 flex items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--panel)] p-4 transition hover:bg-[var(--panel-2)]"
+      >
+        <SlidersHorizontal size={18} className="text-[var(--accent)]" />
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium">Settings</div>
+          <div className="text-xs text-[var(--muted)]">Autoplay, volume normalization, crossfade, scrobbling</div>
+        </div>
+        <ChevronRight size={18} className="text-[var(--muted)]" />
+      </Link>
 
       {/* Change password */}
       <section className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-5">

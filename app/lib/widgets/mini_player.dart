@@ -53,10 +53,16 @@ class MiniPlayer extends StatelessWidget {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
-                        Text(track.artistName,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(color: kMuted, fontSize: 11.5)),
+                        // While casting, the subtitle says where the music is playing.
+                        player.casting
+                            ? Text('Casting to ${player.castDeviceName}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(color: kAccent, fontSize: 11.5))
+                            : Text(track.artistName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(color: kMuted, fontSize: 11.5)),
                       ],
                     ),
                   ),

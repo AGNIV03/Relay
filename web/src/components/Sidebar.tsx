@@ -3,13 +3,26 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Home, Music2, Mic2, ListMusic, Settings, ChevronDown, Plus, Heart, User } from "lucide-react";
+import {
+  Home,
+  Music2,
+  Mic2,
+  ListMusic,
+  Settings,
+  ChevronDown,
+  Plus,
+  Heart,
+  User,
+  Search,
+  SlidersHorizontal,
+} from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { api } from "@/lib/api";
 import type { Playlist } from "@/lib/types";
 
 const NAV = [
   { href: "/", label: "Home", Icon: Home },
+  { href: "/search", label: "Search", Icon: Search },
   { href: "/songs", label: "Songs", Icon: Music2 },
   { href: "/artists", label: "Artists", Icon: Mic2 },
 ];
@@ -124,6 +137,9 @@ export function Sidebar() {
       </nav>
 
       <div className="mt-4 border-t border-[var(--border)] pt-4">
+        <Link href="/settings" className={`mb-1 ${itemCls(pathname === "/settings")}`}>
+          <SlidersHorizontal size={18} /> Settings
+        </Link>
         <Link
           href="/profile"
           className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition ${

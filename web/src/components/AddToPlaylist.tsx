@@ -2,7 +2,18 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { MoreHorizontal, ListEnd, ListPlus, Trash2, Plus, Info, Pencil } from "lucide-react";
+import { useRouter } from "next/navigation";
+import {
+  MoreHorizontal,
+  ListEnd,
+  ListPlus,
+  Trash2,
+  Plus,
+  Info,
+  Pencil,
+  Mic2,
+  Disc3,
+} from "lucide-react";
 import { api, ApiError } from "@/lib/api";
 import { usePlayer } from "@/context/PlayerContext";
 import { useAuth } from "@/context/AuthContext";
@@ -29,6 +40,7 @@ export function AddToPlaylist({
 }) {
   const player = usePlayer();
   const { user } = useAuth();
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [result, setResult] = useState<{ id: string; text: string } | null>(null);
@@ -56,6 +68,13 @@ export function AddToPlaylist({
     if (!open) place();
     setOpen((o) => !o);
   }
+
+  const artistId = track?.artist?.id ?? track?.artistId;
+  const albumId = track?.album?.id;
+  const go = (href: string) => {
+    setOpen(false);
+    router.push(href);
+  };
 
   const canDelete =
     user?.role === "ADMIN" || (!!track?.uploader && track.uploader.username === user?.username);
@@ -188,6 +207,22 @@ export function AddToPlaylist({
               </button>
             ))}
             <div className="my-1 border-t border-[var(--border)]" />
+            {artistId && (
+              <button
+                onClick={() => go(`/artists/${artistId}`)}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[var(--panel)]"
+              >
+                <Mic2 size={14} /> Go to artist
+              </button>
+            )}
+            {albumId && (
+              <button
+                onClick={() => go(`/albums/${albumId}`)}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-[var(--panel)]"
+              >
+                <Disc3 size={14} /> Go to album
+              </button>
+            )}
             <button
               onClick={() => {
                 setOpen(false);

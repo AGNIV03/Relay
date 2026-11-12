@@ -13,7 +13,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { prisma } from "../lib/prisma.js";
 import { env } from "../lib/env.js";
-import { fetchAndStoreLyrics, findOrCreateAlbum, findOrCreateArtist } from "./scanner.js";
+import { deleteAlbumIfEmpty, fetchAndStoreLyrics, findOrCreateAlbum, findOrCreateArtist } from "./scanner.js";
 
 const LOOKUP_URL = "https://api.acoustid.org/v2/lookup";
 const MIN_SCORE = 0.85;
@@ -255,6 +255,7 @@ async function tagOne(trackId: string): Promise<void> {
   const t = await prisma.track.findUnique({
     where: { id: trackId },
     include: { artist: true, album: true },
+    omit: { path: false },
   });
   if (!t || t.acoustId !== null) return; // gone, or already looked up
 
@@ -328,8 +329,7 @@ async function tagOne(trackId: string): Promise<void> {
 
   // Tidy up rows the re-link may have emptied.
   if (t.albumId && albumId !== t.albumId) {
-    const left = await prisma.track.count({ where: { albumId: t.albumId } });
-    if (left === 0) await prisma.album.delete({ where: { id: t.albumId } }).catch(() => {});
+    await deleteAlbumIfEmpty(t.albumId);
   }
   if (artistId !== t.artistId) {
     const [tracksLeft, albumsLeft] = await Promise.all([

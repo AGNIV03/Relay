@@ -8,6 +8,7 @@ import { pipeline } from "node:stream/promises";
 import { prisma } from "../lib/prisma.js";
 import { requireAuth } from "../middleware/auth.js";
 import {
+  deleteAlbumIfEmpty,
   fetchAndStoreLyrics,
   findOrCreateAlbum,
   findOrCreateArtist,
@@ -17,6 +18,9 @@ import {
 } from "../services/scanner.js";
 import { looksLikeAudio } from "../services/audioCheck.js";
 import { queueAutotag } from "../services/autotag.js";
+import { queueLoudness } from "../services/loudness.js";
+import { recordRejection } from "../services/ingestLog.js";
+import { forwardNowPlaying, forwardScrobble } from "../services/scrobble.js";
 import { env } from "../lib/env.js";
 import { rankTracks } from "../lib/search.js";
 import { qnum, qstr } from "../lib/query.js";
@@ -51,8 +55,11 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   limits: { fileSize: 2 * 1024 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) =>
-    cb(null, UPLOAD_EXT.has(path.extname(file.originalname).toLowerCase())),
+  fileFilter: (req, file, cb) => {
+    const ok = UPLOAD_EXT.has(path.extname(file.originalname).toLowerCase());
+    if (!ok) recordRejection(file.originalname, "Unsupported file type", "upload", req.user?.id);
+    cb(null, ok);
+  },
 });
 
 /** GET /api/library/artists */
@@ -194,7 +201,116 @@ router.post("/scrobble", async (req, res) => {
     data: { userId: req.user!.id, trackId: parsed.data.trackId, playlistId },
   });
   res.status(204).end();
+  forwardNowPlaying(me, parsed.data.trackId); // ListenBrainz / Last.fm, if connected
 });
+
+/** POST /api/library/scrobble/complete { trackId, startedAt (ISO) } — a finished
+ *  listen (played >= 50% or >= 4 min, client-side rule). Forwarded as a scrobble
+ *  to the user's connected ListenBrainz / Last.fm accounts. The play itself was
+ *  already recorded by /scrobble. */
+router.post("/scrobble/complete", async (req, res) => {
+  const parsed = z
+    .object({ trackId: z.string().min(1).max(64), startedAt: z.string().min(1).max(64) })
+    .safeParse(req.body);
+  const startedAt = parsed.success ? new Date(parsed.data.startedAt) : null;
+  if (!parsed.success || !startedAt || !Number.isFinite(startedAt.getTime())) {
+    return res.status(400).json({ error: "Invalid input" });
+  }
+  res.status(204).end();
+  // Services reject listens from the future or older than two weeks.
+  const now = Date.now();
+  const t = startedAt.getTime();
+  if (t > now + 5 * 60_000 || t < now - 14 * 24 * 60 * 60_000) return;
+  forwardScrobble(req.user!.id, parsed.data.trackId, startedAt);
+});
+
+/** GET /api/library/radio?seed=<trackId>&exclude=<csv ids>&limit=<1..50, default 20>
+ *  -> Track[] (artist + album). Autoplay / radio: tracks by the seed's artist,
+ *  the same genre, the user's frequently played tracks, then random fill.
+ *  Never returns excluded ids (or the seed); shuffled. */
+router.get("/radio", async (req, res) => {
+  const limit = Math.min(Math.max(Math.floor(qnum(req.query.limit)) || 20, 1), 50);
+  const seedId = qstr(req.query.seed)?.trim() || null;
+  const exclude = new Set(
+    [req.query.exclude]
+      .flat()
+      .filter((s): s is string => typeof s === "string")
+      .join(",")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 2000),
+  );
+  if (seedId) exclude.add(seedId);
+
+  const seed = seedId
+    ? await prisma.track.findUnique({
+        where: { id: seedId },
+        select: { artistId: true, genre: true },
+      })
+    : null;
+
+  const picked: string[] = [];
+  const take = (ids: string[], n: number) => {
+    for (const id of shuffle(ids)) {
+      if (n <= 0 || picked.length >= limit) break;
+      if (exclude.has(id)) continue;
+      exclude.add(id);
+      picked.push(id);
+      n--;
+    }
+  };
+
+  if (seed) {
+    const sameArtist = await prisma.track.findMany({
+      where: { artistId: seed.artistId },
+      select: { id: true },
+      take: 500,
+    });
+    take(sameArtist.map((t) => t.id), Math.ceil(limit * 0.35));
+    if (seed.genre) {
+      const sameGenre = await prisma.track.findMany({
+        where: { genre: { equals: seed.genre, mode: "insensitive" }, artistId: { not: seed.artistId } },
+        select: { id: true },
+        take: 1000,
+      });
+      take(sameGenre.map((t) => t.id), Math.ceil(limit * 0.35));
+    }
+  }
+  const frequent = await prisma.playHistory.groupBy({
+    by: ["trackId"],
+    where: { userId: req.user!.id },
+    _count: { trackId: true },
+    orderBy: { _count: { trackId: "desc" } },
+    take: 100,
+  });
+  take(frequent.map((f) => f.trackId), Math.ceil(limit * 0.25));
+
+  if (picked.length < limit) {
+    const random = await prisma.$queryRaw<{ id: string }[]>`
+      SELECT id FROM "Track"
+      WHERE NOT (id = ANY(${[...exclude]}::text[]))
+      ORDER BY random()
+      LIMIT ${limit - picked.length}::int`;
+    take(random.map((r) => r.id), limit - picked.length);
+  }
+
+  const tracks = await prisma.track.findMany({
+    where: { id: { in: picked } },
+    include: { artist: true, album: true },
+  });
+  res.json(shuffle(tracks));
+});
+
+/** Fisher-Yates shuffle (returns a new array). */
+function shuffle<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
 
 /** GET /api/library/recently-played — most-recent-first mix of tracks and
  *  playlists. A track played from a playlist collapses into that playlist entry
@@ -494,21 +610,9 @@ async function removeTrackRecord(track: {
     console.error(`[delete] could not remove file ${track.path}:`, (e as Error).message);
   }
 
-  // Clean up an album left with no tracks (plus its cover-art file).
-  if (track.albumId) {
-    const remaining = await prisma.track.count({ where: { albumId: track.albumId } });
-    if (remaining === 0) {
-      const album = await prisma.album.findUnique({ where: { id: track.albumId } });
-      if (album?.coverPath) {
-        try {
-          fs.rmSync(album.coverPath, { force: true });
-        } catch {
-          /* ignore */
-        }
-      }
-      await prisma.album.delete({ where: { id: track.albumId } }).catch(() => {});
-    }
-  }
+  // Clean up an album left with no tracks (plus its cover-art file, whose
+  // stored path is relative to DATA_PATH).
+  if (track.albumId) await deleteAlbumIfEmpty(track.albumId);
   // Clean up an artist left with no tracks and no albums.
   const tracksLeft = await prisma.track.count({ where: { artistId: track.artistId } });
   const albumsLeft = await prisma.album.count({ where: { artistId: track.artistId } });
@@ -520,7 +624,10 @@ async function removeTrackRecord(track: {
 /** DELETE /api/library/tracks/:id — permanently delete a track. Allowed for an
  *  ADMIN or the user who uploaded it. */
 router.delete("/tracks/:id", async (req, res) => {
-  const track = await prisma.track.findUnique({ where: { id: req.params.id } });
+  const track = await prisma.track.findUnique({
+    where: { id: req.params.id },
+    omit: { path: false },
+  });
   if (!track) return res.status(404).json({ error: "Not found" });
   const isAdmin = req.user!.role === "ADMIN";
   if (!isAdmin && track.uploaderId !== req.user!.id) {
@@ -611,19 +718,7 @@ router.patch("/tracks/:id", async (req, res) => {
   });
 
   // Tidy up rows the re-link may have emptied.
-  if (t.albumId && albumId !== t.albumId) {
-    const left = await prisma.track.count({ where: { albumId: t.albumId } });
-    if (left === 0) {
-      if (t.album?.coverPath) {
-        try {
-          fs.rmSync(path.resolve(env.dataPath, t.album.coverPath), { force: true });
-        } catch {
-          /* ignore */
-        }
-      }
-      await prisma.album.delete({ where: { id: t.albumId } }).catch(() => {});
-    }
-  }
+  if (t.albumId && albumId !== t.albumId) await deleteAlbumIfEmpty(t.albumId);
   if (artistId !== t.artistId) {
     const [tracksLeft, albumsLeft] = await Promise.all([
       prisma.track.count({ where: { artistId: t.artistId } }),
@@ -667,7 +762,7 @@ router.post("/tracks/bulk-delete", async (req, res) => {
   let deleted = 0;
   let forbidden = 0;
   for (const id of parsed.data.ids) {
-    const track = await prisma.track.findUnique({ where: { id } });
+    const track = await prisma.track.findUnique({ where: { id }, omit: { path: false } });
     if (!track) continue;
     if (!isAdmin && track.uploaderId !== req.user!.id) {
       forbidden++;
@@ -736,7 +831,11 @@ type UploadOutcome = { status: UploadStatus; reason?: string };
 /** Validate + ingest one already-saved upload file; auto-likes it for the
  *  uploader. Deletes the file on rejection or duplicate. Shared by the multipart
  *  and chunked upload paths. */
-async function processUploadedFile(filePath: string, uploaderId: string): Promise<UploadOutcome> {
+async function processUploadedFile(
+  filePath: string,
+  uploaderId: string,
+  displayName = path.basename(filePath),
+): Promise<UploadOutcome> {
   const like = (trackId: string) =>
     prisma.favorite
       .upsert({
@@ -749,6 +848,7 @@ async function processUploadedFile(filePath: string, uploaderId: string): Promis
     // Reject anything that isn't genuinely audio (e.g. a renamed executable).
     if (!looksLikeAudio(filePath)) {
       fs.rmSync(filePath, { force: true });
+      recordRejection(displayName, "Not a recognised audio file", "upload", uploaderId);
       return { status: "failed", reason: "Not a recognised audio file" };
     }
     const r = await ingestFile(filePath, uploaderId, true /* dedupe */);
@@ -761,6 +861,7 @@ async function processUploadedFile(filePath: string, uploaderId: string): Promis
     if (r.created) {
       await fetchAndStoreLyrics(r.trackId).catch(() => {});
       queueAutotag(r.trackId); // background; no-op unless enabled
+      queueLoudness(r.trackId); // background
       return { status: "added" };
     }
     return { status: "duplicate" }; // unchanged file already at this path
@@ -768,6 +869,7 @@ async function processUploadedFile(filePath: string, uploaderId: string): Promis
     fs.rmSync(filePath, { force: true });
     if (e instanceof IngestRejectedError) {
       console.warn(`[upload] rejected ${filePath}: ${e.reason}`);
+      recordRejection(displayName, e.reason, "upload", uploaderId);
       return { status: "failed", reason: e.reason };
     }
     console.error(`[upload] ingest failed for ${filePath}:`, (e as Error).message);
@@ -815,7 +917,10 @@ router.post("/upload", upload.array("files", 50), async (req, res) => {
   const uploaderId = req.user!.id;
   const results: ({ name: string } & UploadOutcome)[] = [];
   for (const f of files) {
-    results.push({ name: f.originalname, ...(await processUploadedFile(f.path, uploaderId)) });
+    results.push({
+      name: f.originalname,
+      ...(await processUploadedFile(f.path, uploaderId, f.originalname)),
+    });
   }
   res.status(201).json(tally(results));
 });
@@ -997,11 +1102,12 @@ router.post("/upload/finalize", async (req, res) => {
   chunkedUploads.delete(tmp);
   if (!UPLOAD_EXT.has(path.extname(filename).toLowerCase())) {
     fs.rmSync(tmp, { force: true });
+    recordRejection(path.basename(filename), "Unsupported file type", "upload", req.user!.id);
     return res.status(400).json({ error: "Only MP3 and FLAC files are allowed" });
   }
   const dest = uniqueUploadPath(filename);
   fs.renameSync(tmp, dest);
-  const outcome = await processUploadedFile(dest, req.user!.id);
+  const outcome = await processUploadedFile(dest, req.user!.id, path.basename(filename));
   res.status(201).json(tally([{ name: path.basename(filename), ...outcome }]));
 });
 

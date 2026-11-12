@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Play, Pause, Music, Heart, Clock, X, RefreshCw, Upload } from "lucide-react";
+import { Play, Pause, Music, Heart, Clock, X, RefreshCw, Upload, GripVertical } from "lucide-react";
 import { api, coverUrl, playlistCoverUrl, uploadPlaylistCover } from "@/lib/api";
+import { playlistApi } from "@/lib/api2";
 import { usePlayer } from "@/context/PlayerContext";
 import { fmtTime, fmtDateAdded } from "@/lib/format";
 import {
@@ -21,6 +22,8 @@ import { LikeButton } from "./LikeButton";
 import { PlaylistMenu } from "./PlaylistMenu";
 import { SortMenu } from "./SortMenu";
 import { PlayRoundButton, ShuffleToggleButton, AddToQueueButton } from "./PlaylistActions";
+import { PlaylistBulkBar } from "./PlaylistBulkBar";
+import { AddToPlaylist } from "./AddToPlaylist";
 
 const SORT_OPTIONS = (Object.keys(TRACK_ORDER_LABELS) as TrackOrder[]).map((key) => ({
   key,
@@ -47,6 +50,7 @@ export function PlaylistView({
   subtitle,
   onChanged,
   onDeleted,
+  canEdit = false,
 }: {
   name: string;
   rows: PlaylistTrackRow[];
@@ -59,6 +63,7 @@ export function PlaylistView({
   subtitle?: string; // e.g. "Shared by Agniv" / "2 collaborators"
   onChanged?: () => void; // reload after rename/collaborator change
   onDeleted?: () => void; // navigate away after delete/leave
+  canEdit?: boolean; // owner or collaborator: drag-to-reorder + bulk move/remove
 }) {
   const player = usePlayer();
   const listKey = liked ? "liked" : playlistId;
@@ -78,18 +83,72 @@ export function PlaylistView({
     toastTimer.current = setTimeout(() => setToast(null), 2500);
   };
 
+  // Optimistic playlist order after a drag, until the reloaded rows arrive.
+  const [localOrder, setLocalOrder] = useState<string[] | null>(null);
+  useEffect(() => setLocalOrder(null), [rows]);
+  const orderedRows = useMemo(() => {
+    if (!localOrder) return rows;
+    const byId = new Map(rows.map((r) => [r.track.id, r]));
+    const out = localOrder.map((id) => byId.get(id)).filter((r): r is PlaylistTrackRow => !!r);
+    return out.length === rows.length ? out : rows;
+  }, [rows, localOrder]);
+
   // Displayed order ("Date added" = when the song was added to this list).
   const shownRows = useMemo(() => {
-    const byId = new Map(rows.map((r) => [r.track.id, r]));
-    const addedAt = new Map(rows.map((r) => [r.track.id, r.addedAt]));
+    const byId = new Map(orderedRows.map((r) => [r.track.id, r]));
+    const addedAt = new Map(orderedRows.map((r) => [r.track.id, r.addedAt]));
     return sortTracks(
-      rows.map((r) => r.track),
+      orderedRows.map((r) => r.track),
       sort.order,
       sort.asc,
       addedAt,
     ).map((t) => byId.get(t.id)!);
-  }, [rows, sort]);
+  }, [orderedRows, sort]);
   const tracks = shownRows.map((r) => r.track);
+
+  // Multi-select (checkbox or right click), pruned when rows change.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    setSelected((s) => {
+      if (s.size === 0) return s;
+      const ids = new Set(rows.map((r) => r.track.id));
+      const n = new Set([...s].filter((id) => ids.has(id)));
+      return n.size === s.size ? s : n;
+    });
+  }, [rows]);
+  const toggleSel = (id: string) =>
+    setSelected((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  const allSelected = tracks.length > 0 && tracks.every((t) => selected.has(t.id));
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(tracks.map((t) => t.id)));
+
+  // Drag-to-reorder: only in "Playlist order" and for an owner/collaborator.
+  const canDrag = canEdit && !!playlistId && !liked && sort.order === "custom" && tracks.length > 1;
+  const [dragFrom, setDragFrom] = useState<number | null>(null);
+  const [dropAt, setDropAt] = useState<number | null>(null); // insert before this displayed index
+
+  async function commitDrag(from: number, to: number) {
+    if (!playlistId) return;
+    // `to` is an insertion point in the displayed list (0..length).
+    const ids = tracks.map((t) => t.id);
+    const [moved] = ids.splice(from, 1);
+    ids.splice(to > from ? to - 1 : to, 0, moved);
+    if (ids.every((id, i) => id === tracks[i].id)) return;
+    // The displayed list is the playlist order, or its reverse when descending.
+    const full = sort.asc ? ids : [...ids].reverse();
+    setLocalOrder(full);
+    try {
+      await playlistApi.reorder(playlistId, full);
+      onChanged?.();
+    } catch (e) {
+      setLocalOrder(null);
+      showToast(e instanceof Error ? `Couldn't reorder: ${e.message}` : "Couldn't reorder");
+    }
+  }
 
   function toggleShufflePref() {
     const on = !shufflePref;
@@ -267,14 +326,38 @@ export function PlaylistView({
 
       {/* Track table */}
       <div className="px-2 pb-8 md:px-6">
+        {selected.size > 0 && (
+          <PlaylistBulkBar
+            tracks={tracks.filter((t) => selected.has(t.id))}
+            playlistId={liked ? undefined : playlistId}
+            canEdit={canEdit}
+            onClear={() => setSelected(new Set())}
+            onChanged={onChanged}
+            onToast={showToast}
+          />
+        )}
+        {canDrag && selected.size === 0 && (
+          <p className="mb-2 px-1 text-xs italic text-[var(--muted)]">
+            Drag songs to reorder. Right click to select several.
+          </p>
+        )}
         <table className="w-full text-sm">
           <thead className="text-left text-xs uppercase text-[var(--muted)]">
             <tr className="border-b border-[var(--border)]">
+              <th className="w-8 px-2 py-2 text-center">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={toggleAll}
+                  className="cursor-pointer accent-[var(--accent)]"
+                  title="Select all"
+                />
+              </th>
               <th className="w-10 px-3 py-2 text-center">#</th>
               <th className="px-3 py-2">Title</th>
               <th className="hidden px-3 py-2 md:table-cell">Album</th>
               <th className="hidden px-3 py-2 lg:table-cell">Date added</th>
-              <th className="w-10 px-3 py-2"></th>
+              <th className="w-20 px-3 py-2"></th>
               <th className="w-16 px-3 py-2 text-right">
                 <Clock size={14} className="ml-auto" />
               </th>
@@ -287,10 +370,57 @@ export function PlaylistView({
               return (
                 <tr
                   key={t.id}
+                  draggable={canDrag}
+                  onDragStart={(e) => {
+                    setDragFrom(i);
+                    e.dataTransfer.effectAllowed = "move";
+                    e.dataTransfer.setData("text/plain", t.id);
+                  }}
+                  onDragOver={(e) => {
+                    if (dragFrom == null) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                    const r = e.currentTarget.getBoundingClientRect();
+                    setDropAt(e.clientY < r.top + r.height / 2 ? i : i + 1);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (dragFrom != null && dropAt != null) commitDrag(dragFrom, dropAt);
+                    setDragFrom(null);
+                    setDropAt(null);
+                  }}
+                  onDragEnd={() => {
+                    setDragFrom(null);
+                    setDropAt(null);
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    toggleSel(t.id);
+                  }}
                   className={`group border-b border-[var(--border)]/40 hover:bg-[var(--panel-2)] ${
-                    isCurrent ? "bg-[var(--panel-2)]" : ""
+                    isCurrent || selected.has(t.id) ? "bg-[var(--panel-2)]" : ""
+                  } ${dragFrom === i ? "opacity-40" : ""} ${
+                    dragFrom != null && dropAt === i ? "shadow-[inset_0_2px_0_var(--accent)]" : ""
+                  } ${
+                    dragFrom != null && dropAt === i + 1 && i === shownRows.length - 1
+                      ? "shadow-[inset_0_-2px_0_var(--accent)]"
+                      : ""
                   }`}
                 >
+                  <td className="relative px-2 py-2 text-center">
+                    {canDrag && (
+                      <GripVertical
+                        size={14}
+                        className="absolute left-0 top-1/2 -translate-y-1/2 cursor-grab text-[var(--muted)] opacity-0 transition group-hover:opacity-100"
+                      />
+                    )}
+                    <input
+                      type="checkbox"
+                      checked={selected.has(t.id)}
+                      onChange={() => toggleSel(t.id)}
+                      className="cursor-pointer accent-[var(--accent)]"
+                    />
+                  </td>
                   <td
                     className="cursor-pointer px-3 py-2 text-center text-[var(--muted)]"
                     onClick={() => player.playQueue(tracks, i)}
@@ -343,8 +473,16 @@ export function PlaylistView({
                   <td className="hidden px-3 py-2 text-[var(--muted)] lg:table-cell">
                     {fmtDateAdded(addedAt ?? t.createdAt)}
                   </td>
-                  <td className="px-3 py-2 text-center">
-                    <LikeButton trackId={t.id} />
+                  <td className="px-3 py-2">
+                    <div className="flex items-center justify-center gap-3">
+                      <LikeButton trackId={t.id} />
+                      <AddToPlaylist
+                        trackId={t.id}
+                        track={t}
+                        onDeleted={onChanged}
+                        onEdited={() => onChanged?.()}
+                      />
+                    </div>
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums text-[var(--muted)]">
                     {fmtTime(t.duration)}
@@ -365,7 +503,7 @@ export function PlaylistView({
             })}
             {shownRows.length === 0 && (
               <tr>
-                <td colSpan={onRemove ? 7 : 6} className="px-3 py-10 text-center text-[var(--muted)]">
+                <td colSpan={onRemove ? 8 : 7} className="px-3 py-10 text-center text-[var(--muted)]">
                   {liked
                     ? "Songs you like will show up here. Tap the ♥ on any track."
                     : "This playlist is empty. Add songs with the ➕ button on any track."}

@@ -8,10 +8,17 @@ import '../app_icons.dart';
 import 'package:provider/provider.dart';
 import '../api.dart';
 import '../app_state.dart';
+import '../feature_models.dart';
 import '../models.dart';
+import '../settings.dart';
 import '../theme.dart';
+import '../widgets/cover.dart';
 import '../widgets/track_table.dart';
 import '../widgets/track_tile.dart';
+import '../widgets/upload_progress.dart';
+import 'album_detail_screen.dart';
+import 'artist_screen.dart';
+import 'playlist_detail_screen.dart';
 
 bool get _isDesktop => !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
 
@@ -38,6 +45,10 @@ class _SongsScreenState extends State<SongsScreen> {
   bool _sortAsc = true;
   int _shuffleSeed = DateTime.now().millisecondsSinceEpoch;
   final Set<String> _selected = {}; // multi-select on the songs list
+  UploadJob? _uploadJob; // the running/last upload (its progress sheet can reopen)
+  // Artists / albums / playlists matching the current search (grouped results).
+  SearchResults _groups = SearchResults.empty;
+  int _loadSeq = 0; // drops stale search responses
 
   List<Track> _sorted(List<Track> list) {
     if (_sortField == _SortField.random) {
@@ -240,26 +251,178 @@ class _SongsScreenState extends State<SongsScreen> {
   @override
   void initState() {
     super.initState();
+    _searchFocus.addListener(_onFocusChange);
+    AppSettings.instance.addListener(_onSettings);
     _load("");
   }
 
   @override
   void dispose() {
     _debounce?.cancel();
+    _searchFocus.removeListener(_onFocusChange);
+    AppSettings.instance.removeListener(_onSettings);
     _controller.dispose();
     _searchFocus.dispose();
     super.dispose();
   }
 
+  void _onSettings() {
+    if (mounted) setState(() {}); // recent searches changed
+  }
+
+  /// Leaving the search field (scrolling, tapping a result, playing a song)
+  /// records the query as a recent search; focusing it shows the recents.
+  void _onFocusChange() {
+    if (!_searchFocus.hasFocus) _rememberQuery();
+    if (mounted) setState(() {});
+  }
+
+  void _rememberQuery() {
+    final q = _controller.text.trim();
+    if (q.length >= 2) AppSettings.instance.addRecentSearch(q);
+  }
+
+  void _runRecent(String q) {
+    _controller.text = q;
+    _controller.selection = TextSelection.collapsed(offset: q.length);
+    _debounce?.cancel();
+    AppSettings.instance.addRecentSearch(q);
+    _searchFocus.unfocus();
+    setState(() => _loading = true);
+    _load(q);
+  }
+
   Future<void> _load(String q) async {
-    final tracks = await context.read<Api>().tracks(q: q).catchError((_) => <Track>[]);
-    if (!mounted) return;
+    final seq = ++_loadSeq;
+    final api = context.read<Api>();
+    final groupsF = q.trim().isEmpty
+        ? Future.value(SearchResults.empty)
+        : api.search(q).catchError((_) => SearchResults.empty);
+    final tracks = await api.tracks(q: q).catchError((_) => <Track>[]);
+    final groups = await groupsF;
+    if (!mounted || seq != _loadSeq) return;
     setState(() {
       _tracks = tracks;
+      _groups = groups;
       if (q.isEmpty) _allTracks = tracks; // keep the full library for the play context
       _loading = false;
       _selected.retainWhere((id) => tracks.any((t) => t.id == id));
     });
+  }
+
+  void _open(Widget page) {
+    _rememberQuery();
+    FocusManager.instance.primaryFocus?.unfocus();
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => page));
+  }
+
+  /// Recent searches, shown while the (empty) search field has focus.
+  Widget _recentSearches() {
+    final recent = AppSettings.instance.recentSearches;
+    // Counts as "inside" the search field, so tapping a recent doesn't first
+    // unfocus the field (which would hide this list mid-tap).
+    return TextFieldTapRegion(
+      child: ListView(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
+            child: Row(children: [
+              const Expanded(
+                child: Text('Recent searches',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+              ),
+              TextButton(
+                onPressed: AppSettings.instance.clearRecentSearches,
+                child: const Text('Clear all'),
+              ),
+            ]),
+          ),
+          for (final q in recent)
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.history, size: 20, color: kMuted),
+              title: Text(q, maxLines: 1, overflow: TextOverflow.ellipsis),
+              trailing: IconButton(
+                tooltip: 'Remove',
+                icon: const Icon(LucideIcons.x, size: 16, color: kMuted),
+                onPressed: () => AppSettings.instance.removeRecentSearch(q),
+              ),
+              onTap: () => _runRecent(q),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// Grouped results (Artists / Albums / Playlists) above the Songs list.
+  Widget _groupedResults() {
+    final api = context.read<Api>();
+    final g = _groups;
+    Widget section(String label, List<Widget> chips) => Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Row(children: [
+            SizedBox(
+              width: 76,
+              child: Padding(
+                padding: const EdgeInsets.only(left: 16),
+                child: Text(label,
+                    style: const TextStyle(color: kMuted, fontSize: 12, fontWeight: FontWeight.w600)),
+              ),
+            ),
+            Expanded(
+              child: SizedBox(
+                height: 38,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.only(right: 12),
+                  itemCount: chips.length,
+                  separatorBuilder: (_, _) => const SizedBox(width: 8),
+                  itemBuilder: (_, i) => chips[i],
+                ),
+              ),
+            ),
+          ]),
+        );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (g.artists.isNotEmpty)
+          section('Artists', [
+            for (final a in g.artists)
+              _ResultChip(
+                leading: const CircleAvatar(
+                    radius: 13,
+                    backgroundColor: kBorder,
+                    child: Icon(LucideIcons.user, size: 15, color: kMuted)),
+                label: a.name,
+                onTap: () => _open(ArtistScreen(artistId: a.id, artistName: a.name)),
+              ),
+          ]),
+        if (g.albums.isNotEmpty)
+          section('Albums', [
+            for (final al in g.albums)
+              _ResultChip(
+                leading: Cover(url: api.albumCoverUrl(al.id), size: 26, radius: 4),
+                label: al.artist == null ? al.title : '${al.title} · ${al.artist!.name}',
+                onTap: () => _open(AlbumDetailScreen(albumId: al.id)),
+              ),
+          ]),
+        if (g.playlists.isNotEmpty)
+          section('Playlists', [
+            for (final pl in g.playlists)
+              _ResultChip(
+                leading: Cover(url: api.playlistCoverUrl(pl.id), size: 26, radius: 4),
+                label: pl.ownerName == null ? pl.name : '${pl.name} · ${pl.ownerName}',
+                onTap: () => _open(PlaylistDetailScreen(playlistId: pl.id, name: pl.name)),
+              ),
+          ]),
+        const Padding(
+          padding: EdgeInsets.fromLTRB(16, 2, 16, 4),
+          child: Text('Songs',
+              style: TextStyle(color: kMuted, fontSize: 12, fontWeight: FontWeight.w600)),
+        ),
+      ],
+    );
   }
 
   void _onSearch(String q) {
@@ -296,13 +459,20 @@ class _SongsScreenState extends State<SongsScreen> {
       allowMultiple: true,
     );
     final files = result?.files.where((f) => f.path != null).toList() ?? [];
-    if (files.isEmpty) return;
+    if (files.isEmpty || !mounted) return;
     final paths = files.map((f) => f.path!).toList();
-    setState(() => _uploading = true);
+    final job = UploadJob(paths);
+    setState(() {
+      _uploading = true;
+      _uploadJob = job;
+    });
+    // Per-file progress; closing the sheet keeps the upload going (the upload
+    // button reopens it).
+    showUploadProgress(context, job);
     try {
       // Handles any count/size: small files batched under the CDN cap, large
       // files chunked individually.
-      final r = await api.uploadManyTracks(paths);
+      final r = await job.run(api);
       final added = r['added'] as int? ?? 0;
       final failed = r['failed'] as int? ?? 0;
       final dupes = r['duplicates'] as int? ?? 0;
@@ -383,14 +553,20 @@ class _SongsScreenState extends State<SongsScreen> {
   Widget build(BuildContext context) {
     final display = _sorted(_tracks);
     final queueCtx = _sorted(_allTracks);
+    final searching = _controller.text.trim().isNotEmpty;
+    final showRecent = _searchFocus.hasFocus &&
+        !searching &&
+        AppSettings.instance.recentSearches.isNotEmpty;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Songs'),
         actions: [
           _sortButton(),
           IconButton(
-            tooltip: 'Upload',
-            onPressed: _uploading ? null : _upload,
+            tooltip: _uploading ? 'Upload progress' : 'Upload',
+            onPressed: _uploading
+                ? () => showUploadProgress(context, _uploadJob!)
+                : _upload,
             icon: _uploading
                 ? const SizedBox(
                     width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
@@ -414,7 +590,11 @@ class _SongsScreenState extends State<SongsScreen> {
             child: TextField(
               controller: _controller,
               focusNode: _searchFocus,
-              onChanged: _onSearch,
+              onChanged: (q) {
+                _onSearch(q);
+                setState(() {}); // toggles the clear button / recent searches
+              },
+              onSubmitted: (_) => _rememberQuery(),
               textInputAction: TextInputAction.search,
               onTapOutside: (_) => _searchFocus.unfocus(),
               decoration: InputDecoration(
@@ -443,6 +623,10 @@ class _SongsScreenState extends State<SongsScreen> {
               ),
             ),
           if (_selected.isNotEmpty) _selectionBar(),
+          if (showRecent)
+            Expanded(child: _recentSearches())
+          else ...[
+          if (searching && _groups.hasGroups && _selected.isEmpty) _groupedResults(),
           Expanded(
             // Dismiss the search keyboard/cursor when the user scrolls the list.
             child: NotificationListener<ScrollNotification>(
@@ -480,7 +664,45 @@ class _SongsScreenState extends State<SongsScreen> {
                             ),
             ),
           ),
+          ],
         ],
+      ),
+    );
+  }
+}
+
+/// A compact tappable result (artist / album / playlist) in the grouped search.
+class _ResultChip extends StatelessWidget {
+  final Widget leading;
+  final String label;
+  final VoidCallback onTap;
+  const _ResultChip({required this.leading, required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: kPanel2,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(999),
+        side: const BorderSide(color: kBorder),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(6, 6, 14, 6),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            leading,
+            const SizedBox(width: 8),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 220),
+              child: Text(label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+            ),
+          ]),
+        ),
       ),
     );
   }

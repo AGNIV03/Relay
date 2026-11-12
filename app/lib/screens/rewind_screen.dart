@@ -1,9 +1,15 @@
+import 'dart:io' show File, Platform, Process;
 import 'dart:math' as math;
+import 'dart:ui' as ui show ImageByteFormat;
 import 'dart:ui' show ImageFilter;
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show RenderRepaintBoundary;
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 import '../api.dart';
 import '../app_icons.dart';
 import '../models.dart';
@@ -233,6 +239,10 @@ class _RewindStoryState extends State<_RewindStory> with TickerProviderStateMixi
   late final Api _api;
   late final List<_Card> _cards;
   int _page = 0;
+  // Share image: while [_sharing] the 1080x1920 card is mounted (hidden behind
+  // the story) so it can be rasterised through [_shareKey].
+  bool _sharing = false;
+  final _shareKey = GlobalKey();
   bool _audio = false; // preview mode acquired (false in a Chorus / listen-along)
   bool _muted = false;
   String? _playingId;
@@ -336,6 +346,66 @@ class _RewindStoryState extends State<_RewindStory> with TickerProviderStateMixi
 
   String _cover(String id) => _api.trackCoverUrl(id);
 
+  /// Render the share card off-screen to a 1080x1920 PNG, then share it (share
+  /// sheet on Android; on desktop it's saved to Downloads and shown in the folder).
+  Future<void> _share() async {
+    if (_sharing) return;
+    final messenger = ScaffoldMessenger.of(context);
+    _hold(true); // pause the story + preview audio while we work
+    setState(() => _sharing = true);
+    try {
+      // Warm the cover images so the card paints with them on its first frame.
+      await Future.wait([
+        precacheImage(const AssetImage('assets/logo.png'), context),
+        for (final t in _s.topTracks.take(5))
+          precacheImage(
+            CachedNetworkImageProvider(_cover(t.id), cacheKey: coverCacheKey(_cover(t.id))),
+            context,
+            onError: (_, _) {},
+          ),
+      ]).timeout(const Duration(seconds: 6), onTimeout: () => const []);
+      await WidgetsBinding.instance.endOfFrame;
+      await WidgetsBinding.instance.endOfFrame;
+      final boundary = _shareKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+      if (boundary == null) throw 'Share card not ready';
+      final image = await boundary.toImage(pixelRatio: _ShareCard.scale);
+      final png = await image.toByteData(format: ui.ImageByteFormat.png);
+      image.dispose();
+      if (png == null) throw 'Could not encode the image';
+      final bytes = png.buffer.asUint8List();
+      final name = 'relay-rewind-${_s.year}.png';
+      final desktop = !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+      if (desktop) {
+        final dir = await getDownloadsDirectory() ?? await getApplicationDocumentsDirectory();
+        final file = File('${dir.path}${Platform.pathSeparator}$name');
+        await file.writeAsBytes(bytes);
+        messenger.showSnackBar(SnackBar(content: Text('Saved to ${file.path}')));
+        try {
+          if (Platform.isWindows) {
+            await Process.start('explorer.exe', ['/select,', file.path]);
+          } else if (Platform.isMacOS) {
+            await Process.start('open', ['-R', file.path]);
+          } else {
+            await Process.start('xdg-open', [dir.path]);
+          }
+        } catch (_) {}
+      } else {
+        final dir = await getTemporaryDirectory();
+        final file = File('${dir.path}/$name');
+        await file.writeAsBytes(bytes);
+        await SharePlus.instance.share(ShareParams(
+          files: [XFile(file.path, mimeType: 'image/png')],
+          text: 'My ${_s.year} in music on Relay',
+        ));
+      }
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text("Couldn't create the share image: $e")));
+    } finally {
+      if (mounted) setState(() => _sharing = false);
+      _hold(false);
+    }
+  }
+
   static double _p(double t, double a, double b) => ((t - a) / (b - a)).clamp(0.0, 1.0);
 
   @override
@@ -350,6 +420,21 @@ class _RewindStoryState extends State<_RewindStory> with TickerProviderStateMixi
       child: Stack(
         fit: StackFit.expand,
         children: [
+          // The share card, mounted only while sharing and painted underneath
+          // everything (fully covered by the backdrop) so it can be captured.
+          if (_sharing)
+            Positioned(
+              left: 0,
+              top: 0,
+              child: RepaintBoundary(
+                key: _shareKey,
+                child: _ShareCard(
+                  stats: _s,
+                  coverUrl: _cover,
+                  personality: _personalityInfo(_s),
+                ),
+              ),
+            ),
           AnimatedSwitcher(
             duration: const Duration(milliseconds: 900),
             child: _Backdrop(
@@ -820,7 +905,7 @@ class _RewindStoryState extends State<_RewindStory> with TickerProviderStateMixi
               _rise(
                 t,
                 0.7,
-                Row(children: [
+                Wrap(spacing: 12, runSpacing: 10, children: [
                   FilledButton.icon(
                     style: FilledButton.styleFrom(
                         backgroundColor: kAccent, foregroundColor: kAccentInk),
@@ -828,7 +913,19 @@ class _RewindStoryState extends State<_RewindStory> with TickerProviderStateMixi
                     label: const Text('Done'),
                     onPressed: () => Navigator.of(context).pop(),
                   ),
-                  const SizedBox(width: 12),
+                  OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        side: const BorderSide(color: Colors.white54)),
+                    icon: _sharing
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Icon(Icons.ios_share, size: 18),
+                    label: const Text('Share'),
+                    onPressed: _sharing ? null : _share,
+                  ),
                   OutlinedButton.icon(
                     style: OutlinedButton.styleFrom(
                         foregroundColor: Colors.white,
@@ -1199,6 +1296,187 @@ class _RewindStoryState extends State<_RewindStory> with TickerProviderStateMixi
       return ('The Loyalist', 'You know what you like', LucideIcons.heart);
     }
     return ('The Specialist', 'A carefully curated taste', LucideIcons.disc3);
+  }
+}
+
+// --------------------------------------------------------- share card ----
+
+/// The shareable recap image: laid out at 360x640 and rasterised at 3x, so the
+/// PNG is 1080x1920 (a phone story). Top songs, top artist, minutes listened,
+/// listening personality, the year and Relay branding.
+class _ShareCard extends StatelessWidget {
+  static const double scale = 3;
+  static const Size size = Size(360, 640);
+
+  final RewindStats stats;
+  final String Function(String trackId) coverUrl;
+  final (String, String, IconData) personality;
+  const _ShareCard({required this.stats, required this.coverUrl, required this.personality});
+
+  static String _fmt(int n) {
+    final s = n.toString();
+    final b = StringBuffer();
+    for (var i = 0; i < s.length; i++) {
+      if (i > 0 && (s.length - i) % 3 == 0) b.write(',');
+      b.write(s[i]);
+    }
+    return b.toString();
+  }
+
+  Widget _cover(String id, double side) => ClipRRect(
+        borderRadius: BorderRadius.circular(6),
+        child: Image(
+          image: CachedNetworkImageProvider(coverUrl(id), cacheKey: coverCacheKey(coverUrl(id))),
+          width: side,
+          height: side,
+          fit: BoxFit.cover,
+          errorBuilder: (_, _, _) => Container(
+            width: side,
+            height: side,
+            color: Colors.white12,
+            child: Icon(Icons.music_note, size: side * 0.5, color: Colors.white54),
+          ),
+        ),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    final (pName, pBlurb, pIcon) = personality;
+    final top = stats.topTracks.take(5).toList();
+    const label = TextStyle(
+        color: Colors.white60, fontSize: 9, fontWeight: FontWeight.w800, letterSpacing: 1.6);
+    return MediaQuery(
+      // Fixed layout regardless of the device's text scale.
+      data: const MediaQueryData(size: size, textScaler: TextScaler.noScaling),
+      child: Directionality(
+        textDirection: TextDirection.ltr,
+        child: Material(
+          type: MaterialType.transparency,
+          child: Container(
+            width: size.width,
+            height: size.height,
+            padding: const EdgeInsets.fromLTRB(24, 30, 24, 22),
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF141E30), Color(0xFF243B55), Color(0xFF3a1c71)],
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  const Icon(LucideIcons.sparkles, size: 13, color: kAccent2),
+                  const SizedBox(width: 6),
+                  Text('RELAY REWIND', style: label.copyWith(color: Colors.white)),
+                ]),
+                const SizedBox(height: 6),
+                Text('${stats.year}',
+                    style: const TextStyle(
+                        color: Colors.white, fontSize: 64, fontWeight: FontWeight.w900, height: 1)),
+                ShaderMask(
+                  shaderCallback: (r) => const LinearGradient(
+                    colors: [kAccent2, Colors.white, Color(0xFFff8fd8)],
+                  ).createShader(r),
+                  child: const Text('in music',
+                      style: TextStyle(
+                          color: Colors.white, fontSize: 30, fontWeight: FontWeight.w900, height: 1.1)),
+                ),
+                const SizedBox(height: 18),
+                Row(children: [
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      const Text('MINUTES LISTENED', style: label),
+                      Text(_fmt(stats.totalMinutes),
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 30, fontWeight: FontWeight.w900)),
+                    ]),
+                  ),
+                  if (stats.topArtists.isNotEmpty)
+                    Expanded(
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        const Text('TOP ARTIST', style: label),
+                        Text(stats.topArtists.first.name,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.w800,
+                                height: 1.15)),
+                      ]),
+                    ),
+                ]),
+                const SizedBox(height: 18),
+                const Text('TOP SONGS', style: label),
+                const SizedBox(height: 6),
+                for (var i = 0; i < top.length; i++)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(children: [
+                      SizedBox(
+                        width: 20,
+                        child: Text('${i + 1}',
+                            style: const TextStyle(
+                                color: Colors.white, fontSize: 15, fontWeight: FontWeight.w900)),
+                      ),
+                      _cover(top[i].id, 36),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          Text(top[i].title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  color: Colors.white, fontSize: 13, fontWeight: FontWeight.w700)),
+                          Text(top[i].artist,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(color: Colors.white70, fontSize: 11)),
+                        ]),
+                      ),
+                    ]),
+                  ),
+                const Spacer(),
+                Container(
+                  padding: const EdgeInsets.fromLTRB(12, 10, 14, 10),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(colors: [kAccent, kAccent2]),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Row(children: [
+                    Icon(pIcon, color: kAccentInk, size: 26),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(pName,
+                            style: const TextStyle(
+                                color: kAccentInk, fontSize: 16, fontWeight: FontWeight.w900)),
+                        Text(pBlurb,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: kAccentInk, fontSize: 10.5)),
+                      ]),
+                    ),
+                  ]),
+                ),
+                const SizedBox(height: 16),
+                Row(children: [
+                  const Image(image: AssetImage('assets/logo.png'), width: 20, height: 20),
+                  const SizedBox(width: 8),
+                  const Text('Relay',
+                      style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w800)),
+                  const Spacer(),
+                  Text('${_fmt(stats.distinctTracks)} songs · ${_fmt(stats.distinctArtists)} artists',
+                      style: const TextStyle(color: Colors.white60, fontSize: 10)),
+                ]),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

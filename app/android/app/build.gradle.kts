@@ -55,10 +55,16 @@ android {
                 signingConfigs.getByName("release")
             else
                 signingConfigs.getByName("debug")
-            // R8/resource-shrinking strips resources only referenced by string at
-            // runtime (e.g. audio_service's notification control drawables), which
-            // breaks the media-session/lock-screen controls. Disable it.
-            isMinifyEnabled = false
+            // R8 code shrinking + obfuscation ON (Play flags DEX optimization below
+            // 25%). Keep rules for the media stack are in proguard-rules.pro.
+            isMinifyEnabled = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            // Resource shrinking stays OFF: it strips resources only referenced by
+            // name at runtime (audio_service's notification control drawables, via
+            // getIdentifier), which breaks the media-session / lock-screen controls.
             isShrinkResources = false
         }
     }

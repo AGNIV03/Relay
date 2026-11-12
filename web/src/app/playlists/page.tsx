@@ -2,10 +2,11 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Trash2, Music, Search } from "lucide-react";
+import { Trash2, Music, Search, FileUp } from "lucide-react";
 import { api, playlistCoverUrl } from "@/lib/api";
 import { pickSort, seededShuffle, type SortState } from "@/lib/trackSort";
 import { SortMenu } from "@/components/SortMenu";
+import { ImportPlaylistDialog } from "@/components/ImportPlaylistDialog";
 import type { Playlist } from "@/lib/types";
 
 type PlOrder = "shuffle" | "name" | "songs";
@@ -20,6 +21,7 @@ export default function PlaylistsPage() {
   const [name, setName] = useState("");
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
+  const [importing, setImporting] = useState(false);
   // Default order is random. A per-visit seed keeps it stable across reloads
   // (create/delete); picking "Shuffle" in the sort menu reshuffles.
   const [sort, setSort] = useState<SortState<PlOrder>>({ order: "shuffle", asc: true });
@@ -70,7 +72,7 @@ export default function PlaylistsPage() {
     <div>
       <h1 className="mb-4 text-2xl font-bold">Playlists</h1>
 
-      <form onSubmit={create} className="mb-6 flex max-w-md gap-2">
+      <form onSubmit={create} className="mb-6 flex max-w-xl gap-2">
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -83,7 +85,16 @@ export default function PlaylistsPage() {
         >
           Create
         </button>
+        <button
+          type="button"
+          onClick={() => setImporting(true)}
+          title="Import from an M3U file, a song list or Spotify"
+          className="flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--panel)] px-4 py-2 text-sm font-medium hover:bg-[var(--panel-2)]"
+        >
+          <FileUp size={15} /> Import
+        </button>
       </form>
+      {importing && <ImportPlaylistDialog onClose={() => setImporting(false)} onImported={load} />}
 
       <div className="mb-6 flex items-center gap-3">
         <div className="relative max-w-md flex-1">

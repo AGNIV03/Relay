@@ -6,4 +6,8 @@ import { PrismaClient } from "../generated/prisma/client.js";
 // from the repo-root .env (via --env-file / prisma.config.ts) in local dev.
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL });
 
-export const prisma = new PrismaClient({ adapter });
+// Track.path (the absolute file path on the server) is omitted from every query
+// result by default, so it can never leak into an API response. Code that needs
+// the file (stream, ingest, delete, auto-tag, loudness...) opts back in with
+// `omit: { path: false }` or `select: { path: true }`.
+export const prisma = new PrismaClient({ adapter, omit: { track: { path: true } } });

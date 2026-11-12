@@ -42,6 +42,8 @@ export interface Track {
   createdAt?: string;
   playCount?: number;
   uploader?: { username: string } | null;
+  /** Integrated loudness (EBU R128, LUFS) for volume normalization; null = not measured yet. */
+  loudnessLufs?: number | null;
 }
 
 export interface Friend {

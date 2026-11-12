@@ -1,13 +1,15 @@
 "use client";
 
 import { useRef } from "react";
-import { X, Play, Music, GripVertical, Trash2 } from "lucide-react";
+import { X, Play, Music, GripVertical, Trash2, Infinity as InfinityIcon } from "lucide-react";
 import { usePlayer } from "@/context/PlayerContext";
 import { fmtTime } from "@/lib/format";
 
 /** Slide-over queue: now playing + upcoming tracks, click to jump, ✕ to remove,
  *  drag the grip to reorder. "Clear queue" drops everything after the current
- *  track; "Clear" on Next in queue drops only the manually queued songs. */
+ *  track (autoplay picks included); "Clear" on Next in queue drops only the
+ *  manually queued songs. Autoplay picks (radio after the queue runs out) sit in
+ *  their own section with a quick on/off switch. */
 export function QueueView({ onClose }: { onClose: () => void }) {
   const p = usePlayer();
   const dragFrom = useRef<number | null>(null);
@@ -16,7 +18,11 @@ export function QueueView({ onClose }: { onClose: () => void }) {
     .filter(({ i }) => i > p.index);
   // Two layers: manually-queued songs play before the rest of the context.
   const inQueue = upcoming.filter(({ i }) => p.isUserQueued(i));
-  const nextUp = upcoming.filter(({ i }) => !p.isUserQueued(i));
+  const nextUp = upcoming.filter(({ i }) => !p.isUserQueued(i) && !p.isAutoplay(i));
+  const autoUp = upcoming.filter(({ i }) => !p.isUserQueued(i) && p.isAutoplay(i));
+  // Autoplay doesn't apply to a Chorus member (the host's device decides) or
+  // while following someone's playback.
+  const showAutoplay = !!p.current && !p.isChorusMember && !p.listeningAlong;
 
   const row = ({ t, i }: { t: (typeof upcoming)[number]["t"]; i: number }) => (
     <div
@@ -110,6 +116,36 @@ export function QueueView({ onClose }: { onClose: () => void }) {
           <div className="px-4 pb-1 pt-4 text-xs uppercase text-[var(--muted)]">Next up</div>
         )}
         {nextUp.map(row)}
+        {showAutoplay && (
+          <div className="flex items-center justify-between gap-2 px-4 pb-1 pt-4">
+            <span className="flex min-w-0 items-center gap-1.5 text-xs uppercase text-[var(--muted)]">
+              <InfinityIcon size={13} className="shrink-0" /> Autoplay
+            </span>
+            <button
+              role="switch"
+              aria-checked={p.autoplay}
+              onClick={() => p.setAutoplay(!p.autoplay)}
+              title={p.autoplay ? "Turn autoplay off" : "Turn autoplay on"}
+              className={`relative h-4 w-7 shrink-0 rounded-full transition ${
+                p.autoplay ? "bg-[var(--accent)]" : "bg-[var(--panel-2)]"
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-all ${
+                  p.autoplay ? "left-3.5" : "left-0.5"
+                }`}
+              />
+            </button>
+          </div>
+        )}
+        {showAutoplay && autoUp.length === 0 && (
+          <div className="px-4 pb-2 text-xs text-[var(--muted)]">
+            {p.autoplay
+              ? "Similar songs keep playing when the queue ends."
+              : "Playback stops when the queue ends."}
+          </div>
+        )}
+        {showAutoplay && autoUp.map(row)}
         {p.queue.length === 0 && (
           <div className="px-4 py-6 text-sm text-[var(--muted)]">Queue is empty</div>
         )}

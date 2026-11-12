@@ -3,6 +3,22 @@ export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000
 
 const ACCESS_KEY = "stream_access";
 const REFRESH_KEY = "stream_refresh";
+const MEDIA_KEY = "stream_media";
+const MEDIA_EXP_KEY = "stream_media_exp";
+
+function storeMedia(token: string | null, expiresAt?: number) {
+  try {
+    if (token) {
+      localStorage.setItem(MEDIA_KEY, token);
+      localStorage.setItem(MEDIA_EXP_KEY, String(expiresAt ?? 0));
+    } else {
+      localStorage.removeItem(MEDIA_KEY);
+      localStorage.removeItem(MEDIA_EXP_KEY);
+    }
+  } catch {
+    /* storage unavailable */
+  }
+}
 
 export const tokens = {
   get access() {
@@ -11,15 +27,25 @@ export const tokens = {
   get refresh() {
     return typeof window === "undefined" ? null : localStorage.getItem(REFRESH_KEY);
   },
+  /** Store a fresh session (login / register / password change). A new session
+   *  gets its own media token, so the old one is dropped and a new one fetched. */
   set(access: string, refresh?: string) {
-    localStorage.setItem(ACCESS_KEY, access);
-    if (refresh) localStorage.setItem(REFRESH_KEY, refresh);
+    storePair(access, refresh);
+    storeMedia(null);
+    setTimeout(() => void ensureMediaToken(true), 0);
   },
   clear() {
     localStorage.removeItem(ACCESS_KEY);
     localStorage.removeItem(REFRESH_KEY);
+    storeMedia(null);
   },
 };
+
+/** Persist a token pair without touching the media token (refresh rotation). */
+function storePair(access: string, refresh?: string) {
+  localStorage.setItem(ACCESS_KEY, access);
+  if (refresh) localStorage.setItem(REFRESH_KEY, refresh);
+}
 
 class ApiError extends Error {
   constructor(
@@ -35,32 +61,50 @@ class ApiError extends Error {
  *  the login page. The full navigation also stops any playback. */
 function onSessionRevoked() {
   tokens.clear();
-  if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+  if (typeof window !== "undefined" && !["/login", "/register"].includes(window.location.pathname)) {
     window.location.href = "/login";
   }
 }
 
-async function refreshAccessToken(): Promise<boolean> {
-  const refresh = tokens.refresh;
-  if (!refresh) return false;
-  let res: Response;
-  try {
-    res = await fetch(`${API_URL}/api/auth/refresh`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refreshToken: refresh }),
-    });
-  } catch {
-    return false; // network error: keep the tokens, the session may still be fine
-  }
-  if (res.status === 401) {
-    onSessionRevoked();
-    return false;
-  }
-  if (!res.ok) return false;
-  const data = await res.json();
-  tokens.set(data.accessToken, data.refreshToken);
-  return true;
+// Refresh tokens rotate: each one works exactly once, and presenting a used one
+// revokes the whole session. So refreshes are single-flight: concurrent 401s in
+// this tab share one in-flight refresh, and a Web Lock serialises it across tabs
+// (same localStorage). `failedAccess` is the access token the failed request
+// carried; if the stored one has changed since, someone else already refreshed.
+let refreshing: Promise<boolean> | null = null;
+
+function refreshAccessToken(failedAccess?: string | null): Promise<boolean> {
+  if (refreshing) return refreshing;
+  const run = async (): Promise<boolean> => {
+    if (failedAccess !== undefined && tokens.access && tokens.access !== failedAccess) return true;
+    const refresh = tokens.refresh;
+    if (!refresh) return false;
+    let res: Response;
+    try {
+      res = await fetch(`${API_URL}/api/auth/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refreshToken: refresh }),
+      });
+    } catch {
+      return false; // network error: keep the tokens, the session may still be fine
+    }
+    if (res.status === 401) {
+      // Another tab may have rotated it while this request was in flight.
+      if (tokens.refresh && tokens.refresh !== refresh) return true;
+      onSessionRevoked();
+      return false;
+    }
+    if (!res.ok) return false;
+    const data = await res.json();
+    storePair(data.accessToken, data.refreshToken); // always keep the NEW pair
+    return true;
+  };
+  const locks = typeof navigator !== "undefined" ? navigator.locks : undefined;
+  refreshing = (locks ? locks.request("relay-auth-refresh", run) : run()).finally(() => {
+    refreshing = null;
+  });
+  return refreshing;
 }
 
 async function request<T>(path: string, options: RequestInit = {}, retry = true): Promise<T> {
@@ -73,7 +117,7 @@ async function request<T>(path: string, options: RequestInit = {}, retry = true)
 
   const res = await fetch(`${API_URL}${path}`, { ...options, headers });
 
-  if (res.status === 401 && retry && (await refreshAccessToken())) {
+  if (res.status === 401 && retry && (await refreshAccessToken(access))) {
     return request<T>(path, options, false);
   }
   if (!res.ok) {
@@ -220,6 +264,7 @@ interface UploadResult {
   added: number;
   failed: number;
   duplicates?: number;
+  duplicateNames?: string[];
   addedNames: string[];
   failedNames: string[];
   rejected?: RejectedUpload[]; // subset of failed, with the reason (older servers omit it)
@@ -271,6 +316,7 @@ export interface UploadTotals {
   added: number;
   failed: number;
   duplicates: number;
+  duplicateNames: string[];
   addedNames: string[];
   failedNames: string[];
   rejected: RejectedUpload[];
@@ -291,6 +337,7 @@ export async function uploadManyFiles(
     added: 0,
     failed: 0,
     duplicates: 0,
+    duplicateNames: [],
     addedNames: [],
     failedNames: [],
     rejected: [],
@@ -324,6 +371,7 @@ export async function uploadManyFiles(
     totals.added += r.added;
     totals.failed += r.failed;
     totals.duplicates += r.duplicates ?? 0;
+    totals.duplicateNames.push(...(r.duplicateNames ?? []));
     totals.addedNames.push(...r.addedNames);
     totals.failedNames.push(...r.failedNames);
     totals.rejected.push(...(r.rejected ?? []));
@@ -351,22 +399,86 @@ export async function uploadManyFiles(
   return totals;
 }
 
+// ---- Media tokens ----
+// A long-lived (7 day), media-only token for `?token=` on stream/cover URLs, so
+// the access token never sits in <audio>/<img> URLs (or the history/logs of
+// whatever fetches them). Fetched after login/startup and refreshed with < 1 day
+// left. Older servers without the endpoint (404) fall back to the access token.
+const MEDIA_REFRESH_MS = 24 * 60 * 60 * 1000;
+let mediaUnsupported = false;
+let mediaFetching: Promise<string | null> | null = null;
+
+function storedMedia(): { token: string; exp: number } | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const token = localStorage.getItem(MEDIA_KEY);
+    if (!token) return null;
+    return { token, exp: Number(localStorage.getItem(MEDIA_EXP_KEY)) || 0 };
+  } catch {
+    return null;
+  }
+}
+
+/** Make sure a fresh media token is stored (single-flight). `force` re-fetches
+ *  even if the current one looks valid (e.g. a media URL just failed). Resolves
+ *  to the token, or null (signed out / older server / network error). */
+export function ensureMediaToken(force = false): Promise<string | null> {
+  if (typeof window === "undefined" || mediaUnsupported || !tokens.access) {
+    return Promise.resolve(null);
+  }
+  const cur = storedMedia();
+  if (!force && cur && cur.exp - Date.now() > MEDIA_REFRESH_MS) return Promise.resolve(cur.token);
+  if (mediaFetching) return mediaFetching;
+  mediaFetching = (async () => {
+    try {
+      const r = await request<{ token: string; expiresAt: string }>("/api/auth/media-token", {
+        method: "POST",
+      });
+      const exp = new Date(r.expiresAt).getTime();
+      storeMedia(r.token, Number.isFinite(exp) ? exp : Date.now() + 6 * MEDIA_REFRESH_MS);
+      return r.token;
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) {
+        mediaUnsupported = true; // older server: keep using the access token
+        storeMedia(null);
+      }
+      return storedMedia()?.token ?? null;
+    }
+  })().finally(() => {
+    mediaFetching = null;
+  });
+  return mediaFetching;
+}
+
+/** The token to put in a media URL: the media token while it's valid (kicking off
+ *  a background renewal when it's close to expiry), else the access token. */
+function mediaQueryToken(): string {
+  const cur = storedMedia();
+  const now = Date.now();
+  if (cur && cur.exp > now) {
+    if (cur.exp - now < MEDIA_REFRESH_MS) void ensureMediaToken();
+    return cur.token;
+  }
+  if (!mediaUnsupported && tokens.access) void ensureMediaToken();
+  return tokens.access ?? "";
+}
+
 /** Build an authenticated media URL for <audio>/<img> (token in query). */
 export function streamUrl(trackId: string, opts?: { format?: string; bitrate?: number }) {
-  const params = new URLSearchParams({ token: tokens.access ?? "" });
+  const params = new URLSearchParams({ token: mediaQueryToken() });
   if (opts?.format) params.set("format", opts.format);
   if (opts?.bitrate) params.set("bitrate", String(opts.bitrate));
   return `${API_URL}/api/stream/${trackId}?${params.toString()}`;
 }
 
 export function coverUrl(trackId: string) {
-  return `${API_URL}/api/stream/${trackId}/cover?token=${tokens.access ?? ""}`;
+  return `${API_URL}/api/stream/${trackId}/cover?token=${encodeURIComponent(mediaQueryToken())}`;
 }
 
 /** Playlist cover (auto collage or custom). `v` busts the cache after a change. */
 export function playlistCoverUrl(id: string, v?: number | string) {
   const ver = v != null ? `&v=${v}` : "";
-  return `${API_URL}/api/playlists/${id}/cover?token=${tokens.access ?? ""}${ver}`;
+  return `${API_URL}/api/playlists/${id}/cover?token=${encodeURIComponent(mediaQueryToken())}${ver}`;
 }
 
 /** Upload a custom playlist cover image (multipart). */
@@ -386,7 +498,7 @@ export function uploadPlaylistCover(id: string, file: File): Promise<void> {
 }
 
 export function albumCoverUrl(albumId: string) {
-  return `${API_URL}/api/stream/album/${albumId}/cover?token=${tokens.access ?? ""}`;
+  return `${API_URL}/api/stream/album/${albumId}/cover?token=${encodeURIComponent(mediaQueryToken())}`;
 }
 
 export { ApiError };

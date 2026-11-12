@@ -13,6 +13,8 @@ import 'app_state.dart';
 import 'auto_browse.dart';
 import 'downloads.dart';
 import 'player.dart';
+import 'settings.dart';
+import 'smtc.dart';
 import 'theme.dart';
 import 'screens/login_screen.dart';
 import 'screens/offline_screen.dart';
@@ -95,6 +97,9 @@ Future<void> main() async {
   } catch (e) {
     debugPrint('api.load failed: $e');
   }
+  // User preferences (autoplay / normalize / fade / downloads / recent
+  // searches): loaded before the player is built, since playback reads them.
+  await AppSettings.instance.load();
   final downloads = DownloadManager(api);
 
   try {
@@ -110,6 +115,8 @@ Future<void> main() async {
   // re-registers browsing (incl. playFromMediaId) and restores the last session,
   // so a cold Android Auto launch shows the last-played song + can start playback.
   final player = PlayerModel(api, downloads);
+  // Windows: media keys + the system "now playing" flyout (SMTC).
+  WindowsSmtc.attach(player, api);
 
   // Token + player are ready now — tell Android Auto to re-query the library and
   // the resume shelf, in case it received an empty result during the async init,
@@ -201,6 +208,7 @@ class StreamApp extends StatelessWidget {
         // Provided as a value (created eagerly in main) so Android Auto media
         // browsing is registered even when the UI never reads PlayerModel.
         ChangeNotifierProvider.value(value: player),
+        ChangeNotifierProvider.value(value: AppSettings.instance),
         Provider.value(value: api),
       ],
       child: MaterialApp(

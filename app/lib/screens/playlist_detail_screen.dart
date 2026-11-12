@@ -12,7 +12,9 @@ import '../downloads.dart';
 import '../models.dart';
 import '../player.dart';
 import '../theme.dart';
+import '../widgets/cover.dart';
 import '../widgets/playlist_actions.dart';
+import '../widgets/track_selection.dart';
 import '../widgets/track_sort.dart';
 import '../widgets/track_table.dart';
 import '../widgets/track_tile.dart';
@@ -45,6 +47,22 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   // Remembered track ordering for this playlist (playlist order by default).
   final _sort = TrackSortState();
 
+  // Multi-select (long-press on mobile, long-press/right-click on desktop).
+  final Set<String> _selected = {};
+  // Mobile reorder mode (drag handles); desktop drags rows in the table.
+  bool _reorderMode = false;
+  // Optimistic track order after a drag, until the next reload confirms it.
+  List<Track>? _orderOverride;
+
+  bool get _canEdit {
+    final myId = context.read<AppState>().user?.id;
+    return (_pl?.owned ?? false) || (_pl?.collaborators.any((c) => c.id == myId) ?? false);
+  }
+
+  /// Reordering saves the playlist's own order, so it's only offered while the
+  /// list is shown in that order (Playlist order, ascending).
+  bool get _inPlaylistOrder => _sort.order == TrackOrder.custom && _sort.asc;
+
   @override
   void initState() {
     super.initState();
@@ -68,8 +86,217 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     final f = context.read<Api>().playlist(widget.playlistId);
     _future = f;
     f.then((p) {
-      if (mounted) setState(() => _pl = p);
+      if (mounted) {
+        setState(() {
+          _pl = p;
+          _orderOverride = null;
+          _selected.retainWhere((id) => p.tracks.any((t) => t.id == id));
+        });
+      }
     }).catchError((_) {});
+  }
+
+  // ---- Reorder ----
+  /// Move a track from [from] to [to] (indexes into the playlist order) and save
+  /// the full new order. Optimistic: reverts and reloads if the save fails.
+  Future<void> _move(List<Track> current, int from, int to) async {
+    final list = List<Track>.of(current);
+    list.insert(to, list.removeAt(from));
+    setState(() => _orderOverride = list);
+    try {
+      await context.read<Api>().reorderPlaylist(widget.playlistId, [for (final t in list) t.id]);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text("Couldn't save the new order: $e")));
+      setState(() {
+        _orderOverride = null;
+        _load();
+      });
+    }
+  }
+
+  void _toggleReorderMode() {
+    if (!_reorderMode && !_inPlaylistOrder) {
+      // Reordering edits the playlist's own order: switch the view to it first.
+      setState(() {
+        _sort.order = TrackOrder.custom;
+        _sort.asc = true;
+      });
+      _sort.save(widget.playlistId);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Showing Playlist order so you can rearrange it'),
+          duration: Duration(seconds: 2)));
+    }
+    setState(() {
+      _reorderMode = !_reorderMode;
+      _selected.clear();
+    });
+  }
+
+  // ---- Multi-select ----
+  void _toggleSelect(Track t) => setState(() {
+        if (!_selected.remove(t.id)) _selected.add(t.id);
+      });
+
+  List<Track> _selectedTracks(List<Track> shown) =>
+      shown.where((t) => _selected.contains(t.id)).toList();
+
+  String _songs(int n) => '$n ${n == 1 ? 'song' : 'songs'}';
+
+  Future<void> _bulkQueue(List<Track> shown) async {
+    final picked = _selectedTracks(shown);
+    if (picked.isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    await context.read<PlayerModel>().addAllToQueue(picked);
+    messenger.showSnackBar(SnackBar(
+        content: Text('Added ${_songs(picked.length)} to the queue'),
+        duration: const Duration(seconds: 2)));
+    if (mounted) setState(_selected.clear);
+  }
+
+  Future<void> _bulkAddTo(List<Track> shown) async {
+    final picked = _selectedTracks(shown);
+    if (picked.isEmpty) return;
+    final api = context.read<Api>();
+    final messenger = ScaffoldMessenger.of(context);
+    final target = await pickPlaylist(context,
+        title: 'Add ${_songs(picked.length)} to playlist', excludeId: widget.playlistId);
+    if (target == null) return;
+    try {
+      final added = await api.addManyToPlaylist(target.id, [for (final t in picked) t.id]);
+      final skipped = picked.length - added;
+      messenger.showSnackBar(SnackBar(
+          content: Text('Added $added to ${target.name}'
+              '${skipped > 0 ? ' ($skipped already there)' : ''}')));
+      if (mounted) setState(_selected.clear);
+    } catch (_) {
+      messenger.showSnackBar(const SnackBar(content: Text("Couldn't add to playlist")));
+    }
+  }
+
+  Future<void> _bulkMove(List<Track> shown) async {
+    final picked = _selectedTracks(shown);
+    if (picked.isEmpty) return;
+    final api = context.read<Api>();
+    final downloads = context.read<DownloadManager>();
+    final messenger = ScaffoldMessenger.of(context);
+    final target = await pickPlaylist(context,
+        title: 'Move ${_songs(picked.length)} to playlist', excludeId: widget.playlistId);
+    if (target == null) return;
+    final ids = [for (final t in picked) t.id];
+    try {
+      await api.addManyToPlaylist(target.id, ids);
+      await api.removeManyFromPlaylist(widget.playlistId, ids);
+      for (final id in ids) {
+        await downloads.onRemovedFromSource(id, widget.playlistId);
+      }
+      messenger.showSnackBar(SnackBar(content: Text('Moved ${_songs(ids.length)} to ${target.name}')));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text("Couldn't move: $e")));
+    }
+    if (mounted) {
+      setState(() {
+        _selected.clear();
+        _load();
+      });
+    }
+  }
+
+  Future<void> _bulkRemove(List<Track> shown) async {
+    final picked = _selectedTracks(shown);
+    if (picked.isEmpty) return;
+    final api = context.read<Api>();
+    final downloads = context.read<DownloadManager>();
+    final messenger = ScaffoldMessenger.of(context);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: kPanel,
+        title: Text('Remove ${_songs(picked.length)}?'),
+        content: Text('They will be removed from "$_name". The songs stay in the library.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Remove', style: TextStyle(color: Color(0xFFEF4444)))),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final ids = [for (final t in picked) t.id];
+    try {
+      final removed = await api.removeManyFromPlaylist(widget.playlistId, ids);
+      for (final id in ids) {
+        await downloads.onRemovedFromSource(id, widget.playlistId);
+      }
+      messenger.showSnackBar(SnackBar(content: Text('Removed ${_songs(removed)}')));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text("Couldn't remove: $e")));
+    }
+    if (mounted) {
+      setState(() {
+        _selected.clear();
+        _load();
+      });
+    }
+  }
+
+  Widget _selectionBar(List<Track> shown) => SelectionBar(
+        count: _selected.length,
+        total: shown.length,
+        onClear: () => setState(_selected.clear),
+        onSelectAll: () => setState(() {
+          if (_selected.length == shown.length) {
+            _selected.clear();
+          } else {
+            _selected.addAll(shown.map((t) => t.id));
+          }
+        }),
+        actions: [
+          SelectionAction(LucideIcons.addToQueue, 'Add to queue', () => _bulkQueue(shown)),
+          SelectionAction(LucideIcons.listPlus, 'Add to playlist', () => _bulkAddTo(shown)),
+          if (_canEdit) ...[
+            SelectionAction(Icons.drive_file_move_outline, 'Move to playlist…',
+                () => _bulkMove(shown)),
+            SelectionAction(LucideIcons.trash2, 'Remove', () => _bulkRemove(shown), danger: true),
+          ],
+        ],
+      );
+
+  /// Mobile reorder mode: plain rows with a drag handle (drag the handle, or
+  /// long-press anywhere on the row).
+  Widget _reorderList(List<Track> tracks) {
+    final api = context.read<Api>();
+    return ReorderableListView.builder(
+      buildDefaultDragHandles: false,
+      itemCount: tracks.length,
+      onReorderItem: (from, to) {
+        if (to != from) _move(tracks, from, to);
+      },
+      itemBuilder: (context, i) {
+        final t = tracks[i];
+        return ReorderableDelayedDragStartListener(
+          key: ValueKey(t.id),
+          index: i,
+          child: Material(
+            color: Colors.transparent,
+            child: ListTile(
+              leading: Cover(url: api.trackCoverUrl(t.id), trackId: t.id, size: 44),
+              title: Text(t.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+              subtitle: Text(t.artistName, maxLines: 1, overflow: TextOverflow.ellipsis),
+              trailing: ReorderableDragStartListener(
+                index: i,
+                child: const Padding(
+                  padding: EdgeInsets.all(8),
+                  child: Icon(Icons.drag_handle, color: kMuted),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
 
   Future<void> _removeFromPlaylist(String id) async {
@@ -372,6 +599,14 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       appBar: AppBar(
         title: Text(_name),
         actions: [
+          if (!_isDesktop && showMenu && (_pl?.tracks.length ?? 0) > 1)
+            IconButton(
+              tooltip: _reorderMode ? 'Done rearranging' : 'Rearrange',
+              icon: Icon(_reorderMode ? LucideIcons.check : Icons.low_priority,
+                  color: _reorderMode ? kAccent : null),
+              onPressed: _toggleReorderMode,
+            ),
+          if (!_reorderMode)
           TrackSortButton(
             state: _sort,
             onSelected: (o) {
@@ -451,13 +686,22 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         builder: (context, snap) {
           if (!snap.hasData) return const Center(child: CircularProgressIndicator());
           // Shown, played and queued in the chosen order.
-          final tracks =
-              sortTracks(snap.data!.tracks, _sort.order, _sort.asc, addedAt: _pl?.addedAt);
+          final base = _orderOverride ?? snap.data!.tracks;
+          final tracks = sortTracks(base, _sort.order, _sort.asc, addedAt: _pl?.addedAt);
+          final canReorder = showMenu && _inPlaylistOrder;
+          final selecting = _selected.isNotEmpty;
           final totalSec = totalDurationSeconds(tracks.map((t) => t.duration));
           return Column(
             children: [
               _coverHeader(tracks.length, totalSec),
-              if (tracks.isNotEmpty)
+              if (selecting) _selectionBar(tracks),
+              if (_reorderMode)
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: Text('Drag the handles to rearrange. Changes save as you go.',
+                      style: TextStyle(color: kMuted, fontSize: 12)),
+                ),
+              if (tracks.isNotEmpty && !selecting && !_reorderMode)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
                   child: Row(
@@ -500,13 +744,23 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                             addedAtById: _pl?.addedAt,
                             showUploadedBy: false,
                             onChanged: _load,
-                            onRemove: (t) => _removeFromPlaylist(t.id),
+                            onRemove: showMenu ? (t) => _removeFromPlaylist(t.id) : null,
+                            selectedIds: _selected,
+                            onSelectToggle: _toggleSelect,
+                            onReorder: canReorder && !selecting
+                                ? (from, to) => _move(tracks, from, to)
+                                : null,
                           )
+                        : _reorderMode
+                        ? _reorderList(tracks)
                         : ListView.builder(
                         itemCount: tracks.length,
                         itemBuilder: (context, i) => Dismissible(
                     key: ValueKey(tracks[i].id),
-                    direction: DismissDirection.endToStart,
+                    // Swipe-to-remove only for editors, and not while selecting.
+                    direction: showMenu && !selecting
+                        ? DismissDirection.endToStart
+                        : DismissDirection.none,
                     background: Container(
                       color: Colors.red.withValues(alpha: 0.3),
                       alignment: Alignment.centerRight,
@@ -522,7 +776,13 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                       // source still needs it.
                       await downloads.onRemovedFromSource(id, widget.playlistId);
                     },
-                    child: TrackTile(tracks: tracks, index: i, showDownload: true),
+                    child: TrackTile(
+                      tracks: tracks,
+                      index: i,
+                      showDownload: true,
+                      selectedIds: _selected,
+                      onSelectToggle: _toggleSelect,
+                    ),
                   ),
                 ),
               ),

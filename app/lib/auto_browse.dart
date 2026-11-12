@@ -145,11 +145,13 @@ class AutoBrowse {
         playable: true,
       );
 
+  /// A downloaded track always uses its saved cover (instant, works offline);
+  /// the audio_service fork turns that file:// URI into a content:// URI the car
+  /// can read (CoverFileProvider). Others use the server cover URL. [local] is
+  /// kept for call sites that only want local art in offline contexts.
   Uri _trackArt(String trackId, {bool local = false}) {
-    if (local) {
-      final p = downloads?.localCoverPath(trackId);
-      if (p != null) return Uri.file(p);
-    }
+    final p = downloads?.localCoverPath(trackId);
+    if (p != null) return Uri.file(p);
     return Uri.parse(api.trackCoverUrl(trackId));
   }
 

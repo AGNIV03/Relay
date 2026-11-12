@@ -21,6 +21,14 @@ export const env = {
   // Unset = disabled; when set, audio fingerprints + durations are sent to
   // AcoustID (and MusicBrainz metadata comes back) to fill/fix track tags.
   acoustIdKey: process.env.ACOUSTID_API_KEY ?? "",
+  // Optional Last.fm scrobbling (https://www.last.fm/api/account/create). Both
+  // must be set for users to be able to connect a Last.fm account.
+  lastfmApiKey: process.env.LASTFM_API_KEY ?? "",
+  lastfmApiSecret: process.env.LASTFM_API_SECRET ?? "",
+  // Optional Spotify playlist import (client-credentials app from
+  // https://developer.spotify.com/dashboard). Unset = Spotify import disabled.
+  spotifyClientId: process.env.SPOTIFY_CLIENT_ID ?? "",
+  spotifyClientSecret: process.env.SPOTIFY_CLIENT_SECRET ?? "",
 };
 
 export const isProduction = process.env.NODE_ENV === "production";
@@ -47,3 +55,7 @@ if (env.jwtSecret.length < 32 || isPlaceholderSecret(env.jwtSecret)) {
 // password change / "sign out everywhere" / role change despite the long TTL.
 export const ACCESS_TOKEN_TTL = "30d";
 export const REFRESH_TOKEN_TTL = "365d";
+export const REFRESH_TOKEN_TTL_MS = 365 * 24 * 60 * 60 * 1000;
+// Media tokens: narrow-scope tokens for <audio>/<img> `?token=` URLs (stream +
+// cover routes only), so the long-lived access token never lands in URLs/logs.
+export const MEDIA_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;

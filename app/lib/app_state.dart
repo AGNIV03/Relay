@@ -86,6 +86,7 @@ class AppState extends ChangeNotifier {
       user = await api.me();
       if (user != null) {
         _loadLiked();
+        unawaited(api.ensureMediaToken());
       } else if (!await api.isOnline()) {
         // The account check failed because the server went down mid-launch (e.g.
         // a restart), not because the session is invalid: go offline instead of
@@ -104,7 +105,10 @@ class AppState extends ChangeNotifier {
       final me = await api.me();
       if (me == null && !await api.isOnline()) return false; // went down again
       user = me;
-      if (user != null) _loadLiked();
+      if (user != null) {
+        _loadLiked();
+        unawaited(api.ensureMediaToken());
+      }
     }
     offline = false;
     notifyListeners();
@@ -117,6 +121,17 @@ class AppState extends ChangeNotifier {
     _loadLiked();
     // Now authed — push the library to any connected Android Auto head unit so its
     // home fills in without needing an app restart.
+    unawaited(refreshAndroidAutoBrowse());
+    notifyListeners();
+  }
+
+  /// Create an account from an invite code and sign straight in (same session
+  /// setup as [login]).
+  Future<void> register(String url, String code, String username, String password) async {
+    user = await api.register(url, code, username, password);
+    offline = false;
+    _loadLiked();
+    unawaited(api.ensureMediaToken(force: true));
     unawaited(refreshAndroidAutoBrowse());
     notifyListeners();
   }

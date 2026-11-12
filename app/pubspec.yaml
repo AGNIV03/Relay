@@ -1,7 +1,7 @@
 name: stream_app
 description: "Self-hosted music streaming client (Windows / Android / web)."
 publish_to: 'none'
-version: 1.0.2+3
+version: 1.0.4+5
 
 environment:
   sdk: ^3.12.2
@@ -27,6 +27,9 @@ dependencies:
   # in main.dart). They are required for the Windows .exe to play audio.
   just_audio_media_kit: ^2.0.6
   media_kit_libs_audio: ^1.0.5
+  # Used directly (desktop only) for the crossfade's second, overlapping player
+  # (lib/desktop_crossfade.dart). Same version just_audio_media_kit pulls in.
+  media_kit: ^1.2.6
 
   # State management
   provider: ^6.1.2
@@ -46,6 +49,13 @@ dependencies:
 
   # Pick local audio files to upload (desktop + mobile).
   file_picker: ^8.1.4
+  share_plus: ^12.0.2
+  connectivity_plus: ^7.3.2
+
+  # Chromecast discovery (mDNS `_googlecast._tcp`, pure Dart: Android + Windows).
+  # The Cast v2 protocol itself is implemented in lib/cast/ (no native SDK).
+  multicast_dns: ^0.3.3+1
+  url_launcher: ^6.3.3
 
 # Patched just_audio_background: media notification shows prev/play/next only
 # (no stop button). See third_party/just_audio_background.

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { Search, Upload, RefreshCw, Play, Music, X, Shuffle, TriangleAlert } from "lucide-react";
-import { api, coverUrl, uploadManyFiles, type RejectedUpload } from "@/lib/api";
+import { api, coverUrl, uploadManyFiles, type RejectedUpload, type UploadTotals } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { usePlayer } from "@/context/PlayerContext";
 import { useLiked } from "@/context/LikedContext";
@@ -147,13 +147,12 @@ export default function SongsPage() {
     try {
       // Handles any count/size: small files batched under the CDN cap, large
       // files chunked individually.
-      const { added, duplicates, failed, rejected } = await uploadManyFiles(
-        Array.from(files),
-        setUploadPct,
-      );
-      // Files with no playable audio are refused by the server: list which ones
-      // and why (below the search bar) so the user knows to find a good copy.
-      setRejected(rejected);
+      const picked = Array.from(files);
+      const totals = await uploadManyFiles(picked, setUploadPct);
+      const { added, duplicates, failed } = totals;
+      // List every file that wasn't added and why (below the search bar):
+      // refused audio, duplicates, and files lost to a failed request.
+      setRejected(notAddedFiles(picked, totals));
       showToast(
         `Uploaded ${added} song${added === 1 ? "" : "s"}` +
           (duplicates ? `, ${duplicates} already in library` : "") +
@@ -199,7 +198,7 @@ export default function SongsPage() {
           <button
             onClick={() => fileInput.current?.click()}
             disabled={uploadPct !== null}
-            title="Upload music — shared with everyone, auto-added to your Liked Songs"
+            title="Upload music. Shared with everyone, auto-added to your Liked Songs"
             className="flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--panel)] px-4 py-2 text-sm font-medium hover:bg-[var(--panel-2)] disabled:opacity-50"
           >
             <Upload size={16} />
@@ -275,7 +274,7 @@ export default function SongsPage() {
           <ul className="space-y-0.5">
             {rejected.map((r, i) => (
               <li key={`${r.name}-${i}`} className="truncate text-[var(--muted)]">
-                <span className="text-[var(--text)]">{r.name}</span> — {r.reason}
+                <span className="text-[var(--text)]">{r.name}</span>: {r.reason}
               </li>
             ))}
           </ul>
@@ -426,4 +425,35 @@ export default function SongsPage() {
       )}
     </div>
   );
+}
+
+/** Per-file outcome for everything that wasn't added. The server names refused
+ *  files (with a reason), failed ones, and (newer builds) duplicates; files from
+ *  a request that failed outright appear in none of those lists. */
+function notAddedFiles(picked: File[], totals: UploadTotals): RejectedUpload[] {
+  const out: RejectedUpload[] = [...totals.rejected];
+  const seen = new Set(out.map((r) => r.name));
+  for (const name of totals.failedNames) {
+    if (!seen.has(name)) {
+      out.push({ name, reason: "Couldn't be processed" });
+      seen.add(name);
+    }
+  }
+  const dupNames = (totals as UploadTotals & { duplicateNames?: string[] }).duplicateNames;
+  for (const name of dupNames ?? []) {
+    if (!seen.has(name)) {
+      out.push({ name, reason: "Already in your library" });
+      seen.add(name);
+    }
+  }
+  const added = new Set(totals.addedNames);
+  const unaccounted = picked.map((f) => f.name).filter((n) => !added.has(n) && !seen.has(n));
+  // Without per-file duplicate names, an exact count match means they're the duplicates.
+  const reason = dupNames
+    ? "Upload failed"
+    : unaccounted.length === totals.duplicates
+      ? "Already in your library"
+      : "Already in your library, or the upload failed";
+  for (const name of unaccounted) out.push({ name, reason });
+  return out;
 }

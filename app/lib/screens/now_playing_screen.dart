@@ -3,6 +3,7 @@ import 'package:just_audio/just_audio.dart';
 import '../app_icons.dart';
 import 'package:provider/provider.dart';
 import '../api.dart';
+import '../cast/cast_ui.dart';
 import '../player.dart';
 import '../theme.dart';
 import '../widgets/cover.dart';
@@ -34,6 +35,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
       appBar: AppBar(
         title: const Text("Now Playing"),
         actions: [
+          const CastButton(size: 22),
           IconButton(
             tooltip: "Queue",
             icon: const Icon(LucideIcons.listMusic, size: 20),
@@ -123,6 +125,11 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                       ]),
                     ),
                     const SizedBox(height: 10),
+                    if (player.casting)
+                      const Padding(
+                        padding: EdgeInsets.only(bottom: 6),
+                        child: CastingLabel(fontSize: 13),
+                      ),
                     // Five controls in equal-width slots. Shuffle, previous, next and
                     // repeat share one icon size; play/pause stays the primary circle.
                     Row(children: [

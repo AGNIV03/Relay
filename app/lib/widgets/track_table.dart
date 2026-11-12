@@ -30,6 +30,10 @@ class TrackTable extends StatefulWidget {
   // selected a click toggles selection instead of starting playback.
   final Set<String> selectedIds;
   final void Function(Track)? onSelectToggle;
+  // Drag-to-reorder (playlists in "Playlist order"): the # cell becomes a drag
+  // handle. Called with the moved row's old index and its final index (already
+  // adjusted for the removal). Only active while no column sort is applied.
+  final void Function(int oldIndex, int newIndex)? onReorder;
   const TrackTable({
     super.key,
     required this.tracks,
@@ -39,6 +43,7 @@ class TrackTable extends StatefulWidget {
     this.onRemove,
     this.selectedIds = const {},
     this.onSelectToggle,
+    this.onReorder,
   });
 
   @override
@@ -144,6 +149,19 @@ class _TrackTableState extends State<TrackTable> {
     // Wide enough for like + download + menu (+ optional remove) at their natural
     // ~40px tap sizes; too narrow here overflows and shifts the tap targets.
     final actionsW = widget.onRemove != null ? 164.0 : 124.0;
+    final reorderable = widget.onReorder != null && _sortCol == 0;
+    Widget row(int i) => _TrackRow(
+          tracks: sorted,
+          index: i,
+          onChanged: widget.onChanged,
+          addedLabel: fmtAdded(_addedIso(sorted[i])),
+          showUploadedBy: widget.showUploadedBy,
+          actionsWidth: actionsW,
+          onRemove: widget.onRemove,
+          selectedIds: widget.selectedIds,
+          onSelectToggle: widget.onSelectToggle,
+          reorderable: reorderable,
+        );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -164,21 +182,21 @@ class _TrackTableState extends State<TrackTable> {
         ),
         const Divider(height: 1),
         Expanded(
-          child: ListView.builder(
-            padding: const EdgeInsets.only(top: 4),
-            itemCount: sorted.length,
-            itemBuilder: (_, i) => _TrackRow(
-              tracks: sorted,
-              index: i,
-              onChanged: widget.onChanged,
-              addedLabel: fmtAdded(_addedIso(sorted[i])),
-              showUploadedBy: widget.showUploadedBy,
-              actionsWidth: actionsW,
-              onRemove: widget.onRemove,
-              selectedIds: widget.selectedIds,
-              onSelectToggle: widget.onSelectToggle,
-            ),
-          ),
+          child: reorderable
+              ? ReorderableListView.builder(
+                  padding: const EdgeInsets.only(top: 4),
+                  buildDefaultDragHandles: false,
+                  itemCount: sorted.length,
+                  onReorderItem: (from, to) {
+                    if (to != from) widget.onReorder!(from, to);
+                  },
+                  itemBuilder: (_, i) => KeyedSubtree(key: ValueKey(sorted[i].id), child: row(i)),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.only(top: 4),
+                  itemCount: sorted.length,
+                  itemBuilder: (_, i) => row(i),
+                ),
         ),
       ],
     );
@@ -202,6 +220,7 @@ class _TrackRow extends StatefulWidget {
   final void Function(Track)? onRemove;
   final Set<String> selectedIds;
   final void Function(Track)? onSelectToggle;
+  final bool reorderable; // # cell is a drag handle (inside a ReorderableListView)
   const _TrackRow({
     required this.tracks,
     required this.index,
@@ -212,6 +231,7 @@ class _TrackRow extends StatefulWidget {
     this.onRemove,
     this.selectedIds = const {},
     this.onSelectToggle,
+    this.reorderable = false,
   });
   @override
   State<_TrackRow> createState() => _TrackRowState();
@@ -222,10 +242,21 @@ class _TrackRowState extends State<_TrackRow> {
 
   Widget _downloadButton(Track t, DownloadManager downloads) {
     if (downloads.isDownloading(t.id)) {
-      return const SizedBox(
-        width: 36,
-        height: 36,
-        child: Padding(padding: EdgeInsets.all(9), child: CircularProgressIndicator(strokeWidth: 2)),
+      // Determinate ring for the active download, spinner while queued.
+      final p = downloads.progressOf(t.id);
+      return Tooltip(
+        message: downloads.pausedForWifi
+            ? 'Waiting for Wi-Fi'
+            : p == null
+                ? 'Queued'
+                : 'Downloading ${(p * 100).round()}%',
+        child: SizedBox(
+          width: 36,
+          height: 36,
+          child: Padding(
+              padding: const EdgeInsets.all(9),
+              child: CircularProgressIndicator(strokeWidth: 2, value: p)),
+        ),
       );
     }
     final done = downloads.isDownloaded(t.id);
@@ -245,6 +276,29 @@ class _TrackRowState extends State<_TrackRow> {
           }
         }
       },
+    );
+  }
+
+  /// The # column: selection marker, playing icon, or row number. When the
+  /// table is reorderable it doubles as the drag handle (grip on hover).
+  Widget _indexCell(bool selectionMode, bool isSelected, bool isPlaying) {
+    final Widget content = selectionMode
+        ? Icon(isSelected ? LucideIcons.checkCircle : LucideIcons.circle,
+            size: 17, color: isSelected ? kAccent : kMuted)
+        : widget.reorderable && _hover
+            ? const Icon(Icons.drag_indicator, size: 18, color: kMuted)
+            : isPlaying
+                ? const Icon(LucideIcons.music2, size: 15, color: kAccent)
+                : Text('${widget.index + 1}',
+                    style: const TextStyle(color: kMuted, fontSize: 13));
+    final cell = SizedBox(width: 32, height: 40, child: Center(child: content));
+    if (!widget.reorderable || selectionMode) return cell;
+    return ReorderableDragStartListener(
+      index: widget.index,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.grab,
+        child: Tooltip(message: 'Drag to reorder', waitDuration: const Duration(seconds: 1), child: cell),
+      ),
     );
   }
 
@@ -278,18 +332,7 @@ class _TrackRowState extends State<_TrackRow> {
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
           child: Row(
             children: [
-              SizedBox(
-                width: 32,
-                child: Center(
-                  child: selectionMode
-                      ? Icon(isSelected ? LucideIcons.checkCircle : LucideIcons.circle,
-                          size: 17, color: isSelected ? kAccent : kMuted)
-                      : isPlaying
-                          ? const Icon(LucideIcons.music2, size: 15, color: kAccent)
-                          : Text('${widget.index + 1}',
-                              style: const TextStyle(color: kMuted, fontSize: 13)),
-                ),
-              ),
+              _indexCell(selectionMode, isSelected, isPlaying),
               const SizedBox(width: 12),
               Expanded(
                 flex: 5,

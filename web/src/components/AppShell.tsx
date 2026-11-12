@@ -13,7 +13,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
-  const isLogin = pathname === "/login";
+  // Public pages: no shell, no auth redirect.
+  const isLogin = pathname === "/login" || pathname === "/register";
   const [showLyrics, setShowLyrics] = useState(false);
   const [showQueue, setShowQueue] = useState(false);
   const [showFriends, setShowFriends] = useState(true);

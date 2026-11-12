@@ -1,12 +1,18 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'api.dart';
 import 'models.dart';
+import 'settings.dart';
+
+/// Thrown inside a download when the queue pauses (Wi-Fi only, on mobile data);
+/// the partial file is kept and the track goes back to the head of the queue.
+class _PausedForWifi implements Exception {}
 
 /// A downloaded playlist, reconstructed from local metadata for offline use.
 class OfflinePlaylist {
@@ -45,7 +51,66 @@ class DownloadManager extends ChangeNotifier {
   final Map<String, ({String name, List<String> ids})> _playlists = {}; // source -> playlist
   Directory? _dir;
 
+  // Byte progress of the active download (for a per-track percentage).
+  int _activeReceived = 0;
+  int _activeTotal = 0;
+  DateTime _lastProgressNotify = DateTime.fromMillisecondsSinceEpoch(0);
+
+  // Wi-Fi only: true while the device is on a metered (mobile-data-only) link.
+  bool _metered = false;
+  StreamSubscription<List<ConnectivityResult>>? _connSub;
+
   DownloadManager(this.api);
+
+  /// Downloads are held back right now (Wi-Fi only is on and we're on mobile data).
+  bool get wifiBlocked => AppSettings.instance.downloadWifiOnly && _metered;
+
+  /// Work is waiting because of the Wi-Fi only setting.
+  bool get pausedForWifi => wifiBlocked && (_pending.isNotEmpty || _active.isNotEmpty);
+
+  /// 0..1 for the track downloading right now (when its size is known), else null.
+  double? progressOf(String id) {
+    if (!_active.contains(id) || _activeTotal <= 0) return null;
+    return (_activeReceived / _activeTotal).clamp(0.0, 1.0);
+  }
+
+  static bool _isMetered(List<ConnectivityResult> r) =>
+      r.contains(ConnectivityResult.mobile) &&
+      !r.contains(ConnectivityResult.wifi) &&
+      !r.contains(ConnectivityResult.ethernet);
+
+  void _onConnectivity(List<ConnectivityResult> r) {
+    final was = wifiBlocked;
+    _metered = _isMetered(r);
+    if (was != wifiBlocked) notifyListeners();
+    if (!wifiBlocked) _pump(); // back on Wi-Fi (or the setting is off): resume
+  }
+
+  void _onSettings() {
+    // Turning Wi-Fi only off resumes a paused queue; turning it on pauses it at
+    // the next chunk (the active download notices via [wifiBlocked]).
+    if (!wifiBlocked) _pump();
+    notifyListeners();
+  }
+
+  Future<void> _watchConnectivity() async {
+    if (kIsWeb) return;
+    AppSettings.instance.addListener(_onSettings);
+    try {
+      final c = Connectivity();
+      _metered = _isMetered(await c.checkConnectivity());
+      _connSub = c.onConnectivityChanged.listen(_onConnectivity);
+    } catch (_) {
+      _metered = false; // no connectivity info: never block
+    }
+  }
+
+  @override
+  void dispose() {
+    _connSub?.cancel();
+    AppSettings.instance.removeListener(_onSettings);
+    super.dispose();
+  }
 
   static const _kFiles = 'downloaded_tracks';
   static const _kSources = 'download_sources';
@@ -57,6 +122,7 @@ class DownloadManager extends ChangeNotifier {
 
   Future<void> init() async {
     if (!supported) return;
+    await _watchConnectivity();
     _dir = await getApplicationDocumentsDirectory();
     final p = await SharedPreferences.getInstance();
     final saved = p.getStringList(_kFiles) ?? [];
@@ -231,16 +297,32 @@ class DownloadManager extends ChangeNotifier {
     _working = true;
     try {
       while (_pending.isNotEmpty) {
+        // Wi-Fi only and on mobile data: leave the queue as is; a connectivity
+        // change (or the setting being turned off) calls _pump again.
+        if (wifiBlocked) break;
         final t = _pending.removeAt(0);
         _queuedIds.remove(t.id);
         if (_downloaded.contains(t.id)) continue;
         _active.add(t.id);
+        _activeReceived = 0;
+        _activeTotal = 0;
         notifyListeners();
         try {
           await _fetchResilient(t);
+          // Removed (or "Remove all downloads") while it was in flight: drop it.
+          if (!(_sources[t.id]?.isNotEmpty ?? false)) {
+            await _gc(t.id);
+            continue;
+          }
           _downloaded.add(t.id);
           await _fetchCover(t); // best-effort cover for offline display
           await _fetchLyrics(t); // best-effort lyrics for offline display
+        } on _PausedForWifi {
+          // Back to the head of the queue; the .part resumes later.
+          if (_sources[t.id]?.isNotEmpty ?? false) {
+            _pending.insert(0, t);
+            _queuedIds.add(t.id);
+          }
         } catch (e) {
           // Keep the recorded source so the user can retry later (re-tapping the
           // button re-enqueues it). The file is left as a .part for resume.
@@ -291,9 +373,22 @@ class DownloadManager extends ChangeNotifier {
           // never leaks a handle (which on Windows would lock the file and block
           // the retry/rename).
           final append = resp.statusCode == 206 && existing > 0;
+          _activeReceived = append ? existing : 0;
+          final len = resp.contentLength ?? 0;
+          _activeTotal = len > 0 ? _activeReceived + len : 0;
           final sink = part.openWrite(mode: append ? FileMode.append : FileMode.write);
           try {
-            await sink.addStream(resp.stream);
+            await for (final chunk in resp.stream) {
+              sink.add(chunk);
+              _activeReceived += chunk.length;
+              if (wifiBlocked) throw _PausedForWifi();
+              // Throttled: every row watching downloads rebuilds on notify.
+              final now = DateTime.now();
+              if (now.difference(_lastProgressNotify).inMilliseconds > 400) {
+                _lastProgressNotify = now;
+                notifyListeners();
+              }
+            }
           } finally {
             await sink.flush();
             await sink.close();
@@ -305,8 +400,11 @@ class DownloadManager extends ChangeNotifier {
         if (await File(finalPath).exists()) await File(finalPath).delete();
         if (await part.exists()) await part.rename(finalPath);
         return;
+      } on _PausedForWifi {
+        rethrow; // not a failure: no retry, the .part stays for resume
       } catch (e) {
         if (attempt >= maxAttempts) rethrow;
+        if (wifiBlocked) throw _PausedForWifi();
         // Wait, then retry — the partial file stays so we resume where we stopped.
         await Future.delayed(backoff);
         backoff = Duration(seconds: (backoff.inSeconds * 2).clamp(1, 30));
@@ -437,6 +535,50 @@ class DownloadManager extends ChangeNotifier {
   Future<void> onRemovedFromSource(String trackId, String source) async {
     _sources[trackId]?.remove(source);
     await _gc(trackId);
+    await _save();
+    notifyListeners();
+  }
+
+  /// Our files in the documents directory (audio, partials, covers, lyrics).
+  Stream<File> _ownFiles() async* {
+    final dir = _dir;
+    if (dir == null) return;
+    await for (final e in dir.list()) {
+      if (e is File && e.uri.pathSegments.last.startsWith('stream_')) yield e;
+    }
+  }
+
+  /// Total bytes used by downloads (audio + covers + lyrics + partial files).
+  Future<int> storageBytes() async {
+    if (!supported) return 0;
+    var total = 0;
+    try {
+      await for (final f in _ownFiles()) {
+        try {
+          total += await f.length();
+        } catch (_) {}
+      }
+    } catch (_) {}
+    return total;
+  }
+
+  /// Delete every download (and anything queued), including offline playlists.
+  Future<void> removeEverything() async {
+    if (!supported) return;
+    _pending.clear();
+    _queuedIds.clear();
+    _sources.clear();
+    _playlists.clear();
+    _meta.clear();
+    _downloaded.clear();
+    try {
+      await for (final f in _ownFiles()) {
+        // The active download's .part may be open; it's swept on next launch.
+        try {
+          await f.delete();
+        } catch (_) {}
+      }
+    } catch (_) {}
     await _save();
     notifyListeners();
   }

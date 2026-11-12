@@ -1,14 +1,20 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform;
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'api.dart';
 import 'auto_browse.dart';
+import 'cast/cast_controller.dart';
+import 'cast/cast_discovery.dart';
+import 'desktop_crossfade.dart';
 import 'downloads.dart';
+import 'loudness.dart';
 import 'models.dart';
+import 'settings.dart';
 
 /// Wraps a just_audio [AudioPlayer]: queue, playback state, lyrics, resume-on-
 /// reopen persistence, and a stall watchdog that auto-recovers if a stream
@@ -92,15 +98,65 @@ class PlayerModel extends ChangeNotifier {
   bool get isChorusMember => chorus != null && !chorus!.isHost && !chorus!.isPending;
 
   static const _kSession = 'last_session';
+  static const _kVolume = 'player_volume';
+
+  final AppSettings _settings = AppSettings.instance;
+
+  // ---- Volume: user volume x loudness normalization x fade ----
+  // The slider shows / stores the USER volume; the engine gets
+  // user x normalization factor x fade gain (never louder than the user volume).
+  double _userVolume = 1.0;
+  double _fadeGain = 1.0; // 0..1 from the fade-out / fade-in envelope
+  double _lastApplied = -1;
+  Timer? _fadeTimer;
+  int? _fadeInStartMs; // wall clock when the current fade-in began
+
+  // ---- Autoplay ----
+  // Tracks appended by autoplay (radio) when the queue ran out. Identity set: the
+  // flag travels with the Track object through every insert / move / reshuffle.
+  final Set<Track> _autoItems = Set.identity();
+  bool _autoplayFetching = false;
+  bool _lastAutoplaySetting = true;
+  bool _lastNormalize = true;
+
+  // ---- Scrobble completion (one per play) ----
+  DateTime? _playStartedAt;
+  int _listenedMs = 0;
+  bool _completeSent = false;
+  Duration _lastTickPos = Duration.zero;
+
+  // ---- Media-token recovery ----
+  int _lastAuthRecoveryMs = 0;
+
+  // ---- Chromecast ----
+  final CastController cast = CastController();
+  Timer? _castTicker;
+  bool get casting => cast.active;
+  // Local engine index seen while casting (to spot notification next/prev taps).
+  int? _castLocalIdx;
+  String? get castDeviceName => cast.device?.name;
 
   PlayerModel(this.api, this.downloads) {
     _player.currentIndexStream.listen((i) {
       if (_previewing) return; // Rewind preview owns the engine; _index is the saved queue's
+      if (casting) {
+        // The receiver drives the index while casting and nothing in the app moves
+        // the paused local engine, so a local index change here can only be the
+        // notification / lock-screen next or previous button: forward it to the
+        // receiver (cast-aware next()/previous()) instead of dropping it.
+        final prev = _castLocalIdx;
+        _castLocalIdx = i;
+        if (prev != null && i != null && i != prev) {
+          final n = _queue.length;
+          final forward = i == prev + 1 || (n > 1 && prev == n - 1 && i == 0);
+          forward ? next() : previous();
+        }
+        return;
+      }
+      _castLocalIdx = null;
       if (i != null && i != _index) {
         _index = i;
-        _scrobbled = false;
-        _loadLyrics();
-        _postActivity();
+        _onTrackStarted();
         // Host: push natural track advances (song ended → next) so members follow.
         if (isChorusHost && !_applyingChorus) _broadcastChorus();
         notifyListeners();
@@ -111,6 +167,16 @@ class PlayerModel extends ChangeNotifier {
         notifyListeners();
         return;
       }
+      // Casting: lock-screen / notification controls act on the local engine;
+      // never let it play alongside the receiver, hand the intent over instead.
+      if (casting && st.playing) {
+        _player.pause();
+        if (!cast.playing) cast.play();
+        return;
+      }
+      _updateFadeTimer();
+      // A restored session resumed on its last track: start fetching autoplay.
+      if (st.playing) unawaited(_maybeAutoplay());
       _saveSession();
       _postActivity();
       // Host: broadcast play/pause transitions (covers OS / lock-screen controls).
@@ -134,30 +200,39 @@ class PlayerModel extends ChangeNotifier {
       if (!isChorusMember) _clearPlayback();
     });
     _player.positionStream.listen((pos) {
-      // Rewind previews never count as plays (they'd skew next year's stats).
-      if (!_previewing && !_scrobbled && pos.inSeconds >= 5 && current != null) {
-        _scrobbled = true;
-        api.scrobble(current!.id, playlistId: _playlistContext).catchError((_) {});
-      }
-      // Position ticks go to their own notifier: only the progress bar, time
-      // labels, mini-player ring and lyrics listen to it. Notifying the whole
-      // model here rebuilt every PlayerModel watcher (player bar, track tables,
-      // friends panel, queue…) several times a second, which dominated CPU use on
-      // desktop. Track / play-state / queue changes still notifyListeners().
-      if (!isChorusMember) positionTick.value = pos;
+      if (casting) return; // the cast ticker feeds the play head while casting
+      _onPlayhead(pos, playing: _player.playing);
     });
     // Surface playback errors (codec/network/auth) instead of silently failing.
     _player.playbackEventStream.listen(
       (_) {},
-      onError: (Object e, StackTrace st) => debugPrint('player playback error: $e'),
+      onError: (Object e, StackTrace st) {
+        debugPrint('player playback error: $e');
+        _onPlaybackError(e);
+      },
     );
+    // Settings: autoplay toggles add / drop radio tracks; normalize and fade
+    // re-apply the volume immediately.
+    _lastAutoplaySetting = _settings.autoplay;
+    _lastNormalize = _settings.normalize;
+    _settings.addListener(_onSettingsChanged);
+    _loadVolume();
+    // Chromecast callbacks (receiver-driven track changes, queue end, loss).
+    cast.onTrackChanged = _onCastTrackChanged;
+    cast.onQueueFinished = _onCastQueueFinished;
+    cast.onLost = _onCastLost;
+    cast.addListener(notifyListeners);
     // Stall watchdog: if we're "playing" but the position hasn't advanced and
     // we're not legitimately buffering, the stream likely dropped — reload it.
     _watchdog = Timer.periodic(const Duration(seconds: 4), (_) => _checkStall());
     // Persist position periodically so "resume where you left off" is accurate.
     _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) => _saveSession());
     // Broadcast presence (for the friends panel) periodically.
-    _heartbeat = Timer.periodic(const Duration(seconds: 12), (_) => _postActivity());
+    _heartbeat = Timer.periodic(const Duration(seconds: 12), (_) {
+      _postActivity();
+      // Cheap no-op while the media token is fresh; renews it when < 1 day left.
+      unawaited(api.ensureMediaToken());
+    });
     // Host: low-frequency truth broadcast so members re-base position (no drift),
     // on top of the instant broadcasts on every control event.
     _chorusTick = Timer.periodic(const Duration(seconds: 5), (_) {
@@ -230,13 +305,25 @@ class PlayerModel extends ChangeNotifier {
     return (_index >= 0 && _index < _queue.length) ? _queue[_index] : null;
   }
 
-  bool get playing => isChorusMember ? chorus!.playing : _player.playing;
-  Duration get position =>
-      isChorusMember ? Duration(milliseconds: _memberPositionMs()) : _player.position;
+  bool get playing => isChorusMember
+      ? chorus!.playing
+      : casting
+          ? cast.playing
+          : _player.playing;
+  Duration get position => isChorusMember
+      ? Duration(milliseconds: _memberPositionMs())
+      : casting
+          ? cast.position
+          : _player.position;
+
+  /// Our own playback position: the receiver's while casting, else the engine's.
+  Duration get _ownPosition => casting ? cast.position : _player.position;
+  bool get _ownPlaying => casting ? cast.playing : _player.playing;
+
   // Fall back to the track's known metadata length until the audio source loads
   // its own duration (so a restored, not-yet-loaded session doesn't read 0:00).
   Duration get duration {
-    if (isChorusMember) {
+    if (isChorusMember || casting) {
       final t = current;
       return t != null ? Duration(milliseconds: (t.duration * 1000).round()) : Duration.zero;
     }
@@ -263,8 +350,15 @@ class PlayerModel extends ChangeNotifier {
         title: t.title,
         artist: t.artistName,
         album: t.albumTitle,
-        artUri: Uri.parse(api.trackCoverUrl(t.id)),
+        artUri: _artUriFor(t),
       );
+
+  // A downloaded track's saved cover (offline-safe; the audio_service fork turns
+  // it into a content:// URI Android Auto can read), else the server cover.
+  Uri _artUriFor(Track t) {
+    final local = downloads.localCoverPath(t.id);
+    return local != null ? Uri.file(local) : Uri.parse(api.trackCoverUrl(t.id));
+  }
 
   AudioSource _sourceFor(Track t) {
     final local = downloads.localPath(t.id);
@@ -351,12 +445,22 @@ class PlayerModel extends ChangeNotifier {
     _userQ
       ..clear()
       ..addAll(List.filled(_queue.length, false)); // all context, no manual queue
+    _autoItems.clear();
     _scrobbled = false;
+    _beginPlay();
     _loadLyrics();
+    _applyVolume();
     notifyListeners();
     try {
       _source = ConcatenatingAudioSource(children: _queue.map(_sourceFor).toList());
       await _player.setAudioSource(_source!, initialIndex: _index);
+      unawaited(_maybeAutoplay());
+      if (casting) {
+        // Casting: the local engine stays loaded but paused; the receiver plays.
+        _castLoadFrom(_index);
+        _saveSession();
+        return;
+      }
       await _player.play();
       _saveSession();
       // Chorus is opt-in: playback no longer auto-hosts a session. The user
@@ -423,6 +527,7 @@ class PlayerModel extends ChangeNotifier {
     notifyListeners();
     _broadcastChorus();
     _saveSession();
+    unawaited(_maybeAutoplay());
   }
 
   /// Play next: jumps to the front of the user queue (right after the current
@@ -453,6 +558,7 @@ class PlayerModel extends ChangeNotifier {
     await _removeEntry(index);
     notifyListeners();
     _broadcastChorus();
+    unawaited(_maybeAutoplay());
   }
 
   /// Reorder an upcoming queue item (drag-to-reorder). Both indices must be after
@@ -489,6 +595,10 @@ class PlayerModel extends ChangeNotifier {
       return;
     }
     if (index < 0 || index >= _queue.length) return;
+    if (casting) {
+      _castJumpTo(index);
+      return;
+    }
     await _player.seek(Duration.zero, index: index);
     await _player.play();
     _broadcastChorus();
@@ -498,6 +608,8 @@ class PlayerModel extends ChangeNotifier {
   Future<void> startListenAlong(String hostId, String hostName) async {
     // Listen-along is a personal follow — if we were hosting a chorus, end it.
     if (isChorusHost) await leaveChorusSession();
+    // It plays on this device, in sync with the host: stop any cast session.
+    if (casting) await stopCasting(resume: false);
     _savedQueue = List.of(_queue);
     _savedIndex = _index;
     listenHostId = hostId;
@@ -571,9 +683,12 @@ class PlayerModel extends ChangeNotifier {
         ..clear()
         ..add(false);
       _contextOriginal = [a.track!];
+      _autoItems.clear();
       _index = 0;
       _scrobbled = false;
+      _beginPlay();
       _loadLyrics();
+      _applyVolume();
       notifyListeners();
       try {
         _source = ConcatenatingAudioSource(children: [_sourceFor(a.track!)]);
@@ -616,6 +731,7 @@ class PlayerModel extends ChangeNotifier {
     } catch (_) {}
     _queue = [];
     _userQ.clear();
+    _autoItems.clear();
     _contextOriginal = [];
     _index = 0;
     _source = null;
@@ -641,11 +757,13 @@ class PlayerModel extends ChangeNotifier {
     listenHostId = null;
     listenHostName = null;
     _restoreAfterCurrent = false;
+    if (casting) await stopCasting(resume: false);
     try {
       await _player.stop();
     } catch (_) {}
     _queue = [];
     _userQ.clear();
+    _autoItems.clear();
     _contextOriginal = [];
     _index = 0;
     _source = null;
@@ -726,6 +844,7 @@ class PlayerModel extends ChangeNotifier {
       notifyListeners();
     } else {
       // Approved member — silent remote mirroring the host.
+      if (!wasMember && casting) await stopCasting(resume: false);
       if (!wasMember) await _player.pause();
       _setMemberBase(c);
       _ensureMemberTicker();
@@ -799,22 +918,41 @@ class PlayerModel extends ChangeNotifier {
             _contextOriginal = List.of(_queue);
             _index = (tIndex ?? 0).clamp(0, _queue.length - 1);
             _scrobbled = false;
+            _beginPlay();
             _loadLyrics();
+            _applyVolume();
             _source = ConcatenatingAudioSource(children: _queue.map(_sourceFor).toList());
             await _player.setAudioSource(_source!,
                 initialIndex: _index, initialPosition: Duration(milliseconds: tPos ?? 0));
+            if (casting) {
+              _castLoadFrom(_index,
+                  position: Duration(milliseconds: tPos ?? 0), autoplay: tPlaying ?? cast.playing);
+            }
           }
         }
       } else {
         if (tIndex != null && tIndex != _index && tIndex >= 0 && tIndex < _queue.length) {
-          await _player.seek(Duration(milliseconds: tPos ?? 0), index: tIndex);
+          if (casting) {
+            _castJumpTo(tIndex, position: Duration(milliseconds: tPos ?? 0));
+          } else {
+            await _player.seek(Duration(milliseconds: tPos ?? 0), index: tIndex);
+          }
         } else if (tPos != null) {
-          await _player.seek(Duration(milliseconds: tPos));
+          if (casting) {
+            cast.seek(Duration(milliseconds: tPos));
+          } else {
+            await _player.seek(Duration(milliseconds: tPos));
+          }
         }
       }
       if (tPlaying != null) {
-        if (tPlaying && !_player.playing) await _player.play();
-        if (!tPlaying && _player.playing) await _player.pause();
+        if (casting) {
+          if (tPlaying && !cast.playing) cast.play();
+          if (!tPlaying && cast.playing) cast.pause();
+        } else {
+          if (tPlaying && !_player.playing) await _player.play();
+          if (!tPlaying && _player.playing) await _player.pause();
+        }
         _lastHostPlaying = tPlaying;
       }
     } catch (e) {
@@ -890,8 +1028,8 @@ class PlayerModel extends ChangeNotifier {
         .postChorusState(
           _queue.map((t) => t.id).toList(),
           _index,
-          _player.position.inMilliseconds,
-          _player.playing,
+          _ownPosition.inMilliseconds,
+          _ownPlaying,
           atServerMs: api.serverNowEstimate, // when that position was true
         )
         .catchError((_) {});
@@ -921,12 +1059,12 @@ class PlayerModel extends ChangeNotifier {
         mode,
         _queue.map((t) => t.id).toList(),
         _index,
-        _player.position.inMilliseconds,
-        _player.playing,
+        _ownPosition.inMilliseconds,
+        _ownPlaying,
       );
       chorus = c;
       _chorusVersion = c.version;
-      _lastHostPlaying = _player.playing;
+      _lastHostPlaying = _ownPlaying;
       notifyListeners();
       _startChorusLoop();
     } catch (e) {
@@ -964,6 +1102,17 @@ class PlayerModel extends ChangeNotifier {
       _sendCommand(playing: !chorus!.playing, positionMs: _memberPositionMs());
       return;
     }
+    if (casting) {
+      if (cast.playing) {
+        cast.pause();
+      } else if (cast.playerState == 'IDLE' && _queue.isNotEmpty) {
+        _castLoadFrom(_index); // finished / never loaded: start the current track over
+      } else {
+        cast.play();
+      }
+      _broadcastChorus();
+      return;
+    }
     if (_player.playing) {
       await _player.pause();
     } else {
@@ -978,6 +1127,10 @@ class PlayerModel extends ChangeNotifier {
       final n = chorus!.queueIds.length;
       if (n == 0) return;
       _sendCommand(index: (chorus!.index + 1) % n, positionMs: 0, playing: true);
+      return;
+    }
+    if (casting) {
+      if (_queue.isNotEmpty) _castJumpTo(_index + 1 < _queue.length ? _index + 1 : 0);
       return;
     }
     if (_player.hasNext) {
@@ -996,6 +1149,15 @@ class PlayerModel extends ChangeNotifier {
         _sendCommand(positionMs: 0);
       } else {
         _sendCommand(index: (chorus!.index - 1 + n) % n, positionMs: 0, playing: true);
+      }
+      return;
+    }
+    if (casting) {
+      if (cast.position.inSeconds > 3) {
+        cast.seek(Duration.zero);
+        _broadcastChorus();
+      } else if (_queue.isNotEmpty) {
+        _castJumpTo(_index > 0 ? _index - 1 : _queue.length - 1);
       }
       return;
     }
@@ -1019,6 +1181,16 @@ class PlayerModel extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    if (casting) {
+      cast.seek(d);
+      positionTick.value = d;
+      _broadcastChorus();
+      return;
+    }
+    if (_xfade?.active ?? false) {
+      _abortCrossfade();
+      _xfadeFromIndex = null; // may overlap again if it reaches the end once more
+    }
     await _player.seek(d);
     _broadcastChorus();
   }
@@ -1040,12 +1212,31 @@ class PlayerModel extends ChangeNotifier {
     await setVolume((volume + delta).clamp(0.0, 1.0));
   }
 
+  /// Set the USER volume (what the slider shows). While casting this is the
+  /// receiver's volume; locally the engine gets it scaled by normalization/fade.
   Future<void> setVolume(double v) async {
-    await _player.setVolume(v);
+    final nv = v.clamp(0.0, 1.0);
+    if (casting) {
+      cast.setVolume(nv);
+      notifyListeners();
+      return;
+    }
+    _userVolume = nv;
+    _applyVolume();
     notifyListeners(); // update the slider immediately, even while paused
+    _volumeSaveTimer?.cancel();
+    _volumeSaveTimer = Timer(const Duration(milliseconds: 600), () async {
+      try {
+        final p = await SharedPreferences.getInstance();
+        await p.setDouble(_kVolume, _userVolume);
+      } catch (_) {}
+    });
   }
 
-  double get volume => _player.volume;
+  Timer? _volumeSaveTimer;
+
+  /// The user's volume (0..1), never the normalized / faded engine volume.
+  double get volume => casting ? cast.volume : _userVolume;
 
   // ---- Repeat (off / all / one) + shuffle ----
   LoopMode get loopMode => _player.loopMode;
@@ -1056,6 +1247,7 @@ class PlayerModel extends ChangeNotifier {
     final next = order[(order.indexOf(_player.loopMode) + 1) % order.length];
     await _player.setLoopMode(next);
     notifyListeners();
+    if (next == LoopMode.off) unawaited(_maybeAutoplay());
   }
 
   Future<void> toggleShuffle() => setShuffle(!_shuffle);
@@ -1153,7 +1345,7 @@ class PlayerModel extends ChangeNotifier {
   /// in a Chorus or listen-along, where hijacking playback would break the session.
   Future<bool> beginPreview() async {
     if (_previewing) return true;
-    if (inChorus || listeningAlong) return false;
+    if (inChorus || listeningAlong || casting) return false;
     _pvQueue = List.of(_queue);
     _pvUserQ = List.of(_userQ);
     _pvContext = List.of(_contextOriginal);
@@ -1161,11 +1353,12 @@ class PlayerModel extends ChangeNotifier {
     _pvPos = _player.position;
     _pvWasPlaying = _player.playing;
     _pvLoop = _player.loopMode;
-    _pvVolume = _player.volume;
+    _pvVolume = _userVolume;
     _pvPlaylist = _playlistContext;
     _pvTarget = _pvVolume > 0 ? _pvVolume : 1.0;
     await _saveSession(); // persist the real session before the engine is touched
     _previewing = true;
+    _updateFadeTimer(); // previews run their own fades
     try {
       if (_player.playing) await _fadeTo(0, 300);
       await _player.pause();
@@ -1242,11 +1435,15 @@ class PlayerModel extends ChangeNotifier {
         _source = null;
         await _player.stop();
       }
-      await _player.setVolume(_pvVolume);
     } catch (e) {
       debugPrint('preview restore error: $e');
     }
     _previewing = false;
+    // Back to the user's volume x normalization for the restored track.
+    _fadeGain = 1.0;
+    _lastApplied = -1;
+    _applyVolume();
+    _updateFadeTimer();
     _lastPos = _pvPos;
     _frozenTicks = 0;
     if (_queue.isNotEmpty) {
@@ -1274,6 +1471,547 @@ class PlayerModel extends ChangeNotifier {
       await _player.setVolume(from + (target - from) * i / steps);
       await Future.delayed(Duration(milliseconds: ms ~/ steps));
     }
+  }
+
+  // ---- Per-track bookkeeping ----
+  /// A new track became current (natural advance, skip, jump).
+  void _onTrackStarted() {
+    _scrobbled = false;
+    _beginPlay();
+    _loadLyrics();
+    _postActivity();
+    final xf = _xfade;
+    if (xf != null && xf.active && !_xfadeHandoff) {
+      // Desktop crossfade: hand over if this is the track the overlap is playing.
+      if (_index == _xfadeToIndex && current?.id == xf.trackId && _player.playing) {
+        _xfadeFromIndex = null;
+        unawaited(_handoffCrossfade());
+      } else {
+        _abortCrossfade();
+        _xfadeFromIndex = null;
+        if (_player.playing) _startFadeIn();
+      }
+    } else {
+      if (_xfadeHandoff) _abortCrossfade();
+      _xfadeFromIndex = null;
+      if (_player.playing) _startFadeIn();
+    }
+    _applyVolume(); // the new track's normalization factor
+    unawaited(_maybeAutoplay());
+  }
+
+  /// Reset the per-play listening tally (scrobble completion).
+  void _beginPlay() {
+    _playStartedAt = null;
+    _listenedMs = 0;
+    _completeSent = false;
+    _lastTickPos = Duration.zero;
+  }
+
+  /// Every play-head update (local engine, or the receiver while casting).
+  void _onPlayhead(Duration pos, {required bool playing}) {
+    // Rewind previews never count as plays (they'd skew next year's stats).
+    if (!_previewing) {
+      final t = current;
+      if (!_scrobbled && pos.inSeconds >= 5 && t != null) {
+        _scrobbled = true;
+        api.scrobble(t.id, playlistId: _playlistContext).catchError((_) {});
+      }
+      _trackListen(pos, playing);
+    }
+    // Position ticks go to their own notifier: only the progress bar, time
+    // labels, mini-player ring and lyrics listen to it. Notifying the whole
+    // model here rebuilt every PlayerModel watcher (player bar, track tables,
+    // friends panel, queue…) several times a second, which dominated CPU use on
+    // desktop. Track / play-state / queue changes still notifyListeners().
+    if (!isChorusMember) positionTick.value = pos;
+  }
+
+  /// Count real listening time (seeks don't count) and send the completion
+  /// scrobble once the play reaches 50% or 4 minutes (tracks >= 30 s only).
+  void _trackListen(Duration pos, bool playing) {
+    if (isChorusMember) return;
+    final t = current;
+    if (t == null) return;
+    final durMs = duration.inMilliseconds;
+    final prev = _lastTickPos;
+    _lastTickPos = pos;
+    // Repeat-one wrap (end -> start of the same track) begins a new play.
+    if (durMs > 0 &&
+        _listenedMs > 0 &&
+        pos.inMilliseconds < 2000 &&
+        prev.inMilliseconds > durMs - 4000) {
+      _beginPlay();
+      _lastTickPos = pos;
+      return;
+    }
+    if (!playing) return;
+    final d = (pos - prev).inMilliseconds;
+    if (d > 0 && d < 2500) {
+      _listenedMs += d;
+      _playStartedAt ??= DateTime.now().subtract(Duration(milliseconds: _listenedMs));
+    }
+    if (_completeSent || durMs < 30000) return;
+    if (_listenedMs >= durMs ~/ 2 || _listenedMs >= 240000) {
+      _completeSent = true;
+      api.scrobbleComplete(t.id, _playStartedAt ?? DateTime.now()).catchError((_) {});
+    }
+  }
+
+  /// A stream that fails with an auth error (expired / revoked media token) is
+  /// retried once with a fresh token instead of waiting for the stall watchdog.
+  void _onPlaybackError(Object e) {
+    if (_previewing || casting || isChorusMember) return;
+    final t = current;
+    if (t == null || downloads.localPath(t.id) != null) return;
+    final msg = '$e'.toLowerCase();
+    final authLike = msg.contains('401') ||
+        msg.contains('403') ||
+        msg.contains('unauthorized') ||
+        msg.contains('forbidden') ||
+        msg.contains('failed to open');
+    if (!authLike) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastAuthRecoveryMs < 30000) return;
+    _lastAuthRecoveryMs = now;
+    api.ensureFreshToken().then((ok) {
+      if (ok && !_previewing && !casting && _queue.isNotEmpty) _recoverStream();
+    }).catchError((_) {});
+  }
+
+  void _onSettingsChanged() {
+    if (_settings.autoplay != _lastAutoplaySetting) {
+      _lastAutoplaySetting = _settings.autoplay;
+      if (_settings.autoplay) {
+        unawaited(_maybeAutoplay());
+      } else {
+        unawaited(_dropUpcomingAutoplay());
+      }
+      notifyListeners(); // the queue's autoplay switch
+    }
+    if (_settings.normalize != _lastNormalize) _lastNormalize = _settings.normalize;
+    _applyVolume();
+    _updateFadeTimer();
+  }
+
+  Future<void> _loadVolume() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      final v = p.getDouble(_kVolume);
+      if (v != null && !_previewing) {
+        _userVolume = v.clamp(0.0, 1.0);
+        _applyVolume();
+        notifyListeners();
+      }
+    } catch (_) {}
+  }
+
+  // ---- Loudness normalization ----
+  /// Spec formula (identical on every client): target -14 LUFS, attenuation
+  /// only, clamped to [0.25, 1]. 1.0 when off or the track isn't measured yet.
+  double _normFactor(Track? t) =>
+      loudnessNormFactor(t?.loudnessLufs, normalize: _settings.normalize);
+
+  /// Push user volume x normalization x fade to the engine. Rewind previews
+  /// drive the volume themselves; while casting the receiver has its own.
+  void _applyVolume() {
+    if (_previewing || casting) return;
+    final v = (_userVolume * _normFactor(current) * _fadeGain).clamp(0.0, 1.0);
+    if ((v - _lastApplied).abs() < 0.001) return;
+    _lastApplied = v;
+    _player.setVolume(v).catchError((_) {});
+  }
+
+  // ---- Fade / crossfade (fadeSeconds setting) ----
+  // Android: its backend supports only ONE AudioPlayer, so this is a fade-out
+  // over the last N seconds of a track and a short fade-in at the start of the
+  // next, on top of the gapless transition.
+  // Desktop: a true crossfade. A second libmpv player ([DesktopCrossfader])
+  // starts the next track N seconds early and fades in (equal power) while the
+  // engine fades out; after the engine advances it is seeked to the overlap
+  // player's position and takes back over with a short swap. Falls back to the
+  // plain fade if the overlap can't run (e.g. paused / seeked mid-overlap).
+  // A 50 ms ticker runs only while playing with fading enabled.
+  final DesktopCrossfader? _xfade =
+      (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS))
+          ? DesktopCrossfader()
+          : null;
+  int? _xfadeFromIndex; // track whose ending started the overlap (one try per track)
+  int? _xfadeToIndex;
+  bool _xfadeHandoff = false;
+
+  bool get _fadeWanted =>
+      _settings.fadeSeconds > 0 && !_previewing && !casting && _player.playing;
+
+  void _updateFadeTimer() {
+    if (_fadeWanted) {
+      _fadeTimer ??= Timer.periodic(const Duration(milliseconds: 50), (_) => _fadeTick());
+      return;
+    }
+    _fadeTimer?.cancel();
+    _fadeTimer = null;
+    _fadeInStartMs = null;
+    _abortCrossfade();
+    if (_fadeGain != 1.0) {
+      _fadeGain = 1.0;
+      _applyVolume();
+    }
+  }
+
+  void _startFadeIn() {
+    if (_settings.fadeSeconds <= 0 || _previewing || casting) return;
+    _fadeInStartMs = DateTime.now().millisecondsSinceEpoch;
+    _fadeGain = 0;
+  }
+
+  // Fade-in = half the fade length, 0.5..4 s (a full 12 s fade-in would mute
+  // the start of every song).
+  int get _fadeInMs => (_settings.fadeSeconds * 500).clamp(500, 4000);
+
+  /// The track the queue moves to after this one, or null (end of queue).
+  int? get _nextIndex {
+    if (_index + 1 < _queue.length) return _index + 1;
+    if (_player.loopMode == LoopMode.all && _queue.isNotEmpty) return 0;
+    return null;
+  }
+
+  bool get _crossfadeAllowed =>
+      _xfade != null &&
+      !isChorusMember &&
+      !listeningAlong &&
+      !casting &&
+      !_previewing &&
+      _player.loopMode != LoopMode.one;
+
+  void _fadeTick() {
+    final n = _settings.fadeSeconds;
+    if (n <= 0 || _previewing || casting || _xfadeHandoff) return;
+    final xf = _xfade;
+    // The engine already advanced but the handoff hasn't begun yet: keep it
+    // silent (the overlap player carries the audio) instead of a 0:00 echo.
+    if (xf != null && xf.active && _index != _xfadeFromIndex) return;
+    var g = 1.0;
+    double? inGain;
+    final dur = _player.duration;
+    final next = _nextIndex;
+    final hasNext = next != null || _player.loopMode == LoopMode.one;
+    if (dur != null && hasNext && dur.inMilliseconds > n * 3000) {
+      final win = n * 1000;
+      final remain = (dur - _player.position).inMilliseconds;
+      if (remain < win) {
+        final r = (remain / win).clamp(0.0, 1.0);
+        if (xf != null && next != null && _crossfadeAllowed) {
+          if (!xf.active && _xfadeFromIndex != _index && remain > 1500) _startCrossfade(next);
+        }
+        if (xf != null && xf.active) {
+          final x = 1 - r; // 0 -> 1 across the overlap; equal-power curves
+          g = math.cos(x * math.pi / 2);
+          inGain = math.sin(x * math.pi / 2);
+        } else {
+          g = r * r; // perceptual (roughly logarithmic) fade-out
+        }
+      }
+    }
+    final fi = _fadeInStartMs;
+    if (fi != null) {
+      final el = DateTime.now().millisecondsSinceEpoch - fi;
+      if (el >= _fadeInMs) {
+        _fadeInStartMs = null;
+      } else {
+        final f = el / _fadeInMs;
+        g = math.min(g, f * f);
+      }
+    }
+    if (inGain != null && xf != null) {
+      final to = _xfadeToIndex;
+      final t = (to != null && to < _queue.length) ? _queue[to] : null;
+      xf.setVolume(_userVolume * _normFactor(t) * inGain);
+    }
+    if ((g - _fadeGain).abs() >= 0.01 || (g == 1.0 && _fadeGain != 1.0) || (g == 0 && _fadeGain != 0)) {
+      _fadeGain = g;
+      _applyVolume();
+    }
+  }
+
+  void _startCrossfade(int next) {
+    final xf = _xfade;
+    if (xf == null || next >= _queue.length) return;
+    final t = _queue[next];
+    _xfadeFromIndex = _index;
+    _xfadeToIndex = next;
+    xf.start(t.id, downloads.localPath(t.id) ?? api.streamUrl(t.id));
+  }
+
+  /// The engine advanced to the overlap's track: line it up with the overlap
+  /// player (seek to its position while silent), then swap back to the engine.
+  Future<void> _handoffCrossfade() async {
+    final xf = _xfade;
+    if (xf == null) return;
+    _xfadeHandoff = true;
+    _fadeInStartMs = null;
+    _fadeGain = 0;
+    _applyVolume();
+    final norm = _normFactor(current);
+    await xf.setVolume(_userVolume * norm);
+    Future<void> ready() => _player.processingStateStream
+        .firstWhere((s) => s == ProcessingState.ready)
+        .timeout(const Duration(seconds: 3), onTimeout: () => ProcessingState.ready);
+    try {
+      await ready();
+      if (!_xfadeHandoff) return;
+      // Small lead for the seek's own latency.
+      await _player.seek(xf.position + const Duration(milliseconds: 120));
+      await ready();
+      await Future.delayed(const Duration(milliseconds: 120));
+    } catch (_) {}
+    // Short equal-power swap (~200 ms) masks any residual offset.
+    const steps = 8;
+    for (var i = 1; i <= steps; i++) {
+      if (!_xfadeHandoff) return; // aborted (skip / pause / seek)
+      final x = i / steps;
+      _fadeGain = math.sin(x * math.pi / 2);
+      _applyVolume();
+      await xf.setVolume(_userVolume * norm * math.cos(x * math.pi / 2));
+      await Future.delayed(const Duration(milliseconds: 25));
+    }
+    await xf.stop();
+    _xfadeHandoff = false;
+    _fadeGain = 1.0;
+    _applyVolume();
+  }
+
+  /// Drop any overlap in progress (the engine's own fade logic takes over).
+  void _abortCrossfade() {
+    final xf = _xfade;
+    if (xf == null || (!xf.active && !_xfadeHandoff)) return;
+    _xfadeHandoff = false;
+    xf.stop();
+  }
+
+  // ---- Autoplay (radio when the queue runs out) ----
+  bool get autoplayEnabled => _settings.autoplay;
+  void setAutoplay(bool on) => _settings.setAutoplay(on);
+
+  /// Whether the upcoming entry at [i] was appended by autoplay.
+  bool isAutoplayAt(int i) =>
+      !isChorusMember && i >= 0 && i < _queue.length && _autoItems.contains(_queue[i]);
+
+  /// When the LAST track of the queue starts (and autoplay is on), fetch similar
+  /// tracks and append them as context so playback continues gaplessly. Not in
+  /// Chorus member mode, listen-along or Rewind preview, nor with repeat on.
+  Future<void> _maybeAutoplay() async {
+    if (!_settings.autoplay || _autoplayFetching) return;
+    if (isChorusMember || listeningAlong || _previewing || _restoreAfterCurrent) return;
+    if (_source == null || _queue.isEmpty || _index != _queue.length - 1) return;
+    if (_player.loopMode != LoopMode.off) return;
+    final seed = current;
+    if (seed == null) return;
+    _autoplayFetching = true;
+    try {
+      final ids = _queue.map((t) => t.id).toList();
+      final exclude = ids.length > 60 ? ids.sublist(ids.length - 60) : ids;
+      final tracks = await api.radio(seed.id, exclude: exclude, limit: 20);
+      // Re-check: the queue may have moved on while the request was in flight.
+      if (!_settings.autoplay ||
+          _previewing ||
+          isChorusMember ||
+          listeningAlong ||
+          _source == null ||
+          current?.id != seed.id ||
+          _index != _queue.length - 1) {
+        return;
+      }
+      final have = _queue.map((t) => t.id).toSet();
+      var added = 0;
+      for (final t in tracks) {
+        if (!have.add(t.id)) continue;
+        _autoItems.add(t);
+        await _insertEntry(_queue.length, t, false);
+        added++;
+      }
+      if (added > 0) {
+        notifyListeners();
+        _broadcastChorus();
+        _saveSession();
+      }
+    } catch (e) {
+      debugPrint('autoplay fetch failed: $e');
+    } finally {
+      _autoplayFetching = false;
+    }
+  }
+
+  /// Autoplay turned off: drop the radio tracks still to come.
+  Future<void> _dropUpcomingAutoplay() async {
+    if (_source == null || isChorusMember) return;
+    var changed = false;
+    for (var i = _queue.length - 1; i > _index; i--) {
+      final t = _queue[i];
+      if (_autoItems.contains(t)) {
+        _autoItems.remove(t);
+        await _removeEntry(i);
+        changed = true;
+      }
+    }
+    if (changed) {
+      notifyListeners();
+      _broadcastChorus();
+      _saveSession();
+    }
+  }
+
+  // ---- Chromecast ----
+  /// Casting is unavailable as a Chorus member (no local playback to move) and
+  /// while listening along (that follows the host on this device).
+  bool get canCast => !kIsWeb && !isChorusMember && !listeningAlong;
+
+  Stream<CastDevice> scanCastDevices() => CastDiscovery.scan();
+
+  Duration _castLastPos = Duration.zero;
+
+  /// Move playback to [d]: the local engine pauses and the receiver loads the
+  /// current track (at the current position) plus what comes next.
+  Future<void> startCasting(CastDevice d) async {
+    if (!canCast) return;
+    if (_previewing) return;
+    final pos = _player.position;
+    final wasPlaying = _player.playing;
+    await cast.connect(d); // throws on failure; the picker shows the error
+    _castLocalIdx = _player.currentIndex; // baseline for notification next/prev
+    try {
+      if (_player.playing) await _player.pause();
+    } catch (_) {}
+    _updateFadeTimer();
+    if (_queue.isNotEmpty) _castLoadFrom(_index, position: pos, autoplay: wasPlaying);
+    _castTicker?.cancel();
+    _castTicker = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      if (!casting) return;
+      _castLastPos = cast.position;
+      _onPlayhead(_castLastPos, playing: cast.playing);
+    });
+    notifyListeners();
+  }
+
+  /// Stop casting and pick up locally at the receiver's position ([resume]:
+  /// keep playing if the receiver was playing).
+  Future<void> stopCasting({bool resume = true}) async {
+    if (cast.device == null) return;
+    final pos = cast.position;
+    final wasPlaying = cast.playing;
+    _castTicker?.cancel();
+    _castTicker = null;
+    await cast.disconnect(stopApp: true);
+    await _resumeLocalAfterCast(pos, wasPlaying && resume);
+  }
+
+  Future<void> _resumeLocalAfterCast(Duration pos, bool play) async {
+    if (_source != null && _queue.isNotEmpty && !isChorusMember) {
+      try {
+        await _player.seek(pos, index: _index);
+        _lastApplied = -1;
+        _applyVolume();
+        if (play) _player.play();
+      } catch (e) {
+        debugPrint('resume after cast failed: $e');
+      }
+    }
+    _updateFadeTimer();
+    notifyListeners();
+  }
+
+  /// The receiver can't decode everything a library holds (e.g. FLAC above
+  /// 96 kHz, ALAC, WMA): those are sent transcoded to MP3 320 by the server.
+  /// Formats it plays natively go as the original file.
+  CastItem _castItem(Track t) {
+    final f = (t.format ?? '').toLowerCase();
+    final kbps = t.bitrate ?? 0;
+    String? ct;
+    switch (f) {
+      case 'mp3':
+        ct = 'audio/mpeg';
+      case 'aac':
+        ct = 'audio/aac';
+      case 'm4a' || 'mp4':
+        if (kbps > 0 && kbps <= 512) ct = 'audio/mp4'; // AAC (ALAC runs far higher)
+      case 'ogg' || 'oga' || 'opus':
+        ct = 'audio/ogg';
+      case 'webm':
+        ct = 'audio/webm';
+      case 'flac':
+        if (kbps > 0 && kbps <= 3300) ct = 'audio/flac'; // up to ~96 kHz / 24-bit
+      case 'wav':
+        if (kbps > 0 && kbps <= 4608) ct = 'audio/wav';
+    }
+    return CastItem(
+      trackId: t.id,
+      url: ct != null
+          ? api.streamUrl(t.id)
+          : api.transcodedStreamUrl(t.id, format: 'mp3', bitrate: 320),
+      contentType: ct ?? 'audio/mpeg',
+      title: t.title,
+      artist: t.artistName,
+      album: t.albumTitle,
+      imageUrl: api.trackCoverUrl(t.id),
+      durationSecs: t.duration,
+    );
+  }
+
+  /// Load our queue from [i] (plus up to 9 upcoming tracks) on the receiver.
+  void _castLoadFrom(int i, {Duration position = Duration.zero, bool autoplay = true}) {
+    if (!casting || i < 0 || i >= _queue.length) return;
+    final end = math.min(i + 10, _queue.length);
+    cast.load([for (var k = i; k < end; k++) _castItem(_queue[k])],
+        position: position, autoplay: autoplay, repeatSingle: _player.loopMode == LoopMode.one);
+  }
+
+  void _castJumpTo(int i, {Duration position = Duration.zero}) {
+    if (i < 0 || i >= _queue.length) return;
+    final changed = i != _index;
+    _index = i;
+    if (changed) _onTrackStarted();
+    _castLoadFrom(i, position: position);
+    notifyListeners();
+    _broadcastChorus();
+    _saveSession();
+  }
+
+  void _onCastTrackChanged(String id) {
+    if (!casting || current?.id == id) return;
+    final next = _index + 1;
+    if (next < _queue.length && _queue[next].id == id) {
+      _index = next;
+      _onTrackStarted();
+      notifyListeners();
+      _broadcastChorus();
+      _saveSession();
+      return;
+    }
+    // The receiver's preloaded items went stale (the queue was edited while
+    // casting): realign it to what actually comes next here.
+    if (next < _queue.length) {
+      _castJumpTo(next);
+    } else {
+      cast.pause();
+    }
+  }
+
+  void _onCastQueueFinished() {
+    if (!casting) return;
+    if (_index + 1 < _queue.length) {
+      _castJumpTo(_index + 1);
+    } else if (_player.loopMode == LoopMode.all && _queue.isNotEmpty) {
+      _castJumpTo(0);
+    } else {
+      notifyListeners();
+    }
+  }
+
+  /// The session dropped (app closed on the TV, Wi-Fi lost): stay paused here at
+  /// the receiver's last position.
+  void _onCastLost() {
+    _castTicker?.cancel();
+    _castTicker = null;
+    _resumeLocalAfterCast(_castLastPos, false);
   }
 
   // ---- Lyrics ----
@@ -1320,6 +2058,7 @@ class PlayerModel extends ChangeNotifier {
   void _checkStall() {
     if (_previewing) return; // a preview isn't the saved queue — never "recover" it
     if (isChorusMember) return; // members have no local audio to watch
+    if (casting) return; // the receiver plays; the local engine is parked
     if (listenHostId != null) return; // playback is host-driven while following
     final t = current;
     if (t == null || _recovering) return;
@@ -1388,6 +2127,8 @@ class PlayerModel extends ChangeNotifier {
     final idx = _index;
     debugPrint('player: stream stalled — recovering at $at');
     try {
+      // Rebuilt URLs carry the current media token; renew it first if needed.
+      await api.ensureMediaToken().timeout(const Duration(seconds: 5), onTimeout: () {});
       _source = ConcatenatingAudioSource(children: _queue.map(_sourceFor).toList());
       await _player.setAudioSource(_source!, initialIndex: idx, initialPosition: at);
       await _player.play();
@@ -1408,8 +2149,9 @@ class PlayerModel extends ChangeNotifier {
         jsonEncode({
           'queue': _queue.map((t) => t.toJson()).toList(),
           'userQ': _userQ,
+          'autoQ': [for (final t in _queue) _autoItems.contains(t)],
           'index': _index,
-          'position': _player.position.inMilliseconds,
+          'position': _ownPosition.inMilliseconds,
         }),
       );
     } catch (_) {}
@@ -1436,6 +2178,13 @@ class PlayerModel extends ChangeNotifier {
         ..addAll(savedFlags != null && savedFlags.length == _queue.length
             ? savedFlags
             : List.filled(_queue.length, false));
+      final autoFlags = (data['autoQ'] as List?)?.cast<bool>();
+      _autoItems.clear();
+      if (autoFlags != null && autoFlags.length == _queue.length) {
+        for (var i = 0; i < _queue.length; i++) {
+          if (autoFlags[i]) _autoItems.add(_queue[i]);
+        }
+      }
       // The context for restore is the non-user-queued tracks, in queue order.
       _contextOriginal = [
         for (var i = 0; i < _queue.length; i++)
@@ -1444,7 +2193,9 @@ class PlayerModel extends ChangeNotifier {
       _index = (data['index'] as int?) ?? 0;
       if (_index < 0 || _index >= _queue.length) _index = 0;
       final posMs = (data['position'] as int?) ?? 0;
+      _beginPlay();
       _loadLyrics();
+      _applyVolume();
       notifyListeners();
       _source = ConcatenatingAudioSource(children: _queue.map(_sourceFor).toList());
       await _player.setAudioSource(
@@ -1478,6 +2229,13 @@ class PlayerModel extends ChangeNotifier {
 
   @override
   void dispose() {
+    _settings.removeListener(_onSettingsChanged);
+    _fadeTimer?.cancel();
+    _castTicker?.cancel();
+    _volumeSaveTimer?.cancel();
+    _xfade?.dispose();
+    cast.removeListener(notifyListeners);
+    cast.dispose();
     _watchdog?.cancel();
     _saveTimer?.cancel();
     _heartbeat?.cancel();

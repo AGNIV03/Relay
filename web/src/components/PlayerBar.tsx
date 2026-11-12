@@ -19,6 +19,7 @@ import { usePlayer } from "@/context/PlayerContext";
 import { fmtTime } from "@/lib/format";
 import { LikeButton } from "./LikeButton";
 import { SquigglyProgress } from "./SquigglyProgress";
+import { CastButton } from "./cast/CastButton";
 
 export function PlayerBar({
   onToggleLyrics,
@@ -75,7 +76,12 @@ export function PlayerBar({
         <div className="min-w-0">
           <div className="truncate text-sm font-medium">{t.title}</div>
           <div className="truncate text-xs text-[var(--muted)]">{t.artist?.name}</div>
-          {(() => {
+          {p.casting && (
+            <div className="truncate text-[10px] text-[var(--accent)]">
+              Casting to {p.castDevice ?? "a device"}
+            </div>
+          )}
+          {!p.casting && (() => {
             const q = [
               t.format?.toUpperCase(),
               t.bitrate ? `${t.bitrate >= 2000 ? Math.round(t.bitrate / 1000) : t.bitrate} kbps` : null,
@@ -168,6 +174,7 @@ export function PlayerBar({
         >
           <Users size={18} />
         </button>
+        <CastButton />
         <Volume2 size={18} className="text-[var(--muted)]" />
         <input
           type="range"

@@ -133,7 +133,10 @@ defense-in-depth.
 
 ```
 POST /api/auth/login            { username, password } -> { accessToken, refreshToken, user }
-POST /api/auth/refresh          { refreshToken }
+POST /api/auth/refresh          { refreshToken } -> { accessToken, refreshToken }  (rotating: store the new refreshToken; reusing an old one revokes the session)
+POST /api/auth/media-token      -> { token, expiresAt }  7-day token for ?token= on stream/cover URLs only
+GET  /api/auth/invite/:code     -> { valid, role? }  (doesn't use the code)
+POST /api/auth/register         { code, username, password } -> { accessToken, refreshToken, user }
 POST /api/auth/change-password  { currentPassword, newPassword } -> { ok, accessToken, refreshToken, user }  (revokes other sessions)
 POST /api/auth/logout-all       sign out of all devices (revokes every token) -> 204
 GET  /api/auth/me
@@ -144,16 +147,27 @@ GET  /api/library/tracks/by-ids?ids=a,b,c
 PATCH /api/library/tracks/:id                    { title?, artist?, album?, year?, genre?, trackNo?, discNo? }  edit metadata, DB only (ADMIN or uploader)
 GET  /api/library/tracks/:id/lyrics
 POST /api/library/upload                         multipart  (chunked: /upload/chunk + /upload/finalize)
-GET  /api/library/scrobble | /recently-played | /most-played
+POST /api/library/scrobble                       { trackId, playlistId? }  play started (records history, "now playing")
+POST /api/library/scrobble/complete              { trackId, startedAt }  finished listen -> ListenBrainz / Last.fm
+GET  /api/library/recently-played | /most-played
+GET  /api/library/radio?seed=&exclude=a,b&limit=20  autoplay / radio -> Track[]
+POST /api/library/tracks/bulk-delete             { ids } -> { deleted, forbidden }
 GET  /api/library/stats/me                       all-time listening summary
 GET  /api/library/stats/wrapped?year=YYYY        year-end "Rewind" summary
-GET  /api/search?q=
+GET  /api/search?q=                              -> { tracks, albums, artists, playlists }
 
 GET  /api/stream/:trackId                         direct, Range-aware
 GET  /api/stream/:trackId?format=mp3&bitrate=128  transcoded
-GET  /api/stream/:trackId/cover                   album art   (?token= so <audio>/<img> can auth)
+GET  /api/stream/:trackId/cover                   album art
+GET  /api/stream/album/:albumId/cover             album art
+     (stream + cover routes, incl. /api/playlists/:id/cover, take ?token=<media token> so <audio>/<img>
+      can auth; every other route needs the Authorization: Bearer header)
 
-GET/POST/PATCH/DELETE /api/playlists ...          (+ /collaborators, /tracks, /cover)
+GET/POST/PATCH/DELETE /api/playlists ...          (+ /collaborators, /tracks, /tracks/bulk, /cover)
+PATCH /api/playlists/:id/tracks/order             { trackIds }  full new order -> 204
+POST  /api/playlists/:id/tracks/remove            { trackIds } -> { removed }
+POST  /api/playlists/import                       { name, source: m3u|text|spotify, content?, url? }
+                                                  -> { playlistId, matched, total, unmatched }
 POST/DELETE           /api/library/like ...        likes / Liked Songs
 
 GET  /api/social/friends
@@ -166,8 +180,17 @@ GET  /api/social/privacy | PATCH                   shareActivity / allowListenAl
 GET  /api/chorus | /chorus/poll?since=             collaborative session (long-poll)
 POST /api/chorus/{start,stop,leave,mode,join,approve,deny,remove,state,command}
 
+GET  /api/scrobbling                              -> { listenbrainz: {connected, username}, lastfm: {connected, username, available} }
+POST/DELETE /api/scrobbling/listenbrainz          { token }
+POST /api/scrobbling/lastfm/start                 -> { authUrl, token }  then approve in a browser
+POST /api/scrobbling/lastfm/complete              { token }
+DELETE /api/scrobbling/lastfm
+
 GET/POST        /api/admin/users | /admin/scan    (ADMIN)
 GET             /api/admin/stats                   (ADMIN)
+GET             /api/admin/dashboard               storage, counts, users, ingest rejections (ADMIN)
+GET/POST        /api/admin/invites                 { role?, maxUses?, expiresInDays?, note? } (ADMIN)
+DELETE          /api/admin/invites/:id             revoke (ADMIN)
 ```
 
 ## Building the apps
@@ -251,6 +274,46 @@ npm run dev                # tsx watch
 ```
 
 The web app: `cd web && npm install && npm run dev` (set `NEXT_PUBLIC_API_URL=http://localhost:4000`).
+
+## Tests
+
+Unit tests need no database, ffmpeg, Docker or network.
+
+```bash
+cd server && npm run build && npm test   # node:test via tsx (build first: it generates the Prisma client)
+cd web && npm test                       # node:test with Node's built-in TypeScript stripping
+cd app && flutter test                   # Flutter unit tests (use the SDK in tools/flutter)
+```
+
+- **Server** (`server/test/*.test.ts`): JWT sign/verify and token-type separation, the auth
+  middleware (which token types each route family accepts, revocation), refresh-token rotation
+  and reuse detection (against an in-memory fake of the Prisma calls), Range parsing, loudness
+  parsing, playlist import parsing/matching, invite codes, search ranking, rate-limit keys,
+  query coercion, env boot checks, and the in-memory Chorus/poll-guard invariants.
+- **Web** (`web/test/*.test.ts`): track sorting, the Rewind schedule, playback/recent-search
+  prefs, the loudness normalization factor and format helpers. `test/register.mjs` resolves the
+  `@/` alias without extra dependencies.
+- **App** (`app/test/*_test.dart`): the same sort, Rewind-schedule and loudness tables as the web
+  tests (so the clients stay in step), settings/recent searches, cover cache keys, server URL
+  normalization and model JSON.
+
+**Smoke test against a live deployment** (not part of `npm test`; it creates a throwaway
+playlist and, for admins, an invite, and removes both even on failure):
+
+```bash
+cd server
+BASE_URL=https://relay.example.com RELAY_USERNAME=alice RELAY_PASSWORD='…' node test/smoke/smoke.mjs
+# add SMOKE_REFRESH_REUSE=1 to also check refresh-token reuse detection
+# (waits 31 s and revokes the refresh-token family of the smoke test's own login)
+```
+
+It prints a PASS/FAIL table and exits non-zero on any failure. On Windows use `RELAY_USERNAME`,
+because `USERNAME` is always set to the OS login name.
+
+**CI** (`.github/workflows/ci.yml`) runs on pushes and pull requests to `main`: the server
+builds and runs its unit tests, the web app type-checks, tests and builds, and the Flutter app
+runs `flutter analyze` (lib + test) and `flutter test`. It needs no secrets and builds no
+release APKs.
 
 ## Status
 

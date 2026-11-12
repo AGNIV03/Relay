@@ -8,6 +8,8 @@ import { translateText } from "./translate.service.js";
 import { fetchMusixmatchTranslated } from "./musixmatch.service.js";
 import { IngestRejectedError, sha256File, verifyDecodes } from "./audioCheck.js";
 import { backfillAutotag, queueAutotag } from "./autotag.js";
+import { backfillLoudness, queueLoudness } from "./loudness.js";
+import { recordRejection } from "./ingestLog.js";
 
 export { IngestRejectedError } from "./audioCheck.js";
 
@@ -81,6 +83,28 @@ async function saveCover(albumId: string, picture: { format: string; data: Uint8
   const rel = path.join("covers", `${albumId}.${ext}`);
   await fs.writeFile(path.join(env.dataPath, rel), Buffer.from(picture.data));
   return rel;
+}
+
+/** Delete a cover-art file given its DATA_PATH-relative path (as stored in
+ *  Album.coverPath). Refuses anything resolving outside DATA_PATH/covers. */
+export async function removeCoverFile(rel: string | null | undefined): Promise<void> {
+  if (!rel) return;
+  const coversDir = path.resolve(env.dataPath, "covers");
+  const abs = path.resolve(env.dataPath, rel);
+  if (!abs.startsWith(coversDir + path.sep)) return;
+  await fs.rm(abs, { force: true }).catch((e) => {
+    console.warn(`[covers] could not remove ${rel}:`, (e as Error).message);
+  });
+}
+
+/** Delete an album (and its cover file) if no tracks reference it any more. */
+export async function deleteAlbumIfEmpty(albumId: string): Promise<void> {
+  const left = await prisma.track.count({ where: { albumId } });
+  if (left > 0) return;
+  const album = await prisma.album.findUnique({ where: { id: albumId }, select: { coverPath: true } });
+  if (!album) return;
+  await prisma.album.delete({ where: { id: albumId } }).catch(() => {});
+  await removeCoverFile(album.coverPath);
 }
 
 /** Look up + persist lyrics for a track. Best-effort; never throws. */
@@ -192,6 +216,7 @@ export async function ingestFile(
   const contentHash = await sha256File(file);
   const sameBytes = await prisma.track.findFirst({
     where: { contentHash, ...(existing ? { id: { not: existing.id } } : {}) },
+    select: { id: true, path: true },
   });
   if (sameBytes) {
     if (!existing && !(await fileExists(sameBytes.path))) {
@@ -254,7 +279,8 @@ export async function ingestFile(
   };
 
   if (existing) {
-    await prisma.track.update({ where: { id: existing.id }, data });
+    // The file changed on disk: re-measure its loudness (scan backfill).
+    await prisma.track.update({ where: { id: existing.id }, data: { ...data, loudnessLufs: null } });
     return { trackId: existing.id, created: false };
   }
   const created = await prisma.track.create({
@@ -289,6 +315,7 @@ async function processFile(file: string, result: ScanResult) {
     result.rejected++;
     scanSkip.set(file, sig);
     console.warn(`[scan] skipped ${file}: ${err.reason}`);
+    recordRejection(path.relative(env.musicPath, file) || path.basename(file), err.reason, "scan");
     return;
   }
   if (!r) return;
@@ -304,6 +331,7 @@ async function processFile(file: string, result: ScanResult) {
     // Fetch lyrics for new tracks (best-effort, don't block on failure).
     await fetchAndStoreLyrics(r.trackId).catch(() => {});
     queueAutotag(r.trackId); // background; no-op unless enabled
+    queueLoudness(r.trackId); // background
   } else {
     result.updated++;
   }
@@ -337,7 +365,12 @@ async function pruneMissing(result: ScanResult) {
       result.removed++;
     }
   }
-  await prisma.album.deleteMany({ where: { tracks: { none: {} } } });
+  const emptyAlbums = await prisma.album.findMany({
+    where: { tracks: { none: {} } },
+    select: { id: true, coverPath: true },
+  });
+  await prisma.album.deleteMany({ where: { id: { in: emptyAlbums.map((a) => a.id) } } });
+  for (const a of emptyAlbums) await removeCoverFile(a.coverPath);
   await prisma.artist.deleteMany({ where: { tracks: { none: {} }, albums: { none: {} } } });
 }
 
@@ -373,6 +406,7 @@ export async function runScan(): Promise<ScanResult> {
     // Backfill content hashes (dedup) and, when enabled, AcoustID auto-tags.
     await backfillHashes(200).catch((e) => console.warn("[scan] hash backfill failed:", e.message));
     await backfillAutotag(50);
+    await backfillLoudness(200); // queues only; measurements run in the background
     lastResult = result;
     console.log("[scan] complete:", result);
     return result;

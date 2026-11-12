@@ -1,8 +1,10 @@
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
-import rateLimit, { ipKeyGenerator } from "express-rate-limit";
+import rateLimit from "express-rate-limit";
 import { env } from "./lib/env.js";
+import { clientIpKey } from "./lib/rateLimit.js";
+import { startRefreshTokenPrune } from "./lib/refreshTokens.js";
 import { ensureFirstAdmin } from "./bootstrap.js";
 
 import authRoutes from "./routes/auth.js";
@@ -13,6 +15,7 @@ import playlistRoutes from "./routes/playlists.js";
 import adminRoutes from "./routes/admin.js";
 import socialRoutes from "./routes/social.js";
 import chorusRoutes from "./routes/chorus.js";
+import scrobblingRoutes from "./routes/scrobbling.js";
 
 const app = express();
 
@@ -50,28 +53,23 @@ app.use(
   }),
 );
 
-app.use(express.json());
+// Playlist import bodies carry a whole M3U / track list; everything else is small
+// (1mb still fits a reorder of tens of thousands of track ids).
+app.use("/api/playlists/import", express.json({ limit: "6mb" }));
+app.use(express.json({ limit: "1mb" }));
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
 // Brute-force protection on credential endpoints (Cloudflare is the edge limiter;
-// this is in-app defense-in-depth). Keyed on CF-Connecting-IP: the Cloudflare
-// tunnel always overwrites it with the real client IP, whereas X-Forwarded-For
-// (what req.ip derives from with `trust proxy` on) can be prefixed by the client,
-// letting an attacker rotate keys per request. req.ip is the fallback for direct
-// (non-tunnel) dev access. A custom keyGenerator also skips the library's
-// permissive-trust-proxy check, so no `validate` override is needed. Per-username
-// backoff lives in routes/auth.ts.
+// this is in-app defense-in-depth). Keyed on the real client IP (see
+// lib/rateLimit.ts). Per-username backoff lives in routes/auth.ts; the
+// register / invite / media-token / change-password limits live there too.
 const authLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   limit: 40,
   standardHeaders: "draft-7",
   legacyHeaders: false,
-  keyGenerator: (req) => {
-    const cf = req.headers["cf-connecting-ip"];
-    const client = typeof cf === "string" && cf.trim() ? cf.trim() : (req.ip ?? "unknown");
-    return ipKeyGenerator(client); // collapses IPv6 to its /56 so it can't rotate addresses
-  },
+  keyGenerator: clientIpKey,
   message: { error: "Too many attempts — please try again later." },
 });
 app.use("/api/auth/login", authLimiter);
@@ -85,6 +83,7 @@ app.use("/api/playlists", playlistRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/social", socialRoutes);
 app.use("/api/chorus", chorusRoutes);
+app.use("/api/scrobbling", scrobblingRoutes);
 
 // Fallback error handler. Express 5 forwards rejected async-handler promises here
 // natively, so async failures return 500 instead of hanging the socket. Never
@@ -104,6 +103,7 @@ app.use(
 
 async function main() {
   await ensureFirstAdmin();
+  startRefreshTokenPrune();
   const server = app.listen(env.port, () => {
     console.log(`[server] listening on http://localhost:${env.port}`);
     console.log(`[server] music path: ${env.musicPath}`);

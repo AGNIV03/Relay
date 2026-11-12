@@ -9,8 +9,35 @@ import {
   useCallback,
   type ReactNode,
 } from "react";
-import { api, streamUrl, coverUrl, tokens, clock, syncClock, ApiError } from "@/lib/api";
+import {
+  api,
+  streamUrl,
+  coverUrl,
+  tokens,
+  clock,
+  syncClock,
+  ApiError,
+  ensureMediaToken,
+} from "@/lib/api";
+import {
+  initCast,
+  subscribeCast,
+  castSnapshot,
+  castLoadQueue,
+  castJumpTo,
+  castSyncUpcoming,
+  castPlay,
+  castPause,
+  castSeek,
+  castSetVolume,
+  endCastSession,
+  requestCastSession,
+  type CastItem,
+  type CastSnapshot,
+  type CastState,
+} from "@/lib/cast";
 import type { Track, Lyrics, HostActivity, ChorusState, ChorusPatch } from "@/lib/types";
+import { normFactor } from "@/lib/loudness";
 
 export type RepeatMode = "off" | "all" | "one";
 
@@ -30,6 +57,55 @@ export interface PlayOptions {
 // estimate is good to a few hundred ms, so smaller drift is corrected.
 const DRIFT_SYNCED_SEC = 0.7;
 const DRIFT_UNSYNCED_SEC = 2;
+
+// ---- Playback settings (shared with the settings page via localStorage) ----
+/** CustomEvent ({detail: {key, value}}) fired on window after a playback setting
+ *  changes in this tab (the `storage` event only reaches other tabs). */
+export const SETTINGS_EVENT = "relay-settings";
+
+interface PlaybackSettings {
+  autoplay: boolean;
+  normalize: boolean;
+  fadeSeconds: number;
+}
+
+function readSettings(): PlaybackSettings {
+  const get = (k: string) => {
+    try {
+      return localStorage.getItem(k);
+    } catch {
+      return null;
+    }
+  };
+  const bool = (k: string, def: boolean) => {
+    const v = get(k);
+    if (v == null) return def;
+    return !(v === "false" || v === "0");
+  };
+  const fade = Number(get("set_fade_seconds") ?? 0);
+  return {
+    autoplay: bool("set_autoplay", true),
+    normalize: bool("set_normalize", true),
+    fadeSeconds: Number.isFinite(fade) ? Math.min(12, Math.max(0, fade)) : 0,
+  };
+}
+
+
+/** One of the two <audio> elements. The active one plays the current track; the
+ *  other preloads the next track (gapless) or fades in over it (crossfade).
+ *  Effective element volume = user volume x normalization x fade gain, so the
+ *  user-visible volume never changes. */
+interface Deck {
+  el: HTMLAudioElement;
+  track: Track | null;
+  norm: number;
+  gain: number;
+}
+
+// Start preloading the next track this many seconds (plus the fade) before the end.
+const PRELOAD_LEAD_SEC = 30;
+// Receiver queue window (Chromecast): current + this many upcoming tracks.
+const CAST_WINDOW = 25;
 
 interface PlayerState {
   queue: Track[];
@@ -102,6 +178,17 @@ interface PlayerState {
   approveChorus: (userId: string) => void;
   denyChorus: (userId: string) => void;
   removeFromChorus: (userId: string) => void;
+  // ---- Autoplay (radio after the queue runs out) ----
+  autoplay: boolean;
+  setAutoplay: (on: boolean) => void;
+  /** Whether queue item `i` was added by autoplay. */
+  isAutoplay: (i: number) => boolean;
+  // ---- Chromecast ----
+  castState: CastState;
+  casting: boolean;
+  castDevice: string | null;
+  /** Open the browser's cast device picker (also offers "Stop casting"). */
+  requestCast: () => void;
 }
 
 const PlayerContext = createContext<PlayerState | null>(null);
@@ -116,7 +203,40 @@ function shuffleInPlace<T>(arr: T[]): T[] {
 }
 
 export function PlayerProvider({ children }: { children: ReactNode }) {
+  // The ACTIVE audio element (always one of decksRef's two).
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const decksRef = useRef<Deck[]>([]);
+  const volRef = useRef(1); // user volume (the slider), never normalization/fade
+  const settingsRef = useRef<PlaybackSettings>({ autoplay: true, normalize: true, fadeSeconds: 0 });
+  const [autoplay, setAutoplayState] = useState(true);
+  // Next track preloaded on the inactive deck, and an in-progress crossfade.
+  const preloadRef = useRef<{ deck: Deck; trackId: string } | null>(null);
+  const fadeRef = useRef<{ out: Deck; inn: Deck; start: number; ms: number; timer: number } | null>(
+    null,
+  );
+  // Track id whose element is already playing when the index catches up (a
+  // gapless / crossfade handover), so the load effect doesn't reload it.
+  const handoffRef = useRef<string | null>(null);
+  const retriedRef = useRef<string | null>(null); // media-error retry, once per load
+  // The current play, for the scrobble-completion rule.
+  const playRef = useRef<{
+    trackId: string;
+    startedAt: string;
+    listened: number;
+    lastPos: number;
+    done: boolean;
+  } | null>(null);
+  // Autoplay: tracks it appended (object identity survives queue edits) and the
+  // seed it last fetched for (one fetch per track start).
+  const autoplayTracksRef = useRef(new WeakSet<Track>());
+  const autoplayFetchRef = useRef<string | null>(null);
+  const applyAutoplayRef = useRef<(on: boolean) => void>(() => {});
+  // Chromecast.
+  const [castSnap, setCastSnap] = useState<CastSnapshot>(() => castSnapshot());
+  const castingRef = useRef(false);
+  const castFollowIdRef = useRef<string | null>(null); // index moved because the receiver advanced
+  const castExpectRef = useRef<{ trackId: string; until: number } | null>(null);
+  const lastCastRef = useRef<CastSnapshot | null>(null);
   const [queue, setQueue] = useState<Track[]>([]);
   const [index, setIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -235,33 +355,318 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     return np;
   }, []);
 
-  // Create the audio element once.
+  // ---- Audio engine: two decks (gapless preload + crossfade) ----------------
+  const deckOf = useCallback(
+    (el: HTMLAudioElement | null) => decksRef.current.find((d) => d.el === el) ?? null,
+    [],
+  );
+
+  const applyVolume = useCallback((d: Deck) => {
+    d.el.volume = Math.min(1, Math.max(0, volRef.current * d.norm * d.gain));
+  }, []);
+
+  const assignTrack = useCallback(
+    (d: Deck, t: Track | null) => {
+      d.track = t;
+      d.norm = normFactor(t, settingsRef.current.normalize);
+      d.gain = 1;
+      applyVolume(d);
+    },
+    [applyVolume],
+  );
+
+  const clearDeck = useCallback((d: Deck) => {
+    d.el.pause();
+    d.el.removeAttribute("src");
+    d.el.load();
+    d.track = null;
+    d.gain = 1;
+  }, []);
+
+  // Re-read the playback settings (the settings page writes localStorage).
+  const reloadSettings = useCallback(() => {
+    const s = readSettings();
+    const normChanged = s.normalize !== settingsRef.current.normalize;
+    settingsRef.current = s;
+    setAutoplayState(s.autoplay);
+    if (normChanged) {
+      for (const d of decksRef.current) {
+        d.norm = normFactor(d.track, s.normalize);
+        applyVolume(d);
+      }
+    }
+  }, [applyVolume]);
+
+  // End any crossfade now: silence + unload the outgoing deck, full gain on the new one.
+  const finishFade = useCallback(() => {
+    const f = fadeRef.current;
+    if (!f) return;
+    fadeRef.current = null;
+    clearInterval(f.timer);
+    clearDeck(f.out);
+    f.inn.gain = 1;
+    applyVolume(f.inn);
+  }, [applyVolume, clearDeck]);
+
+  const dropPreload = useCallback(() => {
+    const p = preloadRef.current;
+    if (!p) return;
+    preloadRef.current = null;
+    if (p.deck.el !== audioRef.current) clearDeck(p.deck);
+  }, [clearDeck]);
+
+  // Apply a pending seek (chorus command / adopt / cast handback) once the
+  // element knows its duration; otherwise loadedmetadata applies it.
+  const applyPendingSeek = useCallback((el: HTMLAudioElement) => {
+    if (pendingSeekRef.current != null && el.readyState >= 1) {
+      el.currentTime = pendingSeekRef.current;
+      pendingSeekRef.current = null;
+    }
+  }, []);
+
+  // Load `t` on the active deck (Range-streamed original), optionally at `at` seconds.
+  const loadLocal = useCallback(
+    (t: Track, at: number, play: boolean) => {
+      const audio = audioRef.current;
+      const d = deckOf(audio);
+      if (!audio || !d) return;
+      finishFade();
+      assignTrack(d, t);
+      retriedRef.current = null;
+      if (at > 0) pendingSeekRef.current = at;
+      audio.src = streamUrl(t.id);
+      if (play) audio.play().catch(() => setPlaying(false));
+      else audio.pause();
+    },
+    [deckOf, finishFade, assignTrack],
+  );
+
+  // Make the deck holding the preloaded track active and start it (gapless).
+  const swapToPreload = useCallback((): boolean => {
+    const p = preloadRef.current;
+    const old = deckOf(audioRef.current);
+    if (!p || !old || p.deck === old) return false;
+    preloadRef.current = null;
+    finishFade();
+    audioRef.current = p.deck.el;
+    p.deck.gain = 1;
+    applyVolume(p.deck);
+    retriedRef.current = null;
+    clearDeck(old);
+    applyPendingSeek(p.deck.el);
+    p.deck.el.play().catch(() => setPlaying(false));
+    setDuration(p.deck.el.duration || p.deck.track?.duration || 0);
+    return true;
+  }, [deckOf, finishFade, applyVolume, clearDeck, applyPendingSeek]);
+
+  // The track a natural end would move to, or null when there's nothing to
+  // preload (repeat-one loops, listen-along follows the host, a member has no
+  // audio, the Chromecast runs its own queue, a stopped listen-along restores).
+  const naturalNext = useCallback((): number | null => {
+    if (restoreAfterCurrentRef.current || listenHostRef.current || castingRef.current) return null;
+    if (memberNow() || repeatRef.current === "one") return null;
+    return advance(1, repeatRef.current === "all");
+  }, [memberNow, advance]);
+
+  const preloadFailedRef = useRef<string | null>(null);
+  const preloadInto = useCallback(
+    (t: Track) => {
+      const other = decksRef.current.find((d) => d.el !== audioRef.current);
+      if (!other || preloadFailedRef.current === t.id) return;
+      preloadRef.current = { deck: other, trackId: t.id };
+      assignTrack(other, t);
+      other.el.src = streamUrl(t.id);
+      other.el.load();
+    },
+    [assignTrack],
+  );
+
+  // Crossfade into the preloaded track: it starts silent on the other deck and
+  // the two swap gain along equal-power curves (cos/sin) over the fade window.
+  const startCrossfade = useCallback(
+    (target: number, t: Track, remaining: number) => {
+      const out = deckOf(audioRef.current);
+      const p = preloadRef.current;
+      if (!out || !p || p.deck === out) return;
+      preloadRef.current = null;
+      const inn = p.deck;
+      inn.gain = 0;
+      applyVolume(inn);
+      audioRef.current = inn.el; // the incoming deck is now the player
+      retriedRef.current = null;
+      inn.el.play().catch(() => {});
+      const ms = Math.max(500, Math.min(settingsRef.current.fadeSeconds, remaining) * 1000);
+      const timer = window.setInterval(() => {
+        const f = fadeRef.current;
+        if (!f) return;
+        const k = Math.min(1, (performance.now() - f.start) / f.ms);
+        f.out.gain = Math.cos((k * Math.PI) / 2);
+        f.inn.gain = Math.sin((k * Math.PI) / 2);
+        applyVolume(f.out);
+        applyVolume(f.inn);
+        if (k >= 1) finishFade();
+      }, 50);
+      fadeRef.current = { out, inn, start: performance.now(), ms, timer };
+      setDuration(inn.el.duration || t.duration || 0);
+      setPosition(0);
+      handoffRef.current = t.id;
+      setIndex(target);
+    },
+    [deckOf, applyVolume, finishFade],
+  );
+
+  // Runs on the active deck's timeupdate: preload the next track near the end,
+  // and start the crossfade when the fade window opens.
+  const transitionTick = useCallback(() => {
+    if (fadeRef.current) return;
+    const el = audioRef.current;
+    if (!el) return;
+    const dur = el.duration;
+    if (!Number.isFinite(dur) || dur <= 0) return;
+    const remaining = dur - el.currentTime;
+    const fade = settingsRef.current.fadeSeconds;
+    if (remaining > fade + PRELOAD_LEAD_SEC) return;
+    const target = naturalNext();
+    const nextT = target != null ? queueRef.current[target] : null;
+    if (target == null || !nextT || target === indexRef.current) {
+      if (preloadRef.current) dropPreload();
+      return;
+    }
+    if (preloadRef.current?.trackId !== nextT.id) {
+      dropPreload();
+      preloadInto(nextT);
+      return;
+    }
+    if (
+      fade > 0 &&
+      !el.paused &&
+      remaining <= fade &&
+      dur > fade * 2 &&
+      preloadRef.current.deck.el.readyState >= 2
+    ) {
+      startCrossfade(target, nextT, remaining);
+    }
+  }, [naturalNext, dropPreload, preloadInto, startCrossfade]);
+
+  // ---- Scrobbling: "now playing" at 5s, completion once per play ----
+  const beginPlay = useCallback((t: Track) => {
+    playRef.current = {
+      trackId: t.id,
+      startedAt: new Date().toISOString(),
+      listened: 0,
+      lastPos: 0,
+      done: false,
+    };
+  }, []);
+
+  const trackProgress = useCallback((t: Track, pos: number, elDuration: number) => {
+    if (pos > 5 && !scrobbled.current.has(t.id)) {
+      scrobbled.current.add(t.id);
+      api
+        .post("/api/library/scrobble", {
+          trackId: t.id,
+          ...(playlistContextRef.current ? { playlistId: playlistContextRef.current } : {}),
+        })
+        .catch(() => {});
+    }
+    // Completion: actually-played time (seeks don't count) reaches half the
+    // track or 4 minutes, for tracks of at least 30s.
+    const pr = playRef.current;
+    if (!pr || pr.trackId !== t.id || pr.done) return;
+    const d = pos - pr.lastPos;
+    if (d > 0 && d < 3) pr.listened += d;
+    pr.lastPos = pos;
+    const dur = t.duration || (Number.isFinite(elDuration) ? elDuration : 0);
+    if (dur >= 30 && (pr.listened >= dur / 2 || pr.listened >= 240)) {
+      pr.done = true;
+      api
+        .post("/api/library/scrobble/complete", { trackId: t.id, startedAt: pr.startedAt })
+        .catch(() => {});
+    }
+  }, []);
+
+  // ---- Autoplay: when the last queued track starts, append radio picks ----
+  const maybeAutoplay = useCallback(() => {
+    if (!settingsRef.current.autoplay || repeatRef.current !== "off") return;
+    if (memberNow() || listenHostRef.current || restoreAfterCurrentRef.current) return;
+    const q = queueRef.current;
+    const i = indexRef.current;
+    const cur = q[i];
+    if (!cur || i !== q.length - 1 || autoplayFetchRef.current === cur.id) return;
+    autoplayFetchRef.current = cur.id;
+    const exclude = [...new Set(q.slice(-100).map((t) => t.id))].join(",");
+    api
+      .get<Track[] | { tracks: Track[] }>(
+        `/api/library/radio?seed=${encodeURIComponent(cur.id)}&exclude=${encodeURIComponent(exclude)}&limit=20`,
+      )
+      .then((r) => {
+        const picks = Array.isArray(r) ? r : r?.tracks ?? [];
+        if (!settingsRef.current.autoplay || memberNow() || listenHostRef.current) return;
+        if (currentIdRef.current !== cur.id) return; // moved on meanwhile
+        const q2 = queueRef.current;
+        const have = new Set(q2.map((t) => t.id));
+        const add = picks.filter((t) => !have.has(t.id));
+        if (!add.length) return;
+        for (const t of add) autoplayTracksRef.current.add(t);
+        const nq = [...q2, ...add];
+        userQRef.current = [...userQRef.current.slice(0, q2.length), ...add.map(() => false)];
+        queueRef.current = nq;
+        setQueue(nq);
+      })
+      .catch(() => {});
+  }, [memberNow]);
+
+  // Bookkeeping when a track becomes current (fresh load or handover).
+  const onTrackStarted = useCallback(
+    (t: Track, pos: number) => {
+      setPosition(pos);
+      loadLyrics(t.id);
+      beginPlay(t);
+      if ("mediaSession" in navigator) {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: t.title,
+          artist: t.artist?.name ?? "",
+          album: t.album?.title ?? "",
+          artwork: [{ src: coverUrl(t.id), sizes: "512x512", type: "image/jpeg" }],
+        });
+      }
+      maybeAutoplay();
+    },
+    [loadLyrics, beginPlay, maybeAutoplay],
+  );
+
+  // Create the two audio elements once.
   useEffect(() => {
-    const audio = new Audio();
-    audio.preload = "auto";
-    audioRef.current = audio;
-    const onTime = () => {
+    reloadSettings();
+    void ensureMediaToken(); // startup: media token for stream/cover URLs
+    const mk = (): Deck => {
+      const el = new Audio();
+      el.preload = "auto";
+      return { el, track: null, norm: 1, gain: 1 };
+    };
+    const decks = [mk(), mk()];
+    decksRef.current = decks;
+    audioRef.current = decks[0].el;
+    // Only the active deck drives the UI (the other is preloading / fading out),
+    // and nothing local does while a Chromecast plays.
+    const isActive = (e: Event) => e.currentTarget === audioRef.current && !castingRef.current;
+    const onTime = (e: Event) => {
+      if (!isActive(e)) return;
+      const audio = audioRef.current!;
       setPosition(audio.currentTime);
-      const t = queueRef.current[indexRef.current];
-      if (t && audio.currentTime > 5 && !scrobbled.current.has(t.id)) {
-        scrobbled.current.add(t.id);
-        api
-          .post("/api/library/scrobble", {
-            trackId: t.id,
-            ...(playlistContextRef.current ? { playlistId: playlistContextRef.current } : {}),
-          })
-          .catch(() => {});
-      }
+      const t = deckOf(audio)?.track ?? queueRef.current[indexRef.current];
+      if (t) trackProgress(t, audio.currentTime, audio.duration);
+      transitionTick();
     };
-    const onMeta = () => {
+    const onMeta = (e: Event) => {
+      const audio = audioRef.current;
+      if (!audio || e.currentTarget !== audio) return;
       setDuration(audio.duration || 0);
-      // Apply a pending seek (chorus command / adopt) once metadata is ready.
-      if (pendingSeekRef.current != null) {
-        audio.currentTime = pendingSeekRef.current;
-        pendingSeekRef.current = null;
-      }
+      applyPendingSeek(audio);
     };
-    const onEnd = () => {
+    const onEnd = (e: Event) => {
+      if (!isActive(e)) return;
+      const audio = audioRef.current!;
       // A stopped listen-along session lets the current song finish, then
       // restores the queue the user had before they started following.
       if (restoreAfterCurrentRef.current) {
@@ -279,17 +684,24 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         }
         return;
       }
-      if (repeatRef.current === "one") {
+      const restart = () => {
         audio.currentTime = 0;
         audio.play().catch(() => {});
+        const t = deckOf(audio)?.track;
+        if (t) beginPlay(t);
+      };
+      if (repeatRef.current === "one") {
+        restart();
         return;
       }
       const target = advance(1, repeatRef.current === "all");
       if (target === null) {
         // End of the queue (repeat off): finish, stop, and clear the controls
         // entirely instead of freezing at the last second.
-        audio.pause();
-        audio.src = "";
+        finishFade();
+        dropPreload();
+        const d = deckOf(audio);
+        if (d) clearDeck(d);
         scrobbled.current.clear();
         userQRef.current = [];
         contextOriginalRef.current = [];
@@ -303,40 +715,284 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         // [queue,index,playing] effect fires on the queue change).
         return;
       }
+      if (target === indexRef.current) {
+        restart(); // single-track queue on repeat-all
+        return;
+      }
+      // Gapless: the next track is already buffered on the other deck.
+      const nextT = queueRef.current[target];
+      if (nextT && preloadRef.current?.trackId === nextT.id && swapToPreload()) {
+        handoffRef.current = nextT.id;
+        setPosition(0);
+      }
       setIndex(target);
     };
-    const onPlay = () => setPlaying(true);
-    const onPause = () => setPlaying(false);
-    audio.addEventListener("timeupdate", onTime);
-    audio.addEventListener("loadedmetadata", onMeta);
-    audio.addEventListener("ended", onEnd);
-    audio.addEventListener("play", onPlay);
-    audio.addEventListener("pause", onPause);
+    const onPlay = (e: Event) => {
+      if (isActive(e)) setPlaying(true);
+    };
+    const onPause = (e: Event) => {
+      if (isActive(e)) setPlaying(false);
+    };
+    // A failed load: maybe the media token expired or was revoked. Renew it once
+    // and reload at the same spot.
+    const onError = (e: Event) => {
+      const el = e.currentTarget as HTMLAudioElement;
+      const d = deckOf(el);
+      if (!d?.track || !el.getAttribute("src")) return;
+      if (el !== audioRef.current) {
+        if (preloadRef.current?.deck === d) {
+          preloadFailedRef.current = d.track.id;
+          dropPreload();
+        }
+        return;
+      }
+      if (castingRef.current) return;
+      const id = d.track.id;
+      if (retriedRef.current === id) return;
+      retriedRef.current = id;
+      const at = el.currentTime;
+      void ensureMediaToken(true).then(() => {
+        if (audioRef.current !== el || d.track?.id !== id) return;
+        if (at > 0) pendingSeekRef.current = at;
+        el.src = streamUrl(id);
+        el.play().catch(() => setPlaying(false));
+      });
+    };
+    for (const d of decks) {
+      d.el.addEventListener("timeupdate", onTime);
+      d.el.addEventListener("loadedmetadata", onMeta);
+      d.el.addEventListener("ended", onEnd);
+      d.el.addEventListener("play", onPlay);
+      d.el.addEventListener("pause", onPause);
+      d.el.addEventListener("error", onError);
+    }
+    // Settings changed in another tab (storage) or on the settings page (event).
+    // Applied live: normalization re-levels both decks now, the fade length is
+    // read on the next tick, and an autoplay flip adds / drops the picks.
+    const onSettings = () => {
+      const before = settingsRef.current.autoplay;
+      reloadSettings();
+      if (settingsRef.current.autoplay !== before) applyAutoplayRef.current(settingsRef.current.autoplay);
+    };
+    window.addEventListener("storage", onSettings);
+    window.addEventListener(SETTINGS_EVENT, onSettings);
     return () => {
-      audio.pause();
-      audio.src = "";
+      window.removeEventListener("storage", onSettings);
+      window.removeEventListener(SETTINGS_EVENT, onSettings);
+      if (fadeRef.current) clearInterval(fadeRef.current.timer);
+      fadeRef.current = null;
+      preloadRef.current = null;
+      for (const d of decks) {
+        d.el.pause();
+        d.el.removeAttribute("src");
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ---- Chromecast -------------------------------------------------------------
+  const castItem = useCallback(
+    (t: Track): CastItem => ({
+      trackId: t.id,
+      // Receivers choke on hi-res FLAC: ask for a 320k MP3 transcode.
+      url: streamUrl(t.id, { format: "mp3", bitrate: 320 }),
+      title: t.title,
+      artist: t.artist?.name ?? "",
+      album: t.album?.title ?? "",
+      cover: coverUrl(t.id),
+      duration: t.duration || 0,
+    }),
+    [],
+  );
+
+  // Load the local queue from position `i` onto the receiver.
+  const castLoadFrom = useCallback(
+    async (i: number, at: number, play: boolean) => {
+      await ensureMediaToken();
+      const items = queueRef.current.slice(i, i + CAST_WINDOW).map(castItem);
+      if (!items.length) return;
+      castExpectRef.current = { trackId: items[0].trackId, until: Date.now() + 8000 };
+      await castLoadQueue(items, at, play);
+    },
+    [castItem],
+  );
+
+  const adoptingRef = useRef(false);
+  useEffect(() => {
+    let wasConnected = false;
+    void initCast();
+    const onConnected = (s: CastSnapshot) => {
+      // Members and listen-along followers have no local playback to hand over.
+      if (memberNow() || listenHostRef.current) {
+        endCastSession();
+        return;
+      }
+      const audio = audioRef.current;
+      const cur = queueRef.current[indexRef.current] ?? null;
+      const at = audio?.currentTime ?? 0;
+      const wasPlaying = !!audio && !audio.paused;
+      castingRef.current = true;
+      finishFade();
+      dropPreload();
+      audio?.pause();
+      if (cur && s.trackId !== cur.id) void castLoadFrom(indexRef.current, at, wasPlaying);
+      setPlaying(wasPlaying);
+    };
+    const onDisconnected = () => {
+      if (!castingRef.current) return;
+      castingRef.current = false;
+      castExpectRef.current = null;
+      castFollowIdRef.current = null;
+      const last = lastCastRef.current;
+      lastCastRef.current = null;
+      const cur = queueRef.current[indexRef.current];
+      setPlaying(false);
+      if (!cur || memberNow()) return;
+      // Carry on locally from where the receiver was.
+      const at = last && last.trackId === cur.id ? last.position : 0;
+      const resume = !!last && !last.paused;
+      loadLocal(cur, at, resume);
+      setPosition(at);
+      setDuration(cur.duration || 0);
+    };
+    const unsub = subscribeCast((s) => {
+      setCastSnap(s);
+      const connected = s.state === "connected";
+      if (connected && !wasConnected) {
+        wasConnected = true;
+        onConnected(s);
+      } else if (!connected && wasConnected) {
+        wasConnected = false;
+        onDisconnected();
+        return;
+      }
+      if (!connected || !castingRef.current) return;
+      if (s.trackId && s.playerState !== "IDLE") lastCastRef.current = s;
+      setPlaying(!s.paused && s.playerState !== "IDLE");
+      // While a command we sent is in flight, ignore stale receiver reports.
+      const exp = castExpectRef.current;
+      if (exp) {
+        if (s.trackId === exp.trackId || Date.now() > exp.until) castExpectRef.current = null;
+        else return;
+      }
+      if (s.trackId && s.trackId !== currentIdRef.current) {
+        // The receiver moved on through its queue: follow it locally.
+        const q = queueRef.current;
+        const i = indexRef.current;
+        let idx = q.findIndex((t, k) => k > i && t.id === s.trackId);
+        if (idx < 0) idx = q.findIndex((t) => t.id === s.trackId);
+        if (idx >= 0) {
+          castFollowIdRef.current = s.trackId;
+          setIndex(idx);
+        } else if (!q.length && !adoptingRef.current) {
+          // Rejoined a session that's already playing (e.g. after a reload).
+          adoptingRef.current = true;
+          const id = s.trackId;
+          api
+            .get<{ tracks: Track[] }>(`/api/library/tracks/by-ids?ids=${encodeURIComponent(id)}`)
+            .then((r) => {
+              const t = r.tracks[0];
+              if (!t || !castingRef.current || queueRef.current.length) return;
+              userQRef.current = [false];
+              contextOriginalRef.current = [t];
+              castFollowIdRef.current = t.id;
+              setQueue([t]);
+              setIndex(0);
+            })
+            .catch(() => {})
+            .finally(() => {
+              adoptingRef.current = false;
+            });
+        }
+        return;
+      }
+      const t = queueRef.current[indexRef.current];
+      if (t && s.trackId === t.id && s.playerState === "PLAYING") {
+        trackProgress(t, s.position, s.duration);
+      }
+    });
+    return unsub;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Keep the receiver's upcoming queue in step with local edits (add / remove /
+  // reorder / autoplay), without interrupting the current track.
+  useEffect(() => {
+    if (castSnap.state !== "connected") return;
+    const id = setTimeout(() => {
+      if (!castingRef.current) return;
+      const q = queueRef.current;
+      const i = indexRef.current;
+      if (!q[i] || castSnapshot().trackId !== q[i].id) return;
+      void ensureMediaToken().then(() =>
+        castSyncUpcoming(q.slice(i + 1, i + CAST_WINDOW).map(castItem)),
+      );
+    }, 700);
+    return () => clearTimeout(id);
+  }, [queue, index, castSnap.state, castSnap.trackId, castItem]);
+
+  // Transport routed to the receiver while casting, else the active deck.
+  const posSec = useCallback(
+    () => (castingRef.current ? castSnapshot().position : audioRef.current?.currentTime ?? 0),
+    [],
+  );
+  const isPaused = useCallback(
+    () => (castingRef.current ? castSnapshot().paused : audioRef.current?.paused ?? true),
+    [],
+  );
+  const doPlay = useCallback(() => {
+    if (castingRef.current) castPlay();
+    else audioRef.current?.play().catch(() => {});
+  }, []);
+  const doPause = useCallback(() => {
+    if (castingRef.current) castPause();
+    else {
+      finishFade();
+      audioRef.current?.pause();
+    }
+  }, [finishFade]);
+  const doSeek = useCallback(
+    (sec: number) => {
+      if (castingRef.current) castSeek(sec);
+      else if (audioRef.current) {
+        finishFade();
+        audioRef.current.currentTime = sec;
+      }
+    },
+    [finishFade],
+  );
+
   // Load + play whenever the LOCAL current track changes. A silent chorus member
-  // has no local audio — skip entirely.
+  // has no local audio — skip entirely. A handover (gapless / crossfade) already
+  // has the track playing; while casting, the receiver plays it instead.
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !localCurrent) return;
     if (memberNow()) return; // members don't drive local audio
-    audio.src = streamUrl(localCurrent.id);
-    audio.play().catch(() => setPlaying(false));
-    setPosition(0);
-    loadLyrics(localCurrent.id);
-    if ("mediaSession" in navigator) {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: localCurrent.title,
-        artist: localCurrent.artist?.name ?? "",
-        album: localCurrent.album?.title ?? "",
-        artwork: [{ src: coverUrl(localCurrent.id), sizes: "512x512", type: "image/jpeg" }],
-      });
+    reloadSettings();
+    const handed =
+      handoffRef.current === localCurrent.id && deckOf(audio)?.track?.id === localCurrent.id;
+    handoffRef.current = null;
+    if (castingRef.current && !listenHostRef.current) {
+      if (castFollowIdRef.current === localCurrent.id) {
+        castFollowIdRef.current = null; // the receiver got here on its own
+      } else {
+        const at = pendingSeekRef.current ?? 0;
+        pendingSeekRef.current = null;
+        castExpectRef.current = { trackId: localCurrent.id, until: Date.now() + 8000 };
+        if (at > 0 || !castJumpTo(localCurrent.id)) void castLoadFrom(indexRef.current, at, true);
+      }
+      onTrackStarted(localCurrent, 0);
+      return;
     }
+    if (!handed) {
+      // Skipping to the track that's already buffered reuses that deck.
+      const pre = preloadRef.current;
+      const reused =
+        !!pre && pre.trackId === localCurrent.id && !listenHostRef.current && swapToPreload();
+      if (!reused) loadLocal(localCurrent, 0, true);
+    }
+    onTrackStarted(localCurrent, handed ? audioRef.current?.currentTime ?? 0 : 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localCurrent?.id]);
 
@@ -351,7 +1007,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const broadcastChorus = useCallback(() => {
     const c = chorusRef.current;
     if (!c || !c.isHost) return; // only the host publishes truth
-    const positionMs = Math.round((audioRef.current?.currentTime ?? 0) * 1000);
+    const positionMs = Math.round(posSec() * 1000);
     const atServerMs = clock.serverNow(); // when that position was true (null until synced)
     api
       .post("/api/chorus/state", {
@@ -362,7 +1018,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         ...(atServerMs != null ? { atServerMs } : {}),
       })
       .catch(() => {});
-  }, []);
+  }, [posSec]);
 
   const sendCommand = useCallback((patch: ChorusPatch) => {
     api.post("/api/chorus/command", patch).catch(() => {});
@@ -399,7 +1055,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         if (p.positionMs != null) tPos = p.positionMs;
         if (p.playing != null) tPlaying = p.playing;
       }
-      const audio = audioRef.current;
       const localIds = queueRef.current.map((t) => t.id);
       if (tQueue && tQueue.join(",") !== localIds.join(",")) {
         const resolved = await resolveTracks(tQueue, c);
@@ -419,24 +1074,24 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           pendingSeekRef.current = (tPos ?? 0) / 1000;
           setQueue(resolved);
           setIndex(Math.min(Math.max(tIndex ?? 0, 0), resolved.length - 1));
-          if (tPlaying === false) setTimeout(() => audio?.pause(), 100);
+          if (tPlaying === false) setTimeout(() => doPause(), 100);
         }
-      } else if (audio) {
+      } else {
         if (tIndex != null && tIndex !== indexRef.current && tIndex >= 0 && tIndex < queueRef.current.length) {
           pendingSeekRef.current = (tPos ?? 0) / 1000;
           setIndex(tIndex);
         } else if (tPos != null) {
-          audio.currentTime = tPos / 1000;
+          doSeek(tPos / 1000);
         }
         if (tPlaying != null) {
-          if (tPlaying && audio.paused) audio.play().catch(() => {});
-          if (!tPlaying && !audio.paused) audio.pause();
+          if (tPlaying && isPaused()) doPlay();
+          if (!tPlaying && !isPaused()) doPause();
         }
       }
       // Broadcast the resulting truth (after refs/audio settle).
       setTimeout(() => broadcastChorus(), 150);
     },
-    [broadcastChorus, resolveTracks],
+    [broadcastChorus, resolveTracks, doPause, doSeek, doPlay, isPaused],
   );
 
   const onChorusEnded = useCallback(() => {
@@ -462,6 +1117,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         // Approved member — silence local audio and mirror the host.
         const audio = audioRef.current;
         if (!wasMember && audio && !audio.paused) audio.pause();
+        if (!wasMember) {
+          finishFade();
+          dropPreload();
+          if (castingRef.current) {
+            castingRef.current = false; // a member's device plays nothing
+            endCastSession();
+          }
+        }
         // Extrapolate from when the host's position was true, using our
         // server-clock estimate when we have one (also covers transit time);
         // otherwise the server's clock at response time.
@@ -472,7 +1135,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         setMemberPos(memberBaseMsRef.current);
       }
     },
-    [applyHostCommands],
+    [applyHostCommands, finishFade, dropPreload],
   );
 
   const startChorusLoop = useCallback(() => {
@@ -604,11 +1267,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       sendCommand({ playing: !c.playing, positionMs: memberPositionMs() });
       return;
     }
-    const audio = audioRef.current;
-    if (!audio || !localCurrent) return;
-    if (audio.paused) audio.play().catch(() => {});
-    else audio.pause();
-  }, [localCurrent, memberNow, sendCommand, memberPositionMs]);
+    if (!localCurrent) return;
+    if (isPaused()) doPlay();
+    else doPause();
+  }, [localCurrent, memberNow, sendCommand, memberPositionMs, isPaused, doPlay, doPause]);
 
   const next = useCallback(() => {
     if (memberNow()) {
@@ -630,14 +1292,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       else sendCommand({ index: (c.index - 1 + n) % n, positionMs: 0, playing: true });
       return;
     }
-    const audio = audioRef.current;
-    if (audio && audio.currentTime > 3) {
-      audio.currentTime = 0;
+    if (posSec() > 3) {
+      doSeek(0);
+      broadcastChorus();
       return;
     }
     const target = advance(-1, true);
     if (target !== null) setIndex(target);
-  }, [advance, memberNow, sendCommand, memberPositionMs]);
+  }, [advance, memberNow, sendCommand, memberPositionMs, posSec, doSeek, broadcastChorus]);
 
   const seek = useCallback(
     (sec: number) => {
@@ -648,21 +1310,32 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         setMemberPos(memberBaseMsRef.current);
         return;
       }
-      if (audioRef.current) audioRef.current.currentTime = sec;
+      doSeek(sec);
       broadcastChorus(); // host: seek isn't a queue/index/playing change
     },
-    [memberNow, sendCommand, broadcastChorus],
+    [memberNow, sendCommand, broadcastChorus, doSeek],
   );
 
-  const setVolume = useCallback((v: number) => {
-    setVol(v);
-    if (audioRef.current) audioRef.current.volume = v;
-  }, []);
+  // The slider is the user volume; normalization and fades scale each deck
+  // underneath it. While casting it drives the receiver's volume instead.
+  const setVolume = useCallback(
+    (v: number) => {
+      v = Math.min(1, Math.max(0, v));
+      if (castingRef.current) {
+        castSetVolume(v);
+        return;
+      }
+      volRef.current = v;
+      setVol(v);
+      for (const d of decksRef.current) applyVolume(d);
+    },
+    [applyVolume],
+  );
 
   // Relative volume/seek used by the keyboard + mouse-wheel shortcuts.
   const nudgeVolume = useCallback(
     (delta: number) => {
-      const cur = audioRef.current?.volume ?? 1;
+      const cur = castingRef.current ? castSnapshot().volume : volRef.current;
       setVolume(Math.min(1, Math.max(0, cur + delta)));
     },
     [setVolume],
@@ -670,14 +1343,16 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   const nudgeSeek = useCallback(
     (deltaSec: number) => {
-      const base = memberNow() ? memberPositionMs() / 1000 : audioRef.current?.currentTime ?? 0;
-      const dur = audioRef.current?.duration ?? 0;
+      const base = memberNow() ? memberPositionMs() / 1000 : posSec();
+      const dur = castingRef.current
+        ? castSnapshot().duration
+        : audioRef.current?.duration ?? 0;
       let target = base + deltaSec;
       if (target < 0) target = 0;
       if (dur > 0 && target > dur) target = dur;
       seek(target);
     },
-    [memberNow, memberPositionMs, seek],
+    [memberNow, memberPositionMs, seek, posSec],
   );
 
   // App-wide keyboard shortcuts (web). Skipped while typing in a field so search
@@ -744,7 +1419,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (q.length <= 1) return;
     const upcomingUser: Track[] = [];
     const upcomingContext: Track[] = [];
-    for (let i = idx + 1; i < q.length; i++) (uq[i] ? upcomingUser : upcomingContext).push(q[i]);
+    const upcomingAuto: Track[] = []; // autoplay picks stay last, in their own section
+    for (let i = idx + 1; i < q.length; i++) {
+      if (uq[i]) upcomingUser.push(q[i]);
+      else if (autoplayTracksRef.current.has(q[i])) upcomingAuto.push(q[i]);
+      else upcomingContext.push(q[i]);
+    }
     if (upcomingContext.length > 1) {
       if (on) shuffleInPlace(upcomingContext);
       else {
@@ -752,11 +1432,12 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         upcomingContext.sort((a, b) => (orig.get(a.id) ?? 1e9) - (orig.get(b.id) ?? 1e9));
       }
     }
-    const newQ = [...q.slice(0, idx + 1), ...upcomingUser, ...upcomingContext];
+    const newQ = [...q.slice(0, idx + 1), ...upcomingUser, ...upcomingContext, ...upcomingAuto];
     userQRef.current = [
       ...uq.slice(0, idx + 1),
       ...upcomingUser.map(() => true),
       ...upcomingContext.map(() => false),
+      ...upcomingAuto.map(() => false),
     ];
     setQueue(newQ);
   }, []);
@@ -948,6 +1629,61 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     [isChorusMember],
   );
 
+  const isAutoplay = useCallback(
+    (i: number) => !isChorusMember && !!queue[i] && autoplayTracksRef.current.has(queue[i]),
+    [isChorusMember, queue],
+  );
+
+  // Quick toggle (queue panel). Off drops the upcoming autoplay picks; on fetches
+  // some right away if the current track is the last one.
+  const setAutoplay = useCallback(
+    (on: boolean) => {
+      try {
+        localStorage.setItem("set_autoplay", on ? "true" : "false");
+      } catch {
+        /* storage unavailable */
+      }
+      // Same path as the settings page: the listener re-reads and applies it.
+      window.dispatchEvent(
+        new CustomEvent(SETTINGS_EVENT, { detail: { key: "set_autoplay", value: on ? "true" : "false" } }),
+      );
+      if (settingsRef.current.autoplay !== on) {
+        // Storage unavailable: apply in memory.
+        settingsRef.current = { ...settingsRef.current, autoplay: on };
+        setAutoplayState(on);
+        applyAutoplayRef.current(on);
+      }
+    },
+    [],
+  );
+
+  // Side effects of autoplay turning on/off (queue switch or settings page).
+  const applyAutoplay = useCallback(
+    (on: boolean) => {
+      if (on) {
+        autoplayFetchRef.current = null;
+        maybeAutoplay();
+        return;
+      }
+      const q = queueRef.current;
+      const idx = indexRef.current;
+      const keep = q.map((t, i) => i <= idx || !autoplayTracksRef.current.has(t));
+      if (keep.every(Boolean)) return;
+      const nq = q.filter((_, i) => keep[i]);
+      userQRef.current = userQRef.current.filter((_, i) => keep[i]);
+      queueRef.current = nq;
+      setQueue(nq);
+    },
+    [maybeAutoplay],
+  );
+  useEffect(() => {
+    applyAutoplayRef.current = applyAutoplay;
+  }, [applyAutoplay]);
+
+  const requestCast = useCallback(() => {
+    void requestCastSession();
+  }, []);
+
   // --- Presence heartbeat ----------------------------------------------------
   // Post what we're playing every 12s, and immediately on track/play changes. A
   // member advertises the shared (chorus) track.
@@ -959,7 +1695,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       const t = member && c ? c.queue[c.index] ?? null : queueRef.current[indexRef.current];
       const positionMs = member
         ? memberPositionMs()
-        : Math.round((audioRef.current?.currentTime ?? 0) * 1000);
+        : Math.round(posSec() * 1000);
       // Server-clock time at which that position was true (null until synced).
       const atServerMs = clock.serverNow();
       api
@@ -975,7 +1711,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     post();
     const id = setInterval(post, 12_000);
     return () => clearInterval(id);
-  }, [localCurrent?.id, playing, chorus, memberNow, memberPositionMs]);
+  }, [localCurrent?.id, playing, chorus, memberNow, memberPositionMs, posSec]);
 
   // --- Listen along ----------------------------------------------------------
   const leaveChorus = useCallback(async () => {
@@ -992,6 +1728,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     (userId: string, name: string) => {
       // Listen-along is a personal follow — end our own hosted chorus first.
       if (chorusRef.current?.isHost) leaveChorus();
+      // Following plays on this device: hand any Chromecast back first, and
+      // drop any preloaded / fading next track.
+      if (castingRef.current) {
+        castingRef.current = false;
+        endCastSession();
+      }
+      finishFade();
+      dropPreload();
       savedSessionRef.current = {
         queue: queueRef.current,
         index: indexRef.current,
@@ -1000,7 +1744,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       restoreAfterCurrentRef.current = false;
       setListenHost({ id: userId, name });
     },
-    [leaveChorus],
+    [leaveChorus, finishFade, dropPreload],
   );
 
   const stopListenAlong = useCallback(() => {
@@ -1127,7 +1871,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
           mode,
           queue: ids,
           index: indexRef.current,
-          positionMs: Math.round((audioRef.current?.currentTime ?? 0) * 1000),
+          positionMs: Math.round(posSec() * 1000),
           playing: playingRef.current,
         });
         chorusAutoStopRef.current = false;
@@ -1139,7 +1883,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         /* ignore */
       }
     },
-    [startChorusLoop],
+    [startChorusLoop, posSec],
   );
 
   const setChorusMode = useCallback(async (mode: "open" | "ask") => {
@@ -1181,8 +1925,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const exposedQueue = isChorusMember ? chorus!.queue : queue;
   const exposedIndex = isChorusMember ? chorus!.index : index;
   const exposedPlaying = isChorusMember ? chorus!.playing : playing;
-  const exposedPosition = isChorusMember ? memberPos / 1000 : position;
-  const exposedDuration = isChorusMember ? exposedCurrent?.duration ?? 0 : duration;
+  const casting = castSnap.state === "connected" && !isChorusMember;
+  const exposedPosition = isChorusMember ? memberPos / 1000 : casting ? castSnap.position : position;
+  const exposedDuration = isChorusMember
+    ? exposedCurrent?.duration ?? 0
+    : casting
+      ? castSnap.duration || exposedCurrent?.duration || 0
+      : duration;
 
   return (
     <PlayerContext.Provider
@@ -1193,7 +1942,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         playing: exposedPlaying,
         position: exposedPosition,
         duration: exposedDuration,
-        volume,
+        volume: casting ? castSnap.volume : volume,
         repeat,
         shuffle,
         lyrics,
@@ -1230,6 +1979,13 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         approveChorus,
         denyChorus,
         removeFromChorus,
+        autoplay,
+        setAutoplay,
+        isAutoplay,
+        castState: castSnap.state,
+        casting,
+        castDevice: castSnap.deviceName,
+        requestCast,
       }}
     >
       {children}

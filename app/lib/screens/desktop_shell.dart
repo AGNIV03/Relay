@@ -3,15 +3,18 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:material_symbols_icons/symbols.dart';
 import 'package:provider/provider.dart';
 import '../api.dart';
 import '../app_icons.dart';
 import '../app_state.dart';
+import '../cast/cast_ui.dart';
 import '../events.dart';
 import '../models.dart';
 import '../player.dart';
 import '../theme.dart';
 import '../widgets/cover.dart';
+import '../widgets/desktop_mini_mode.dart';
 import '../widgets/friends_panel.dart';
 import '../widgets/like_button.dart';
 import '../widgets/squiggly_progress.dart';
@@ -46,6 +49,21 @@ class _DesktopShellState extends State<DesktopShell> {
       List.generate(4, (_) => GlobalKey<NavigatorState>());
   // The open profile route, so the profile button doesn't stack duplicates.
   Route<dynamic>? _profileRoute;
+  // Compact always-on-top mini player. The full shell stays mounted (offstage,
+  // laid out at its last full size) so tabs / pages survive the round trip.
+  bool _mini = false;
+  Size _fullSize = const Size(1280, 800);
+
+  Future<void> _enterMini() async {
+    _fullSize = MediaQuery.sizeOf(context);
+    setState(() => _mini = true);
+    await DesktopMiniMode.enter();
+  }
+
+  Future<void> _exitMini() async {
+    await DesktopMiniMode.exit();
+    if (mounted) setState(() => _mini = false);
+  }
 
   void _toggleRight(String name) =>
       setState(() => _rightPanel = _rightPanel == name ? '' : name);
@@ -208,10 +226,7 @@ class _DesktopShellState extends State<DesktopShell> {
   @override
   Widget build(BuildContext context) {
     const pages = [HomeScreen(), SongsScreen(), ArtistsScreen(), PlaylistsScreen()];
-    return Focus(
-      autofocus: true,
-      onKeyEvent: _onKey,
-      child: Scaffold(
+    final shell = Scaffold(
       body: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -255,10 +270,33 @@ class _DesktopShellState extends State<DesktopShell> {
             onTogglePanel: _toggleRight,
             lyricsOpen: _showLyrics,
             onToggleLyrics: () => setState(() => _showLyrics = !_showLyrics),
+            onEnterMini: _enterMini,
           ),
         ],
       ),
-      ),
+    );
+    return Focus(
+      autofocus: true,
+      onKeyEvent: _onKey,
+      // Same tree shape in both modes so the shell's state is never rebuilt.
+      child: Stack(fit: StackFit.expand, children: [
+        Offstage(
+          offstage: _mini,
+          child: LayoutBuilder(builder: (context, c) {
+            final w = _mini ? _fullSize.width : c.maxWidth;
+            final h = _mini ? _fullSize.height : c.maxHeight;
+            return OverflowBox(
+              alignment: Alignment.topLeft,
+              minWidth: w,
+              maxWidth: w,
+              minHeight: h,
+              maxHeight: h,
+              child: shell,
+            );
+          }),
+        ),
+        if (_mini) Positioned.fill(child: DesktopMiniPlayer(onRestore: _exitMini)),
+      ]),
     );
   }
 }
@@ -445,11 +483,13 @@ class _DesktopPlayerBar extends StatelessWidget {
   final void Function(String) onTogglePanel;
   final bool lyricsOpen;
   final VoidCallback onToggleLyrics;
+  final VoidCallback onEnterMini;
   const _DesktopPlayerBar({
     required this.activePanel,
     required this.onTogglePanel,
     required this.lyricsOpen,
     required this.onToggleLyrics,
+    required this.onEnterMini,
   });
 
   String _fmt(Duration d) => "${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}";
@@ -517,7 +557,9 @@ class _DesktopPlayerBar extends StatelessWidget {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(color: kMuted, fontSize: 12)),
-                          if (_quality(track) != null)
+                          if (player.casting)
+                            const CastingLabel(fontSize: 10.5)
+                          else if (_quality(track) != null)
                             Text(_quality(track)!,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
@@ -615,6 +657,13 @@ class _DesktopPlayerBar extends StatelessWidget {
                       iconSize: 19,
                       icon: Icon(LucideIcons.lyrics, color: lyricsOpen ? kAccent : kMuted),
                       onPressed: onToggleLyrics,
+                    ),
+                    const CastButton(size: 19),
+                    IconButton(
+                      tooltip: 'Mini player',
+                      iconSize: 19,
+                      icon: const Icon(Symbols.picture_in_picture_alt, color: kMuted),
+                      onPressed: onEnterMini,
                     ),
                     const SizedBox(width: 4),
                     const Icon(LucideIcons.volume2, size: 18, color: kMuted),

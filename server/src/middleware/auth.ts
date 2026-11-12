@@ -48,35 +48,67 @@ export function getAuthState(userId: string): Promise<AuthState> {
   return state;
 }
 
+type Verified = { id: string; role: "ADMIN" | "USER" } | { status: number; error: string };
+
+/** Verify a token of one of `types` against the DB auth state (role + revocation). */
+async function authenticate(
+  token: string,
+  types: ReadonlyArray<"access" | "media">,
+): Promise<Verified> {
+  let payload;
+  try {
+    payload = verifyToken(token);
+  } catch {
+    return { status: 401, error: "Invalid or expired token" };
+  }
+  // Refresh tokens are never accepted here (only by POST /auth/refresh).
+  if (!(types as ReadonlyArray<string>).includes(payload.type)) {
+    return { status: 401, error: "Invalid token type" };
+  }
+  const state = await getAuthState(payload.sub);
+  if (!state || state.tokenVersion !== tokenVersionOf(payload)) {
+    return { status: 401, error: "Invalid or expired token" };
+  }
+  return { id: payload.sub, role: state.role };
+}
+
+function bearerToken(req: Request): string | undefined {
+  const header = req.headers.authorization;
+  return header?.startsWith("Bearer ") ? header.slice(7) : undefined;
+}
+
 /**
- * Reads a Bearer token from the Authorization header, OR a `?token=` query param
- * (the latter lets <audio>/<img> tags authenticate stream + cover URLs, which
- * cannot set headers).
+ * Requires an ACCESS token in the `Authorization: Bearer` header. A `?token=`
+ * query param is NOT accepted here (tokens in URLs leak into logs/history);
+ * only the media routes take one (requireMediaAuth).
  *
  * The token only proves identity; the role and validity come from the DB (via the
  * cache above): a token whose `tv` no longer matches User.tokenVersion has been
  * revoked (password change / sign out everywhere / role change).
  */
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const header = req.headers.authorization;
-  const headerToken = header?.startsWith("Bearer ") ? header.slice(7) : undefined;
-  const token = headerToken ?? (typeof req.query.token === "string" ? req.query.token : undefined);
-
+  const token = bearerToken(req);
   if (!token) return res.status(401).json({ error: "Authentication required" });
+  const v = await authenticate(token, ["access"]);
+  if ("error" in v) return res.status(v.status).json({ error: v.error });
+  req.user = { id: v.id, role: v.role };
+  next();
+}
 
-  let payload;
-  try {
-    payload = verifyToken(token);
-  } catch {
-    return res.status(401).json({ error: "Invalid or expired token" });
-  }
-  if (payload.type !== "access") return res.status(401).json({ error: "Invalid token type" });
-
-  const state = await getAuthState(payload.sub);
-  if (!state || state.tokenVersion !== tokenVersionOf(payload)) {
-    return res.status(401).json({ error: "Invalid or expired token" });
-  }
-  req.user = { id: payload.sub, role: state.role };
+/**
+ * Auth for the media routes (stream + covers), which <audio>/<img> tags load and
+ * so cannot send headers. Accepts a Bearer access token, or `?token=` holding a
+ * MEDIA token (POST /api/auth/media-token) — or, for app builds that predate
+ * media tokens, an access token.
+ */
+export async function requireMediaAuth(req: Request, res: Response, next: NextFunction) {
+  const header = bearerToken(req);
+  const query = typeof req.query.token === "string" ? req.query.token : undefined;
+  const token = header ?? query;
+  if (!token) return res.status(401).json({ error: "Authentication required" });
+  const v = await authenticate(token, header ? ["access"] : ["media", "access"]);
+  if ("error" in v) return res.status(v.status).json({ error: v.error });
+  req.user = { id: v.id, role: v.role };
   next();
 }
 

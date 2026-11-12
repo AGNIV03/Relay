@@ -55,6 +55,10 @@ import io.flutter.embedding.engine.dart.DartExecutor;
 import android.net.Uri;
 import android.util.Log;
 
+import androidx.core.content.FileProvider;
+
+import java.io.File;
+
 /**
  * AudioservicePlugin
  */
@@ -1136,6 +1140,44 @@ public class AudioServicePlugin implements FlutterPlugin, ActivityAware {
         return raw;
     }
 
+    // PATCH(relay): browse / queue / now-playing items for downloaded tracks carry
+    // file:// artwork (a cover saved next to the download). Android Auto and System
+    // UI run in other processes and can't open our private files, so the art
+    // showed blank. Rewrite those to content:// URIs from the app's
+    // CoverFileProvider (authority "<applicationId>.covers", declared in the app
+    // manifest) and grant the readers access. Anything else (server http art,
+    // existing content://) passes through untouched; on any failure the original
+    // URI is kept.
+    private static final String[] ART_READERS = {
+            "com.google.android.projection.gearhead", // Android Auto
+            "com.android.systemui",                   // media notification / QS player
+            "com.google.android.carassistant",        // Android Automotive (Google built-in)
+    };
+
+    private static String shareableArtUri(String artUri) {
+        if (artUri == null || !artUri.startsWith("file:")) return artUri;
+        Context context = AudioService.instance;
+        if (context == null) return artUri;
+        try {
+            String path = Uri.parse(artUri).getPath();
+            if (path == null) return artUri;
+            File file = new File(path);
+            if (!file.exists()) return artUri;
+            Uri content = FileProvider.getUriForFile(context, context.getPackageName() + ".covers", file);
+            for (String pkg : ART_READERS) {
+                try {
+                    context.grantUriPermission(pkg, content, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                } catch (Exception ignored) {
+                    // Package not installed on this device.
+                }
+            }
+            return content.toString();
+        } catch (Exception e) {
+            Log.w("RelayAA", "art uri not shareable: " + e);
+            return artUri;
+        }
+    }
+
     private static MediaMetadataCompat createMediaMetadata(Map<?, ?> rawMediaItem) {
        //noinspection unchecked
        return AudioService.instance.createMediaMetadata(
@@ -1145,7 +1187,7 @@ public class AudioServicePlugin implements FlutterPlugin, ActivityAware {
                 (String)rawMediaItem.get("artist"),
                 (String)rawMediaItem.get("genre"),
                 getLong(rawMediaItem.get("duration")),
-                (String)rawMediaItem.get("artUri"),
+                shareableArtUri((String)rawMediaItem.get("artUri")),
                 (Boolean)rawMediaItem.get("playable"),
                 (String)rawMediaItem.get("displayTitle"),
                 (String)rawMediaItem.get("displaySubtitle"),

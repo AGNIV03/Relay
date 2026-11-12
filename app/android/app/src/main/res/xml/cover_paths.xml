@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Files exposed by CoverFileProvider (content:// art for Android Auto).
+     Downloaded covers (stream_cover_<id>.jpg) live in Flutter's
+     getApplicationDocumentsDirectory(), which on Android is
+     Context.getDir("flutter") = <dataDir>/app_flutter, a sibling of filesDir
+     (<dataDir>/files). FileProvider canonicalizes the root, so "../app_flutter/"
+     resolves to exactly that directory (per user / profile). Nothing is readable
+     without an explicit per-URI grant: the provider isn't exported. -->
+<paths>
+    <files-path name="covers" path="../app_flutter/" />
+</paths>

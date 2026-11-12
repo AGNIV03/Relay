@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart' show ValueNotifier;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'events.dart';
+import 'feature_models.dart';
 import 'models.dart';
 
 /// Thin API client for the Stream server. Holds the base URL + tokens,
@@ -18,9 +20,24 @@ class Api {
   static const _kBase = 'server_url';
   static const _kAccess = 'access_token';
   static const _kRefresh = 'refresh_token';
+  static const _kMedia = 'media_token';
+  static const _kMediaExp = 'media_token_exp';
 
   bool get isLoggedIn => _access != null;
   String? get accessToken => _access;
+
+  // Media token: a long-lived (7 day), media-only JWT used as `?token=` on stream
+  // and cover URLs, so those URLs never carry the full access token. Null until
+  // fetched, or when the server predates media tokens (then the access token is
+  // used, as before).
+  String? _media;
+  DateTime? _mediaExp;
+  bool _mediaUnsupported = false; // server answered 404: old server, use access token
+  Future<void>? _mediaFetch; // single-flight
+
+  /// The token to put in media URLs: the media token when we have one, else the
+  /// access token (older server, or before the first fetch completes).
+  String? get _mediaQ => _media ?? _access;
 
   /// Bumps when the server refuses our refresh token (password changed, "sign
   /// out of all devices", role change, account deleted). AppState signs the user
@@ -32,6 +49,13 @@ class Api {
     baseUrl = p.getString(_kBase) ?? baseUrl;
     _access = p.getString(_kAccess);
     _refresh = p.getString(_kRefresh);
+    _media = p.getString(_kMedia);
+    final exp = p.getString(_kMediaExp);
+    _mediaExp = exp == null ? null : DateTime.tryParse(exp);
+    if (_media != null && (_mediaExp == null || _mediaExp!.isBefore(DateTime.now()))) {
+      _media = null; // expired while the app was closed
+      _mediaExp = null;
+    }
   }
 
   Future<void> _persist() async {
@@ -44,9 +68,54 @@ class Api {
   Future<void> clearTokens() async {
     _access = null;
     _refresh = null;
+    _media = null;
+    _mediaExp = null;
     final p = await SharedPreferences.getInstance();
     await p.remove(_kAccess);
     await p.remove(_kRefresh);
+    await p.remove(_kMedia);
+    await p.remove(_kMediaExp);
+  }
+
+  /// Make sure a usable media token is held: fetch one when there is none, when
+  /// it has less than a day left, or when [force]d (a media URL just got a 401).
+  /// Concurrent callers share one request. A 404 means the server predates media
+  /// tokens: media URLs then keep using the access token.
+  Future<void> ensureMediaToken({bool force = false}) {
+    if (_access == null || baseUrl.isEmpty) return Future.value();
+    if (!force) {
+      if (_mediaUnsupported) return Future.value();
+      final exp = _mediaExp;
+      if (_media != null &&
+          exp != null &&
+          exp.difference(DateTime.now()) > const Duration(days: 1)) {
+        return Future.value();
+      }
+    }
+    return _mediaFetch ??= _fetchMediaToken().whenComplete(() => _mediaFetch = null);
+  }
+
+  Future<void> _fetchMediaToken() async {
+    try {
+      final j = await _send('POST', '/api/auth/media-token');
+      if (j is Map && j['token'] is String) {
+        _media = j['token'] as String;
+        _mediaExp = DateTime.tryParse('${j['expiresAt']}')?.toLocal() ??
+            DateTime.now().add(const Duration(days: 6));
+        _mediaUnsupported = false;
+        final p = await SharedPreferences.getInstance();
+        await p.setString(_kMedia, _media!);
+        await p.setString(_kMediaExp, _mediaExp!.toUtc().toIso8601String());
+      }
+    } on ApiException catch (e) {
+      if (e.status == 404) {
+        _mediaUnsupported = true;
+        _media = null;
+        _mediaExp = null;
+      }
+    } catch (_) {
+      // Offline / transient: keep whatever we had and retry on the next call.
+    }
   }
 
   Uri _uri(String path) => Uri.parse('$baseUrl$path');
@@ -90,35 +159,68 @@ class Api {
     final body = jsonDecode(res.body);
     _access = body['accessToken'];
     _refresh = body['refreshToken'];
+    _media = null; // a new session: never reuse another login's media token
+    _mediaExp = null;
     await _persist();
+    unawaited(ensureMediaToken(force: true));
     return AppUser.fromJson(body['user']);
   }
 
-  Future<bool> _tryRefresh() async {
-    if (_refresh == null) return false;
-    final res = await http.post(
-      _uri('/api/auth/refresh'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'refreshToken': _refresh}),
-    );
+  // Single-flight refresh. Refresh tokens rotate (each one is single-use and
+  // reusing one revokes the whole family), so concurrent 401s must share ONE
+  // refresh call instead of racing several with the same token.
+  Future<bool>? _refreshing;
+
+  Future<bool> _tryRefresh() => _refreshing ??= _doRefresh().whenComplete(() => _refreshing = null);
+
+  /// Refresh after a request made with [usedAccess] got a 401. If another call
+  /// already rotated the pair since then, just retry with the new access token
+  /// instead of spending the (new) refresh token again.
+  Future<bool> _refreshAfter401(String? usedAccess) {
+    if (_refreshing != null) return _refreshing!;
+    if (_access != null && usedAccess != _access) return Future.value(true);
+    return _tryRefresh();
+  }
+
+  Future<bool> _doRefresh() async {
+    final token = _refresh;
+    if (token == null) return false;
+    final http.Response res;
+    try {
+      res = await http.post(
+        _uri('/api/auth/refresh'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'refreshToken': token}),
+      );
+    } catch (_) {
+      return false; // network failure: keep the tokens, try again later
+    }
     if (res.statusCode == 401) {
-      // The session was revoked server-side: the tokens are dead for good.
+      // The session was revoked server-side (or this refresh token was already
+      // used, which revokes its family): the tokens are dead for good.
       await clearTokens();
       sessionRevoked.value++;
       return false;
     }
     if (res.statusCode != 200) return false;
     final body = jsonDecode(res.body);
+    // Always persist the rotated pair: the old refresh token is now spent.
     _access = body['accessToken'];
-    _refresh = body['refreshToken'];
+    _refresh = body['refreshToken'] ?? _refresh;
     await _persist();
+    unawaited(ensureMediaToken());
     return true;
   }
 
-  /// Force a token refresh (used by media/download fetches that put the token in
-  /// the URL query and so bypass the normal 401-retry interceptor). Returns
-  /// whether a fresh access token is now available.
-  Future<bool> ensureFreshToken() => _tryRefresh();
+  /// Recover from a 401 on a media URL (stream / cover / download), which carry
+  /// the token in the query and so bypass the normal 401-retry interceptor:
+  /// refresh the access token, then force a new media token. Returns whether a
+  /// usable token is now available.
+  Future<bool> ensureFreshToken() async {
+    final ok = await _tryRefresh();
+    await ensureMediaToken(force: true);
+    return ok || _media != null;
+  }
 
   /// Changing the password revokes every session (all devices); the server hands
   /// THIS device a fresh token pair so it stays signed in.
@@ -137,6 +239,78 @@ class Api {
 
   /// Revoke every token for this account, on every device (including this one).
   Future<void> logoutAll() => _send('POST', '/api/auth/logout-all');
+
+  // ---- Invites / registration ----
+  /// Whether an invite code is usable on the server at [url] (doesn't consume it).
+  /// Returns null when the server can't be reached or answers unexpectedly.
+  static Future<bool?> checkInvite(String url, String code) async {
+    final base = normalizeServerUrl(url);
+    final c = code.trim();
+    if (base.isEmpty || c.isEmpty) return null;
+    try {
+      final res = await http
+          .get(Uri.parse('$base/api/auth/invite/${Uri.encodeComponent(c)}'))
+          .timeout(const Duration(seconds: 8));
+      if (res.statusCode == 404) return false;
+      if (res.statusCode != 200) return null;
+      return (jsonDecode(res.body) as Map)['valid'] == true;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Create an account with an invite code. Same response as [login]; the new
+  /// token pair is persisted exactly like a login.
+  Future<AppUser> register(String url, String code, String username, String password) async {
+    baseUrl = normalizeServerUrl(url);
+    final res = await http.post(
+      _uri('/api/auth/register'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'code': code.trim(), 'username': username, 'password': password}),
+    );
+    if (res.statusCode != 200 && res.statusCode != 201) {
+      throw ApiException(_errorMessage(res), status: res.statusCode);
+    }
+    final body = jsonDecode(res.body);
+    _access = body['accessToken'];
+    _refresh = body['refreshToken'];
+    await _persist();
+    return AppUser.fromJson(body['user']);
+  }
+
+  // ---- Scrobbling accounts (ListenBrainz / Last.fm) ----
+  Future<ScrobblingStatus> scrobbling() async =>
+      ScrobblingStatus.fromJson((await _get('/api/scrobbling') as Map).cast<String, dynamic>());
+
+  Future<ScrobblingStatus> connectListenBrainz(String token) async => ScrobblingStatus.fromJson(
+      (await _send('POST', '/api/scrobbling/listenbrainz', body: {'token': token.trim()}) as Map)
+          .cast<String, dynamic>());
+
+  Future<ScrobblingStatus> disconnectListenBrainz() async => ScrobblingStatus.fromJson(
+      (await _send('DELETE', '/api/scrobbling/listenbrainz') as Map).cast<String, dynamic>());
+
+  /// Begin Last.fm auth: the user approves [authUrl] in a browser, then we call
+  /// [completeLastfm] with [token].
+  Future<({String authUrl, String token})> startLastfm() async {
+    final j = await _send('POST', '/api/scrobbling/lastfm/start') as Map;
+    return (authUrl: j['authUrl'] as String, token: j['token'] as String);
+  }
+
+  Future<ScrobblingStatus> completeLastfm(String token) async => ScrobblingStatus.fromJson(
+      (await _send('POST', '/api/scrobbling/lastfm/complete', body: {'token': token}) as Map)
+          .cast<String, dynamic>());
+
+  Future<ScrobblingStatus> disconnectLastfm() async => ScrobblingStatus.fromJson(
+      (await _send('DELETE', '/api/scrobbling/lastfm') as Map).cast<String, dynamic>());
+
+  // ---- Grouped search ----
+  /// Songs / artists / albums / playlists matching [q].
+  Future<SearchResults> search(String q) async {
+    final t = q.trim();
+    if (t.isEmpty) return SearchResults.empty;
+    final j = await _get('/api/search?q=${Uri.encodeQueryComponent(t)}');
+    return j is Map ? SearchResults.fromJson(j.cast<String, dynamic>()) : SearchResults.empty;
+  }
 
   // ---- Privacy ----
   Future<({bool shareActivity, bool allowListenAlong})> privacy() async =>
@@ -226,8 +400,9 @@ class Api {
 
   // ---- Generic request helpers (with one refresh retry) ----
   Future<dynamic> _get(String path, {bool retry = true}) async {
+    final used = _access;
     final res = await http.get(_uri(path), headers: _headers);
-    if (res.statusCode == 401 && retry && await _tryRefresh()) {
+    if (res.statusCode == 401 && retry && await _refreshAfter401(used)) {
       return _get(path, retry: false);
     }
     if (res.statusCode >= 400) throw ApiException(_errorMessage(res), status: res.statusCode);
@@ -235,12 +410,13 @@ class Api {
   }
 
   Future<dynamic> _send(String method, String path, {Object? body, bool retry = true}) async {
+    final used = _access;
     final req = http.Request(method, _uri(path));
     req.headers.addAll(_headers);
     if (body != null) req.body = jsonEncode(body);
     final streamed = await http.Client().send(req);
     final res = await http.Response.fromStream(streamed);
-    if (res.statusCode == 401 && retry && await _tryRefresh()) {
+    if (res.statusCode == 401 && retry && await _refreshAfter401(used)) {
       return _send(method, path, body: body, retry: false);
     }
     if (res.statusCode >= 400) throw ApiException(_errorMessage(res), status: res.statusCode);
@@ -315,6 +491,26 @@ class Api {
   }
 
   // ---- Playback history / personal stats ----
+  /// A finished play (>= 50% or >= 4 min of a track >= 30 s), sent once per play.
+  /// [startedAt] = when this play began. Forwarded to ListenBrainz / Last.fm.
+  Future<void> scrobbleComplete(String trackId, DateTime startedAt) => _send(
+        'POST',
+        '/api/library/scrobble/complete',
+        body: {'trackId': trackId, 'startedAt': startedAt.toUtc().toIso8601String()},
+      );
+
+  /// Autoplay / radio: tracks similar to [seed], never any of [exclude].
+  Future<List<Track>> radio(String seed, {List<String> exclude = const [], int limit = 20}) async {
+    final qs = Uri(queryParameters: {
+      'seed': seed,
+      if (exclude.isNotEmpty) 'exclude': exclude.join(','),
+      'limit': '$limit',
+    }).query;
+    return (await _get('/api/library/radio?$qs') as List)
+        .map((e) => Track.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
   Future<void> scrobble(String trackId, {String? playlistId}) => _send(
         'POST',
         '/api/library/scrobble',
@@ -364,17 +560,25 @@ class Api {
 
   // ---- Uploads ----
   /// Upload local audio files (multipart). Server restricts to MP3/FLAC and
-  /// validates contents. Returns {added, failed, addedNames, failedNames}.
-  Future<Map<String, dynamic>> uploadTracks(List<String> paths, {bool retry = true}) async {
+  /// validates contents. Returns {added, failed, addedNames, failedNames, ...}.
+  /// [onProgress] reports (bytesSent, totalBytes) as the body streams out.
+  Future<Map<String, dynamic>> uploadTracks(List<String> paths,
+      {bool retry = true, void Function(int sent, int total)? onProgress}) async {
     final req = http.MultipartRequest('POST', _uri('/api/library/upload'));
     if (_access != null) req.headers['Authorization'] = 'Bearer $_access';
     for (final p in paths) {
       req.files.add(await http.MultipartFile.fromPath('files', p));
     }
-    final streamed = await req.send();
-    final res = await http.Response.fromStream(streamed);
+    final client = http.Client();
+    final http.Response res;
+    try {
+      final streamed = await client.send(_CountingRequest.multipart(req, onProgress));
+      res = await http.Response.fromStream(streamed);
+    } finally {
+      client.close();
+    }
     if (res.statusCode == 401 && retry && await _tryRefresh()) {
-      return uploadTracks(paths, retry: false);
+      return uploadTracks(paths, retry: false, onProgress: onProgress);
     }
     if (res.statusCode >= 400) throw ApiException(_errorMessage(res));
     return jsonDecode(res.body) as Map<String, dynamic>;
@@ -385,7 +589,9 @@ class Api {
   static const chunkThreshold = 90 * 1024 * 1024;
 
   /// Upload one large file in 64MB chunks (each under the CDN cap), then finalize.
-  Future<Map<String, dynamic>> uploadTrackChunked(String filePath, {bool retry = true}) async {
+  /// [onProgress] reports (bytesSent, fileSize) across all chunks.
+  Future<Map<String, dynamic>> uploadTrackChunked(String filePath,
+      {bool retry = true, void Function(int sent, int total)? onProgress}) async {
     const chunkSize = 64 * 1024 * 1024;
     final file = File(filePath);
     final size = await file.length();
@@ -397,17 +603,27 @@ class Api {
       for (var i = 0; i < total; i++) {
         final bytes = await raf.read(chunkSize);
         if (bytes.isEmpty) break;
-        final res = await http.post(
-          _uri('/api/library/upload/chunk?uploadId=$uploadId&index=$i'),
-          headers: {
-            'Content-Type': 'application/octet-stream',
-            if (_access != null) 'Authorization': 'Bearer $_access',
-          },
-          body: bytes,
-        );
+        final before = i * chunkSize;
+        final client = http.Client();
+        final http.Response res;
+        try {
+          final streamed = await client.send(_CountingRequest.bytes(
+            'POST',
+            _uri('/api/library/upload/chunk?uploadId=$uploadId&index=$i'),
+            bytes,
+            {
+              'Content-Type': 'application/octet-stream',
+              if (_access != null) 'Authorization': 'Bearer $_access',
+            },
+            onProgress == null ? null : (s, _) => onProgress(before + s, size),
+          ));
+          res = await http.Response.fromStream(streamed);
+        } finally {
+          client.close();
+        }
         if (res.statusCode == 401 && retry && await _tryRefresh()) {
           await raf.close();
-          return uploadTrackChunked(filePath, retry: false);
+          return uploadTrackChunked(filePath, retry: false, onProgress: onProgress);
         }
         if (res.statusCode >= 400) throw ApiException(_errorMessage(res));
       }
@@ -429,13 +645,23 @@ class Api {
   /// Upload any number of files reliably. Small files are grouped into size-capped
   /// multipart batches so a single request never exceeds the CDN's ~100MB body cap
   /// (uploading several lossless tracks in one request used to fail); large files
-  /// are chunked individually. Returns aggregated {added, failed, duplicates}.
-  Future<Map<String, dynamic>> uploadManyTracks(List<String> paths) async {
+  /// are chunked individually. Returns aggregated {added, failed, duplicates,
+  /// rejected, results} where `results` maps each path to its [UploadFileResult].
+  ///
+  /// [onFileProgress] reports (path, bytesSent, fileSize) per file (within a
+  /// multipart batch the bytes are apportioned in file order); [onFileDone]
+  /// fires once per file with its final outcome.
+  Future<Map<String, dynamic>> uploadManyTracks(
+    List<String> paths, {
+    void Function(String path, int sent, int total)? onFileProgress,
+    void Function(String path, UploadFileResult result)? onFileDone,
+  }) async {
     const batchBytes = 80 * 1024 * 1024;
     const batchCount = 25;
     var added = 0, failed = 0, duplicates = 0;
     // Files the server refused as broken (no playable audio etc.): {name, reason}.
     final rejected = <({String name, String reason})>[];
+    final results = <String, UploadFileResult>{};
     void merge(Map<String, dynamic> r) {
       added += (r['added'] ?? 0) as int;
       failed += (r['failed'] ?? 0) as int;
@@ -443,6 +669,49 @@ class Api {
       for (final e in (r['rejected'] as List?) ?? const []) {
         if (e is Map) {
           rejected.add((name: '${e['name'] ?? ''}', reason: '${e['reason'] ?? 'Rejected'}'));
+        }
+      }
+    }
+
+    void done(String path, UploadFileResult r) {
+      results[path] = r;
+      onFileDone?.call(path, r);
+    }
+
+    // Work out each file's outcome from a response's name lists. Names are
+    // consumed as they're matched, so two files with the same name both resolve.
+    void resolve(List<String> batch, Map<String, dynamic> r) {
+      List<String> names(String k) => [for (final n in (r[k] as List?) ?? const []) '$n'];
+      final addedN = names('addedNames');
+      final dupN = names('duplicateNames');
+      final failedN = names('failedNames');
+      final rej = [
+        for (final e in (r['rejected'] as List?) ?? const [])
+          if (e is Map) (name: '${e['name'] ?? ''}', reason: '${e['reason'] ?? 'Rejected'}'),
+      ];
+      final noNames = addedN.isEmpty && dupN.isEmpty && failedN.isEmpty && rej.isEmpty;
+      for (final p in batch) {
+        final n = _baseName(p);
+        final ri = rej.indexWhere((e) => e.name == n);
+        if (ri >= 0) {
+          done(p, UploadFileResult(n, UploadStatus.rejected, rej.removeAt(ri).reason));
+          failedN.remove(n);
+        } else if (addedN.remove(n)) {
+          done(p, UploadFileResult(n, UploadStatus.added));
+        } else if (dupN.remove(n)) {
+          done(p, UploadFileResult(n, UploadStatus.duplicate));
+        } else if (failedN.remove(n)) {
+          done(p, UploadFileResult(n, UploadStatus.failed));
+        } else if (noNames && batch.length == 1) {
+          // A response without name lists (older server): go by the counts.
+          final s = ((r['added'] ?? 0) as int) > 0
+              ? UploadStatus.added
+              : ((r['duplicates'] ?? 0) as int) > 0
+                  ? UploadStatus.duplicate
+                  : UploadStatus.failed;
+          done(p, UploadFileResult(n, s));
+        } else {
+          done(p, UploadFileResult(n, UploadStatus.failed));
         }
       }
     }
@@ -474,21 +743,52 @@ class Api {
     if (cur.isNotEmpty) batches.add(cur);
 
     for (final batch in batches) {
+      final fileBytes = batch.fold<int>(0, (a, p) => a + sizes[p]!);
+      void progress(int sent, int total) {
+        if (onFileProgress == null || total <= 0) return;
+        // The multipart body is the files in order plus a little framing: scale
+        // the bytes sent to file bytes and hand each file its share.
+        final scaled = sent * fileBytes / total;
+        var start = 0;
+        for (final p in batch) {
+          final sz = sizes[p]!;
+          onFileProgress(p, (scaled - start).clamp(0, sz).round(), sz);
+          start += sz;
+        }
+      }
+
       try {
-        merge(await uploadTracks(batch));
-      } catch (_) {
+        final r = await uploadTracks(batch, onProgress: progress);
+        merge(r);
+        resolve(batch, r);
+      } catch (e) {
         failed += batch.length;
+        for (final p in batch) {
+          done(p, UploadFileResult(_baseName(p), UploadStatus.failed, '$e'));
+        }
       }
     }
     for (final p in large) {
       try {
-        merge(await uploadTrackChunked(p));
-      } catch (_) {
+        final r = await uploadTrackChunked(p,
+            onProgress: onFileProgress == null ? null : (s, t) => onFileProgress(p, s, t));
+        merge(r);
+        resolve([p], r);
+      } catch (e) {
         failed += 1;
+        done(p, UploadFileResult(_baseName(p), UploadStatus.failed, '$e'));
       }
     }
-    return {'added': added, 'failed': failed, 'duplicates': duplicates, 'rejected': rejected};
+    return {
+      'added': added,
+      'failed': failed,
+      'duplicates': duplicates,
+      'rejected': rejected,
+      'results': results,
+    };
   }
+
+  static String _baseName(String path) => path.split(RegExp(r'[\\/]')).last;
 
   // ---- Likes / Liked Songs ----
   Future<List<String>> likedIds() async =>
@@ -549,10 +849,35 @@ class Api {
   Future<void> removeFromPlaylist(String playlistId, String trackId) =>
       _send('DELETE', '/api/playlists/$playlistId/tracks/$trackId');
 
+  /// Save a playlist's full new track order (owner or collaborator).
+  Future<void> reorderPlaylist(String playlistId, List<String> trackIds) =>
+      _send('PATCH', '/api/playlists/$playlistId/tracks/order', body: {'trackIds': trackIds});
+
+  /// Remove many tracks from a playlist at once. Returns how many were removed.
+  Future<int> removeManyFromPlaylist(String playlistId, List<String> trackIds) async {
+    final j = await _send('POST', '/api/playlists/$playlistId/tracks/remove',
+        body: {'trackIds': trackIds});
+    return (j is Map ? j['removed'] as int? : null) ?? trackIds.length;
+  }
+
+  /// Build a playlist from an M3U file, pasted "Artist - Title" lines, or a
+  /// Spotify playlist URL. [source] is 'm3u' | 'text' | 'spotify'.
+  Future<ImportResult> importPlaylist(
+      {required String name, required String source, String? content, String? url}) async {
+    final j = await _send('POST', '/api/playlists/import', body: {
+      'name': name,
+      'source': source,
+      'content': ?content,
+      'url': ?url,
+    });
+    notifyPlaylistsChanged();
+    return ImportResult.fromJson((j as Map).cast<String, dynamic>());
+  }
+
   // ---- Playlist cover art ----
   /// `v` busts the image cache after a regenerate/upload.
   String playlistCoverUrl(String id, [int v = 0]) =>
-      '$baseUrl/api/playlists/$id/cover?token=$_access&v=$v';
+      '$baseUrl/api/playlists/$id/cover?token=$_mediaQ&v=$v';
 
   Future<void> regeneratePlaylistCover(String id) =>
       _send('POST', '/api/playlists/$id/cover/regenerate');
@@ -629,10 +954,11 @@ class Api {
   /// the server's ~25s hold). Host polls also receive queued member commands.
   /// Returns null if no longer in a chorus.
   Future<ChorusState?> chorusPoll(int since) async {
+    final used = _access;
     final res = await http
         .get(_uri('/api/chorus/poll?since=$since'), headers: _headers)
         .timeout(const Duration(seconds: 35));
-    if (res.statusCode == 401 && await _tryRefresh()) {
+    if (res.statusCode == 401 && await _refreshAfter401(used)) {
       final r2 = await http
           .get(_uri('/api/chorus/poll?since=$since'), headers: _headers)
           .timeout(const Duration(seconds: 35));
@@ -703,10 +1029,17 @@ class Api {
       });
 
   // ---- Media URLs (token in query so the audio engine can authenticate) ----
-  String streamUrl(String trackId) => '$baseUrl/api/stream/$trackId?token=$_access';
+  // Built with the media token (see [ensureMediaToken]); falls back to the
+  // access token against an older server.
+  String streamUrl(String trackId) => '$baseUrl/api/stream/$trackId?token=$_mediaQ';
   String albumCoverUrl(String albumId) =>
-      '$baseUrl/api/stream/album/$albumId/cover?token=$_access';
-  String trackCoverUrl(String trackId) => '$baseUrl/api/stream/$trackId/cover?token=$_access';
+      '$baseUrl/api/stream/album/$albumId/cover?token=$_mediaQ';
+  String trackCoverUrl(String trackId) => '$baseUrl/api/stream/$trackId/cover?token=$_mediaQ';
+
+  /// A stream URL transcoded on the fly (e.g. `mp3` @ 320 kbps for a Chromecast
+  /// that can't decode the source file).
+  String transcodedStreamUrl(String trackId, {required String format, int bitrate = 320}) =>
+      '$baseUrl/api/stream/$trackId?token=$_mediaQ&format=$format&bitrate=$bitrate';
 }
 
 class ApiException implements Exception {
@@ -715,4 +1048,50 @@ class ApiException implements Exception {
   ApiException(this.message, {this.status});
   @override
   String toString() => message;
+}
+
+/// A request whose body streams from [_body], reporting bytes as the socket
+/// consumes them (upload progress bars).
+class _CountingRequest extends http.BaseRequest {
+  final Stream<List<int>> _body;
+  final void Function(int sent, int total)? _onProgress;
+
+  _CountingRequest(super.method, super.url, this._body, int length, this._onProgress,
+      {Map<String, String> headers = const {}}) {
+    this.headers.addAll(headers);
+    contentLength = length;
+  }
+
+  /// Wrap a multipart request (finalizing it sets its boundary content-type).
+  factory _CountingRequest.multipart(
+      http.MultipartRequest m, void Function(int sent, int total)? onProgress) {
+    final body = m.finalize();
+    return _CountingRequest(m.method, m.url, body, m.contentLength, onProgress,
+        headers: m.headers);
+  }
+
+  /// Send [bytes] in 64KB slices so progress moves smoothly.
+  factory _CountingRequest.bytes(String method, Uri url, List<int> bytes,
+      Map<String, String> headers, void Function(int sent, int total)? onProgress) {
+    const slice = 64 * 1024;
+    Stream<List<int>> slices() async* {
+      for (var i = 0; i < bytes.length; i += slice) {
+        yield bytes.sublist(i, i + slice > bytes.length ? bytes.length : i + slice);
+      }
+    }
+
+    return _CountingRequest(method, url, slices(), bytes.length, onProgress, headers: headers);
+  }
+
+  @override
+  http.ByteStream finalize() {
+    super.finalize();
+    final total = contentLength ?? -1;
+    var sent = 0;
+    return http.ByteStream(_body.map((chunk) {
+      sent += chunk.length;
+      _onProgress?.call(sent, total);
+      return chunk;
+    }));
+  }
 }

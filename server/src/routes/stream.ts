@@ -4,7 +4,7 @@ import path from "node:path";
 import { pipeline } from "node:stream";
 import { prisma } from "../lib/prisma.js";
 import { qstr, qnum } from "../lib/query.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireMediaAuth } from "../middleware/auth.js";
 import { transcodeStream, CONTENT_TYPE, type TranscodeOptions } from "../services/transcode.js";
 
 const router = Router();
@@ -45,7 +45,7 @@ function releaseTranscode(userId: string) {
  * or the inclusive byte span. Supports `a-b`, `a-` and suffix `-n` (last n bytes);
  * an end past EOF is clamped to the last byte.
  */
-function parseRange(
+export function parseRange(
   header: string | undefined,
   total: number,
 ): { start: number; end: number } | "unsatisfiable" | null {
@@ -69,7 +69,7 @@ function parseRange(
 }
 
 /** GET /api/stream/album/:albumId/cover — album art (registered before /:trackId). */
-router.get("/album/:albumId/cover", requireAuth, async (req, res) => {
+router.get("/album/:albumId/cover", requireMediaAuth, async (req, res) => {
   const album = await prisma.album.findUnique({ where: { id: String(req.params.albumId) } });
   if (!album?.coverPath) return res.status(404).end();
   const { env } = await import("../lib/env.js");
@@ -83,8 +83,11 @@ router.get("/album/:albumId/cover", requireAuth, async (req, res) => {
  *   ?format=mp3|opus|aac & bitrate=128   -> transcode on the fly
  *   (no params)                          -> direct file with HTTP Range support
  */
-router.get("/:trackId", requireAuth, async (req, res) => {
-  const track = await prisma.track.findUnique({ where: { id: String(req.params.trackId) } });
+router.get("/:trackId", requireMediaAuth, async (req, res) => {
+  const track = await prisma.track.findUnique({
+    where: { id: String(req.params.trackId) },
+    select: { path: true },
+  });
   if (!track) return res.status(404).json({ error: "Track not found" });
 
   try {
@@ -154,7 +157,7 @@ router.get("/:trackId", requireAuth, async (req, res) => {
 });
 
 /** GET /api/stream/:trackId/cover — album art for the track (no auth-in-header friendly). */
-router.get("/:trackId/cover", requireAuth, async (req, res) => {
+router.get("/:trackId/cover", requireMediaAuth, async (req, res) => {
   const track = await prisma.track.findUnique({
     where: { id: String(req.params.trackId) },
     include: { album: true },

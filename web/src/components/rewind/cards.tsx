@@ -16,6 +16,7 @@ import {
   Radio,
   RefreshCw,
   Repeat,
+  Share2,
   Sparkles,
   Star,
   type LucideIcon,
@@ -23,6 +24,7 @@ import {
 import { coverUrl } from "@/lib/api";
 import { ACCENT, ACCENT2, ACCENT_INK, Curves, MONTHS, fmt, rgba, seeded, seg } from "./anim";
 import type { RewindData, RewindStats } from "./types";
+import { shareRewindCard } from "./share";
 
 export type Fx = "zoom" | "slideUp" | "swirl" | "slideSide";
 
@@ -736,6 +738,41 @@ function PersonalityBadge({ s }: { s: RewindStats }) {
   );
 }
 
+/** Renders the recap as a 1080x1920 PNG and shares (or downloads) it. */
+function ShareButton({ s }: { s: RewindStats }) {
+  const [state, setState] = useState<"idle" | "busy" | "saved" | "error">("idle");
+  async function onShare() {
+    if (state === "busy") return;
+    setState("busy");
+    try {
+      const { name, blurb } = personalityInfo(s);
+      const r = await shareRewindCard(s, { name, blurb });
+      setState(r === "downloaded" ? "saved" : "idle");
+    } catch {
+      setState("error");
+    }
+  }
+  return (
+    <button
+      type="button"
+      {...UI_ATTR}
+      onClick={onShare}
+      disabled={state === "busy"}
+      className="inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-white/10 disabled:opacity-60"
+      style={{ border: "1px solid rgba(255,255,255,0.54)" }}
+    >
+      <Share2 size={18} />
+      {state === "busy"
+        ? "Preparing…"
+        : state === "saved"
+          ? "Saved"
+          : state === "error"
+            ? "Try again"
+            : "Share"}
+    </button>
+  );
+}
+
 // ---------------------------------------------------------------- cards ----
 
 /** Stops a click inside the story from also counting as a tap-to-advance. */
@@ -1156,6 +1193,7 @@ export function buildCards(data: RewindData): CardDef[] {
                   <RefreshCw size={18} />
                   Replay
                 </button>
+                <ShareButton s={s} />
               </div>,
               rm,
             )}

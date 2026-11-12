@@ -9,6 +9,7 @@ import '../models.dart';
 import '../player.dart';
 import '../theme.dart';
 import '../widgets/playlist_actions.dart';
+import '../widgets/track_selection.dart';
 import '../widgets/track_sort.dart';
 import '../widgets/track_tile.dart';
 
@@ -21,7 +22,69 @@ class LikedSongsScreen extends StatefulWidget {
 
 class _LikedSongsScreenState extends State<LikedSongsScreen> {
   Future<Playlist> _load() => context.read<Api>().liked();
-  late final Future<Playlist> _future = _load();
+  late Future<Playlist> _future = _load();
+
+  // Multi-select: long-press a song (right-click on desktop too).
+  final Set<String> _selected = {};
+
+  void _toggleSelect(Track t) => setState(() {
+        if (!_selected.remove(t.id)) _selected.add(t.id);
+      });
+
+  String _songs(int n) => '$n ${n == 1 ? 'song' : 'songs'}';
+
+  List<Track> _picked(List<Track> shown) => shown.where((t) => _selected.contains(t.id)).toList();
+
+  Future<void> _bulkQueue(List<Track> shown) async {
+    final picked = _picked(shown);
+    final messenger = ScaffoldMessenger.of(context);
+    await context.read<PlayerModel>().addAllToQueue(picked);
+    messenger.showSnackBar(SnackBar(
+        content: Text('Added ${_songs(picked.length)} to the queue'),
+        duration: const Duration(seconds: 2)));
+    if (mounted) setState(_selected.clear);
+  }
+
+  Future<void> _bulkAddTo(List<Track> shown) async {
+    final picked = _picked(shown);
+    final api = context.read<Api>();
+    final messenger = ScaffoldMessenger.of(context);
+    final target = await pickPlaylist(context, title: 'Add ${_songs(picked.length)} to playlist');
+    if (target == null) return;
+    try {
+      final added = await api.addManyToPlaylist(target.id, [for (final t in picked) t.id]);
+      final skipped = picked.length - added;
+      messenger.showSnackBar(SnackBar(
+          content: Text('Added $added to ${target.name}'
+              '${skipped > 0 ? ' ($skipped already there)' : ''}')));
+      if (mounted) setState(_selected.clear);
+    } catch (_) {
+      messenger.showSnackBar(const SnackBar(content: Text("Couldn't add to playlist")));
+    }
+  }
+
+  /// Unlike the selection (there is no bulk endpoint; one call per song).
+  Future<void> _bulkUnlike(List<Track> shown) async {
+    final picked = _picked(shown);
+    final api = context.read<Api>();
+    final appState = context.read<AppState>();
+    final messenger = ScaffoldMessenger.of(context);
+    var removed = 0;
+    for (final t in picked) {
+      try {
+        await api.unlike(t.id);
+        removed++;
+      } catch (_) {}
+    }
+    await appState.reloadLiked();
+    messenger.showSnackBar(SnackBar(content: Text('Removed ${_songs(removed)} from Liked Songs')));
+    if (mounted) {
+      setState(() {
+        _selected.clear();
+        _future = _load();
+      });
+    }
+  }
 
   // Remembered shuffle toggle, like playlists. The key matches the offline copy
   // of Liked Songs (download source "liked"), so the setting follows it offline.
@@ -78,6 +141,7 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
             );
           }
           final totalSec = totalDurationSeconds(tracks.map((t) => t.duration));
+          final selecting = _selected.isNotEmpty;
           return Column(
             children: [
               // Cover header (matches the playlist detail layout).
@@ -111,6 +175,31 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
                   ),
                 ]),
               ),
+              if (selecting)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: SelectionBar(
+                    count: _selected.length,
+                    total: tracks.length,
+                    onClear: () => setState(_selected.clear),
+                    onSelectAll: () => setState(() {
+                      if (_selected.length == tracks.length) {
+                        _selected.clear();
+                      } else {
+                        _selected.addAll(tracks.map((t) => t.id));
+                      }
+                    }),
+                    actions: [
+                      SelectionAction(
+                          LucideIcons.addToQueue, 'Add to queue', () => _bulkQueue(tracks)),
+                      SelectionAction(
+                          LucideIcons.listPlus, 'Add to playlist', () => _bulkAddTo(tracks)),
+                      SelectionAction(LucideIcons.heart, 'Remove from Liked', () => _bulkUnlike(tracks),
+                          danger: true),
+                    ],
+                  ),
+                ),
+              if (!selecting)
               Padding(
                 padding: const EdgeInsets.fromLTRB(14, 8, 14, 10),
                 child: Row(children: [
@@ -132,7 +221,12 @@ class _LikedSongsScreenState extends State<LikedSongsScreen> {
               Expanded(
                 child: ListView.builder(
                   itemCount: tracks.length,
-                  itemBuilder: (context, i) => TrackTile(tracks: tracks, index: i),
+                  itemBuilder: (context, i) => TrackTile(
+                    tracks: tracks,
+                    index: i,
+                    selectedIds: _selected,
+                    onSelectToggle: _toggleSelect,
+                  ),
                 ),
               ),
             ],

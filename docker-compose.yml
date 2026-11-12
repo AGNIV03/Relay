@@ -42,6 +42,12 @@ services:
       # web app uses a same-origin /api proxy and native apps send no Origin, so
       # this only needs the public web origin (or can stay empty).
       CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # Optional integrations (empty = feature off). See .env.example.
+      ACOUSTID_API_KEY: ${ACOUSTID_API_KEY:-}
+      LASTFM_API_KEY: ${LASTFM_API_KEY:-}
+      LASTFM_API_SECRET: ${LASTFM_API_SECRET:-}
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
+      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
     volumes:
       - ${MUSIC_DIR}:/music # your audio library (writable — in-app uploads land here)
       - appdata:/data # extracted cover art, etc.
