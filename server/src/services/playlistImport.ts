@@ -179,6 +179,7 @@ function basic(s: string): string {
     .replace(/[̀-ͯ]/g, "") // strip accents
     .toLowerCase()
     .replace(/&/g, " and ")
+    .replace(/['‘’`]/g, "") // apostrophes join words: "Don't" == "Dont"
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim()
     .replace(/\s+/g, " ");

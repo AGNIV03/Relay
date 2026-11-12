@@ -133,11 +133,21 @@ class Api {
   static String normalizeServerUrl(String input) {
     var u = input.trim().replaceAll(RegExp(r'/+$'), '');
     if (u.isEmpty) return u;
-    if (!u.startsWith('http://') && !u.startsWith('https://')) u = 'https://$u';
-    final m = RegExp(r'^http://([^/:]+)').firstMatch(u);
+    // Scheme is case-insensitive ("HTTP://x"): normalize it before checking.
+    final scheme = RegExp(r'^(https?)://', caseSensitive: false).firstMatch(u);
+    if (scheme != null) {
+      u = '${scheme.group(1)!.toLowerCase()}://${u.substring(scheme.end)}';
+    } else {
+      u = 'https://$u';
+    }
+    // Host: a bracketed IPv6 literal ("[::1]") or up to the first ':' / '/'.
+    final m = RegExp(r'^http://(\[[^\]]*\]|[^/:]+)').firstMatch(u);
     if (m != null) {
-      final host = m.group(1)!;
+      final host = m.group(1)!.toLowerCase();
       final isLocal = host == 'localhost' ||
+          host == '[::1]' ||
+          host.startsWith('[fe80:') ||
+          host.startsWith('[fd') ||
           host.endsWith('.local') ||
           RegExp(r'^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)').hasMatch(host);
       if (!isLocal) u = u.replaceFirst('http://', 'https://');

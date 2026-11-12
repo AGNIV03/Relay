@@ -36,6 +36,13 @@ void main() {
       expect(Api.normalizeServerUrl('http://172.32.0.1'), 'https://172.32.0.1');
       expect(Api.normalizeServerUrl('http://172.15.0.1'), 'https://172.15.0.1');
     });
+
+    test('scheme is case-insensitive and IPv6 literals are handled', () {
+      expect(Api.normalizeServerUrl('HTTP://relay.example.com'), 'https://relay.example.com');
+      expect(Api.normalizeServerUrl('HTTPS://relay.example.com/'), 'https://relay.example.com');
+      expect(Api.normalizeServerUrl('http://[::1]:4000'), 'http://[::1]:4000');
+      expect(Api.normalizeServerUrl('http://[2001:db8::1]:4000'), 'https://[2001:db8::1]:4000');
+    });
   });
 
   group('coverCacheKey', () {

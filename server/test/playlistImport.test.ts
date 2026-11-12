@@ -146,6 +146,8 @@ describe("normTitle", () => {
     same("Señorita", "senorita");
     same("Rock & Roll", "rock and roll");
     same("Don’t Stop", "Don't Stop"); // curly vs straight apostrophe
+    same("Don't Stop", "Dont Stop"); // apostrophe joins words, doesn't split them
+    assert.equal(normTitle("Don't Stop"), "dont stop");
     same("HELLO,  World!", "hello world");
   });
 

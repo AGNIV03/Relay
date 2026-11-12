@@ -17,7 +17,8 @@ const _labels = {
 };
 
 /// Sort [tracks] by [order] (stable copy). [addedAt] maps trackId to when it was
-/// added to this list (used by [TrackOrder.added]; tracks without one sort last).
+/// added to this list (used by [TrackOrder.added]; tracks without one fall back to
+/// their library date, so with none at all they sort first ascending).
 List<Track> sortTracks(List<Track> tracks, TrackOrder order, bool asc,
     {Map<String, String?>? addedAt}) {
   if (order == TrackOrder.custom) return asc ? List.of(tracks) : tracks.reversed.toList();
