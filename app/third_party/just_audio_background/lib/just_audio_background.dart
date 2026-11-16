@@ -298,15 +298,19 @@ class _JustAudioBackgroundPlugin extends JustAudioPlatform {
   _JustAudioPlayer? _player;
   String? _playerId;
 
+  /// Relay patch: players created while the background player exists. They go
+  /// straight to the underlying platform (plain ExoPlayer: no media session,
+  /// notification or queue), e.g. the short overlap player of a crossfade.
+  /// Upstream throws "supports only a single player instance" here instead.
+  final Set<String> _secondaryIds = {};
+
   _JustAudioBackgroundPlugin();
 
   @override
   Future<AudioPlayerPlatform> init(InitRequest request) async {
-    if (_playerId != null) {
-      throw PlatformException(
-        code: "error",
-        message: "just_audio_background supports only a single player instance",
-      );
+    if (_playerId != null && _playerId != request.id) {
+      _secondaryIds.add(request.id);
+      return _platform.init(request);
     }
     _playerId = request.id;
     _player ??= _JustAudioPlayer(initRequest: request);
@@ -316,6 +320,9 @@ class _JustAudioBackgroundPlugin extends JustAudioPlatform {
   @override
   Future<DisposePlayerResponse> disposePlayer(
       DisposePlayerRequest request) async {
+    if (_secondaryIds.remove(request.id)) {
+      return _platform.disposePlayer(request);
+    }
     if (request.id == _playerId) {
       _playerId = null;
       final player = _player;
@@ -331,6 +338,12 @@ class _JustAudioBackgroundPlugin extends JustAudioPlatform {
     final player = _player;
     _player = null;
     await player?.release();
+    if (_secondaryIds.isNotEmpty) {
+      _secondaryIds.clear();
+      try {
+        await _platform.disposeAllPlayers(request);
+      } catch (_) {}
+    }
     return DisposeAllPlayersResponse();
   }
 }

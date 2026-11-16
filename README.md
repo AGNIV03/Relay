@@ -158,6 +158,7 @@ GET  /api/search?q=                              -> { tracks, albums, artists, p
 
 GET  /api/stream/:trackId                         direct, Range-aware
 GET  /api/stream/:trackId?format=mp3&bitrate=128  transcoded
+GET  /api/stream/:trackId?format=mp3&bitrate=320&start=42.5  transcoded from 42.5s (how clients seek a transcode)
 GET  /api/stream/:trackId/cover                   album art
 GET  /api/stream/album/:albumId/cover             album art
      (stream + cover routes, incl. /api/playlists/:id/cover, take ?token=<media token> so <audio>/<img>

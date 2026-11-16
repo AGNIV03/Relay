@@ -10,7 +10,8 @@ import 'api.dart';
 import 'auto_browse.dart';
 import 'cast/cast_controller.dart';
 import 'cast/cast_discovery.dart';
-import 'desktop_crossfade.dart';
+import 'cast/cast_format.dart';
+import 'crossfade_overlap.dart';
 import 'downloads.dart';
 import 'loudness.dart';
 import 'models.dart';
@@ -221,6 +222,13 @@ class PlayerModel extends ChangeNotifier {
     cast.onTrackChanged = _onCastTrackChanged;
     cast.onQueueFinished = _onCastQueueFinished;
     cast.onLost = _onCastLost;
+    // Normalization while casting: the receiver's stream volume per track.
+    cast.gainFor = (id) {
+      for (final t in _queue) {
+        if (t.id == id) return _normFactor(t);
+      }
+      return 1.0;
+    };
     cast.addListener(notifyListeners);
     // Stall watchdog: if we're "playing" but the position hasn't advanced and
     // we're not legitimately buffering, the stream likely dropped — reload it.
@@ -1246,6 +1254,7 @@ class PlayerModel extends ChangeNotifier {
     const order = [LoopMode.off, LoopMode.all, LoopMode.one];
     final next = order[(order.indexOf(_player.loopMode) + 1) % order.length];
     await _player.setLoopMode(next);
+    if (casting) cast.setRepeatSingle(next == LoopMode.one);
     notifyListeners();
     if (next == LoopMode.off) unawaited(_maybeAutoplay());
   }
@@ -1589,7 +1598,10 @@ class PlayerModel extends ChangeNotifier {
       }
       notifyListeners(); // the queue's autoplay switch
     }
-    if (_settings.normalize != _lastNormalize) _lastNormalize = _settings.normalize;
+    if (_settings.normalize != _lastNormalize) {
+      _lastNormalize = _settings.normalize;
+      if (casting) cast.reapplyGain();
+    }
     _applyVolume();
     _updateFadeTimer();
   }
@@ -1623,19 +1635,14 @@ class PlayerModel extends ChangeNotifier {
   }
 
   // ---- Fade / crossfade (fadeSeconds setting) ----
-  // Android: its backend supports only ONE AudioPlayer, so this is a fade-out
-  // over the last N seconds of a track and a short fade-in at the start of the
-  // next, on top of the gapless transition.
-  // Desktop: a true crossfade. A second libmpv player ([DesktopCrossfader])
-  // starts the next track N seconds early and fades in (equal power) while the
-  // engine fades out; after the engine advances it is seeked to the overlap
-  // player's position and takes back over with a short swap. Falls back to the
-  // plain fade if the overlap can't run (e.g. paused / seeked mid-overlap).
+  // A true crossfade on Android and desktop. A second player ([CrossfadeOverlap]:
+  // a plain ExoPlayer on Android, libmpv on desktop) starts the next track N
+  // seconds early and fades in (equal power) while the engine fades out; after
+  // the engine advances it is seeked to the overlap player's position and takes
+  // back over with a short swap. Falls back to a plain fade-out / fade-in if the
+  // overlap can't run (e.g. paused / seeked mid-overlap, repeat-one).
   // A 50 ms ticker runs only while playing with fading enabled.
-  final DesktopCrossfader? _xfade =
-      (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS))
-          ? DesktopCrossfader()
-          : null;
+  final CrossfadeOverlap? _xfade = CrossfadeOverlap.forPlatform();
   int? _xfadeFromIndex; // track whose ending started the overlap (one try per track)
   int? _xfadeToIndex;
   bool _xfadeHandoff = false;
@@ -1900,6 +1907,8 @@ class PlayerModel extends ChangeNotifier {
     final wasPlaying = cast.playing;
     _castTicker?.cancel();
     _castTicker = null;
+    _castSyncTimer?.cancel();
+    _castSyncSig = '';
     await cast.disconnect(stopApp: true);
     await _resumeLocalAfterCast(pos, wasPlaying && resume);
   }
@@ -1923,25 +1932,7 @@ class PlayerModel extends ChangeNotifier {
   /// 96 kHz, ALAC, WMA): those are sent transcoded to MP3 320 by the server.
   /// Formats it plays natively go as the original file.
   CastItem _castItem(Track t) {
-    final f = (t.format ?? '').toLowerCase();
-    final kbps = t.bitrate ?? 0;
-    String? ct;
-    switch (f) {
-      case 'mp3':
-        ct = 'audio/mpeg';
-      case 'aac':
-        ct = 'audio/aac';
-      case 'm4a' || 'mp4':
-        if (kbps > 0 && kbps <= 512) ct = 'audio/mp4'; // AAC (ALAC runs far higher)
-      case 'ogg' || 'oga' || 'opus':
-        ct = 'audio/ogg';
-      case 'webm':
-        ct = 'audio/webm';
-      case 'flac':
-        if (kbps > 0 && kbps <= 3300) ct = 'audio/flac'; // up to ~96 kHz / 24-bit
-      case 'wav':
-        if (kbps > 0 && kbps <= 4608) ct = 'audio/wav';
-    }
+    final ct = nativeCastType(t.format, t.bitrate);
     return CastItem(
       trackId: t.id,
       url: ct != null
@@ -1953,13 +1944,15 @@ class PlayerModel extends ChangeNotifier {
       album: t.albumTitle,
       imageUrl: api.trackCoverUrl(t.id),
       durationSecs: t.duration,
+      transcoded: ct == null,
     );
   }
 
   /// Load our queue from [i] (plus up to 9 upcoming tracks) on the receiver.
   void _castLoadFrom(int i, {Duration position = Duration.zero, bool autoplay = true}) {
     if (!casting || i < 0 || i >= _queue.length) return;
-    final end = math.min(i + 10, _queue.length);
+    final end = math.min(i + _castWindow, _queue.length);
+    _castSyncSig = '${_queue[i].id}|${[for (var k = i + 1; k < end; k++) _queue[k].id].join(',')}';
     cast.load([for (var k = i; k < end; k++) _castItem(_queue[k])],
         position: position, autoplay: autoplay, repeatSingle: _player.loopMode == LoopMode.one);
   }
@@ -1973,6 +1966,36 @@ class PlayerModel extends ChangeNotifier {
     notifyListeners();
     _broadcastChorus();
     _saveSession();
+  }
+
+  // Keep the receiver's upcoming items equal to ours (add / remove / reorder /
+  // shuffle / autoplay picks / the window moving on), without interrupting the
+  // current track. Driven from notifyListeners, debounced.
+  static const _castWindow = 10;
+  Timer? _castSyncTimer;
+  String _castSyncSig = '';
+
+  @override
+  void notifyListeners() {
+    super.notifyListeners();
+    if (casting) _scheduleCastSync();
+  }
+
+  void _scheduleCastSync() {
+    if (_index < 0 || _index >= _queue.length) return;
+    final end = math.min(_index + _castWindow, _queue.length);
+    final sig = '${_queue[_index].id}|${[for (var k = _index + 1; k < end; k++) _queue[k].id].join(',')}';
+    if (sig == _castSyncSig) return;
+    _castSyncTimer?.cancel();
+    _castSyncTimer = Timer(const Duration(milliseconds: 700), () {
+      if (!casting || _index >= _queue.length) return;
+      // Only once the receiver is on our current track (a load may be landing).
+      if (cast.currentTrackId != _queue[_index].id) return;
+      final e = math.min(_index + _castWindow, _queue.length);
+      _castSyncSig =
+          '${_queue[_index].id}|${[for (var k = _index + 1; k < e; k++) _queue[k].id].join(',')}';
+      unawaited(cast.syncUpcoming([for (var k = _index + 1; k < e; k++) _castItem(_queue[k])]));
+    });
   }
 
   void _onCastTrackChanged(String id) {
@@ -2011,6 +2034,8 @@ class PlayerModel extends ChangeNotifier {
   void _onCastLost() {
     _castTicker?.cancel();
     _castTicker = null;
+    _castSyncTimer?.cancel();
+    _castSyncSig = '';
     _resumeLocalAfterCast(_castLastPos, false);
   }
 
@@ -2232,6 +2257,7 @@ class PlayerModel extends ChangeNotifier {
     _settings.removeListener(_onSettingsChanged);
     _fadeTimer?.cancel();
     _castTicker?.cancel();
+    _castSyncTimer?.cancel();
     _volumeSaveTimer?.cancel();
     _xfade?.dispose();
     cast.removeListener(notifyListeners);

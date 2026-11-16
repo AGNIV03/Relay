@@ -34,6 +34,14 @@ describe("playback settings", () => {
     assert.equal(loadPlaybackSettings().fadeSeconds, 0);
   });
 
+  it('treat "0" as off like "false" (same rule the player uses)', () => {
+    storage.setItem("set_autoplay", "0");
+    storage.setItem("set_normalize", "1");
+    const s = loadPlaybackSettings();
+    assert.equal(s.autoplay, false);
+    assert.equal(s.normalize, true);
+  });
+
   it("saving persists and notifies the player in this tab", () => {
     const seen: unknown[] = [];
     const onEvent = (e: Event) => seen.push((e as CustomEvent).detail);

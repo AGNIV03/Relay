@@ -118,11 +118,14 @@ class CastDiscovery {
     }
   }
 
-  // Windows sockets don't support SO_REUSEPORT (Dart prints an error for it).
+  // Dart supports SO_REUSEPORT on neither Windows nor Android (it ignores the
+  // flag and logs a "Dart Socket ERROR"); SO_REUSEADDR alone shares port 5353.
   static Future<RawDatagramSocket> _bind(dynamic host, int port,
           {bool reuseAddress = true, bool reusePort = false, int ttl = 1}) =>
       RawDatagramSocket.bind(host, port,
-          reuseAddress: reuseAddress, reusePort: Platform.isWindows ? false : reusePort, ttl: ttl);
+          reuseAddress: reuseAddress,
+          reusePort: (Platform.isWindows || Platform.isAndroid) ? false : reusePort,
+          ttl: ttl);
 
   // IPv4, non-loopback interfaces only: joining the multicast group on some
   // virtual / cellular interfaces throws and would abort the whole scan.

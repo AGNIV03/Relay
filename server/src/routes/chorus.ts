@@ -59,7 +59,8 @@ async function hydrate(userId: string, drain = false) {
   });
   const nameById = new Map(users.map((u) => [u.id, u.username]));
 
-  const trackIds = [...new Set(c.queue)];
+  const pendingCaller = c.pending.has(userId) && !c.members.has(userId);
+  const trackIds = pendingCaller ? [] : [...new Set(c.queue)];
   const tracks = trackIds.length
     ? await prisma.track.findMany({
         where: { id: { in: trackIds } },
@@ -71,6 +72,30 @@ async function hydrate(userId: string, drain = false) {
   const isHost = c.hostId === userId;
   const isPending = c.pending.has(userId) && !c.members.has(userId);
   const ref = (id: string) => ({ id, username: nameById.get(id) ?? "?" });
+  if (isPending) {
+    // Not approved yet: just enough for the "waiting for approval" state —
+    // no queue, playback position or member list until the host says yes.
+    return {
+      hostId: c.hostId,
+      hostName: nameById.get(c.hostId) ?? "?",
+      mode: c.mode,
+      isHost: false,
+      isPending: true,
+      members: [],
+      pending: [],
+      queue: [],
+      queueIds: [],
+      index: 0,
+      positionMs: 0,
+      playing: false,
+      updatedAt: c.updatedAt,
+      controllerId: c.hostId,
+      controllerName: nameById.get(c.hostId) ?? "?",
+      version: c.version,
+      serverNow: Date.now(),
+      commands: [],
+    };
+  }
   return {
     hostId: c.hostId,
     hostName: nameById.get(c.hostId) ?? "?",

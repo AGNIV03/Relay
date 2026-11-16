@@ -44,6 +44,64 @@ describe("chorus membership", () => {
     assert.equal(chorus.approve(host, b), false, "can't approve a denied request");
   });
 
+  it("a pending requester can poll their request (and stays pending while polling)", () => {
+    const [host, a] = ids("host", "a");
+    const c = chorus.startChorus(host, "ask", [], 0, 0, false);
+    chorus.joinChorus(a, host);
+    assert.equal(chorus.getChorusForUser(a), c, "requesters see the chorus they asked to join");
+    assert.equal(chorus.chorusHostOf(a), null, "...but are still not members");
+    chorus.approve(host, a);
+    assert.equal(chorus.getChorusForUser(a), c);
+    assert.equal(chorus.chorusHostOf(a), host);
+  });
+
+  it("a user has at most one outstanding request; asking another host withdraws it", () => {
+    const [h1, h2, a] = ids("h1", "h2", "a");
+    const c1 = chorus.startChorus(h1, "ask", [], 0, 0, false);
+    const c2 = chorus.startChorus(h2, "ask", [], 0, 0, false);
+    chorus.joinChorus(a, h1);
+    chorus.joinChorus(a, h2);
+    assert.ok(!c1.pending.has(a), "first request withdrawn");
+    assert.ok(c2.pending.has(a));
+    assert.equal(chorus.approve(h1, a), false, "a withdrawn request can't be approved");
+    assert.equal(chorus.approve(h2, a), true);
+    assert.ok(!c1.members.has(a) && c2.members.has(a), "member of exactly one chorus");
+  });
+
+  it("joining an open chorus withdraws a pending request elsewhere", () => {
+    const [h1, h2, a] = ids("h1", "h2", "a");
+    const c1 = chorus.startChorus(h1, "ask", [], 0, 0, false);
+    chorus.startChorus(h2, "open", [], 0, 0, false);
+    chorus.joinChorus(a, h1);
+    assert.equal(chorus.joinChorus(a, h2), "joined");
+    assert.ok(!c1.pending.has(a));
+    assert.equal(chorus.chorusHostOf(a), h2);
+  });
+
+  it("starting your own chorus or leaving cancels a pending request", () => {
+    const [h1, a, b] = ids("h1", "a", "b");
+    const c1 = chorus.startChorus(h1, "ask", [], 0, 0, false);
+    chorus.joinChorus(a, h1);
+    chorus.startChorus(a, "open", [], 0, 0, false);
+    assert.ok(!c1.pending.has(a));
+    assert.equal(chorus.getChorusForUser(a)?.hostId, a);
+    chorus.joinChorus(b, h1);
+    chorus.leaveChorus(b);
+    assert.ok(!c1.pending.has(b));
+    assert.equal(chorus.getChorusForUser(b), undefined);
+  });
+
+  it("a denied or host-ended request stops resolving for the requester", () => {
+    const [h1, a, b] = ids("h1", "a", "b");
+    chorus.startChorus(h1, "ask", [], 0, 0, false);
+    chorus.joinChorus(a, h1);
+    chorus.joinChorus(b, h1);
+    chorus.deny(h1, a);
+    assert.equal(chorus.getChorusForUser(a), undefined);
+    chorus.endChorus(h1);
+    assert.equal(chorus.getChorusForUser(b), undefined);
+  });
+
   it("joining a missing chorus reports notfound", () => {
     const [m] = ids("m");
     assert.equal(chorus.joinChorus(m, "nobody-hosting"), "notfound");

@@ -30,6 +30,9 @@ import {
   castPause,
   castSeek,
   castSetVolume,
+  setCastGain,
+  castReapplyGain,
+  nativeCastType,
   endCastSession,
   requestCastSession,
   type CastItem,
@@ -38,6 +41,12 @@ import {
 } from "@/lib/cast";
 import type { Track, Lyrics, HostActivity, ChorusState, ChorusPatch } from "@/lib/types";
 import { normFactor } from "@/lib/loudness";
+import {
+  SETTINGS_EVENT,
+  loadPlaybackSettings,
+  savePlaybackSetting,
+  type PlaybackSettings,
+} from "@/lib/prefs2";
 
 export type RepeatMode = "off" | "all" | "one";
 
@@ -58,38 +67,9 @@ export interface PlayOptions {
 const DRIFT_SYNCED_SEC = 0.7;
 const DRIFT_UNSYNCED_SEC = 2;
 
-// ---- Playback settings (shared with the settings page via localStorage) ----
-/** CustomEvent ({detail: {key, value}}) fired on window after a playback setting
- *  changes in this tab (the `storage` event only reaches other tabs). */
-export const SETTINGS_EVENT = "relay-settings";
-
-interface PlaybackSettings {
-  autoplay: boolean;
-  normalize: boolean;
-  fadeSeconds: number;
-}
-
-function readSettings(): PlaybackSettings {
-  const get = (k: string) => {
-    try {
-      return localStorage.getItem(k);
-    } catch {
-      return null;
-    }
-  };
-  const bool = (k: string, def: boolean) => {
-    const v = get(k);
-    if (v == null) return def;
-    return !(v === "false" || v === "0");
-  };
-  const fade = Number(get("set_fade_seconds") ?? 0);
-  return {
-    autoplay: bool("set_autoplay", true),
-    normalize: bool("set_normalize", true),
-    fadeSeconds: Number.isFinite(fade) ? Math.min(12, Math.max(0, fade)) : 0,
-  };
-}
-
+// ---- Playback settings: one reader/writer shared with the settings page ----
+// (lib/prefs2.ts). SETTINGS_EVENT fires in this tab; other tabs get `storage`.
+export { SETTINGS_EVENT };
 
 /** One of the two <audio> elements. The active one plays the current track; the
  *  other preloads the next track (gapless) or fades in over it (crossfade).
@@ -385,7 +365,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   // Re-read the playback settings (the settings page writes localStorage).
   const reloadSettings = useCallback(() => {
-    const s = readSettings();
+    const s = loadPlaybackSettings();
     const normChanged = s.normalize !== settingsRef.current.normalize;
     settingsRef.current = s;
     setAutoplayState(s.autoplay);
@@ -394,6 +374,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
         d.norm = normFactor(d.track, s.normalize);
         applyVolume(d);
       }
+      castReapplyGain(); // the receiver's stream volume, while casting
     }
   }, [applyVolume]);
 
@@ -792,16 +773,22 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
   // ---- Chromecast -------------------------------------------------------------
   const castItem = useCallback(
-    (t: Track): CastItem => ({
+    (t: Track): CastItem => {
+      // Formats the receiver decodes go as the original file (range-seekable);
+      // the rest (hi-res FLAC, ALAC, WMA...) as a 320k MP3 transcode.
+      const native = nativeCastType(t.format, t.bitrate);
+      return {
       trackId: t.id,
-      // Receivers choke on hi-res FLAC: ask for a 320k MP3 transcode.
-      url: streamUrl(t.id, { format: "mp3", bitrate: 320 }),
+      url: native ? streamUrl(t.id) : streamUrl(t.id, { format: "mp3", bitrate: 320 }),
+      contentType: native ?? "audio/mpeg",
+      transcoded: !native,
       title: t.title,
       artist: t.artist?.name ?? "",
       album: t.album?.title ?? "",
       cover: coverUrl(t.id),
       duration: t.duration || 0,
-    }),
+      };
+    },
     [],
   );
 
@@ -816,6 +803,14 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     },
     [castItem],
   );
+
+  // Normalization while casting: per-track gain as the receiver's stream volume.
+  useEffect(() => {
+    setCastGain((id) =>
+      normFactor(queueRef.current.find((t) => t.id === id) ?? null, settingsRef.current.normalize),
+    );
+    return () => setCastGain(null);
+  }, []);
 
   const adoptingRef = useRef(false);
   useEffect(() => {
@@ -953,13 +948,15 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, [finishFade]);
   const doSeek = useCallback(
     (sec: number) => {
-      if (castingRef.current) castSeek(sec);
-      else if (audioRef.current) {
+      if (castingRef.current) {
+        // A transcoded item can't be seeked on the receiver: reload it from sec.
+        if (!castSeek(sec)) void castLoadFrom(indexRef.current, sec, !castSnapshot().paused);
+      } else if (audioRef.current) {
         finishFade();
         audioRef.current.currentTime = sec;
       }
     },
-    [finishFade],
+    [finishFade, castLoadFrom],
   );
 
   // Load + play whenever the LOCAL current track changes. A silent chorus member
@@ -1638,15 +1635,8 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   // some right away if the current track is the last one.
   const setAutoplay = useCallback(
     (on: boolean) => {
-      try {
-        localStorage.setItem("set_autoplay", on ? "true" : "false");
-      } catch {
-        /* storage unavailable */
-      }
       // Same path as the settings page: the listener re-reads and applies it.
-      window.dispatchEvent(
-        new CustomEvent(SETTINGS_EVENT, { detail: { key: "set_autoplay", value: on ? "true" : "false" } }),
-      );
+      savePlaybackSetting("autoplay", on);
       if (settingsRef.current.autoplay !== on) {
         // Storage unavailable: apply in memory.
         settingsRef.current = { ...settingsRef.current, autoplay: on };

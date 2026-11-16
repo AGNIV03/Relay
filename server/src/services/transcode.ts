@@ -4,6 +4,9 @@ import type { Readable } from "node:stream";
 export interface TranscodeOptions {
   format: "mp3" | "opus" | "aac";
   bitrate: number; // kbps
+  /** Start this many seconds into the track (seeking a non-seekable transcode
+   *  is done by re-requesting it from the new position). */
+  startSec?: number;
 }
 
 const FORMAT_ARGS: Record<TranscodeOptions["format"], string[]> = {
@@ -23,8 +26,8 @@ export const CONTENT_TYPE: Record<TranscodeOptions["format"], string> = {
  * encoded audio. Used when a client requests a different format/bitrate (e.g. a
  * phone on mobile data wants 128k mp3 instead of a 900k FLAC).
  *
- * Note: transcoded streams are not seekable via byte ranges — clients should
- * request the original file for scrubbing, or re-request to seek.
+ * Note: transcoded streams are not seekable via byte ranges — clients seek by
+ * re-requesting with `startSec` (ffmpeg input seek), or use the original file.
  *
  * Returns the child process; the caller pipes `.stdout` and MUST `.kill()` it when
  * the client disconnects, otherwise ffmpeg keeps running (orphaned) after abort.
@@ -42,6 +45,8 @@ export function transcodeStream(
     // make ffmpeg fetch from the network or read via other protocols.
     "-protocol_whitelist",
     "file",
+    // Input seek (before -i): fast, and sample-accurate for audio.
+    ...(opts.startSec && opts.startSec > 0 ? ["-ss", opts.startSec.toFixed(3)] : []),
     "-i",
     inputPath,
     "-vn", // drop embedded cover art / video streams

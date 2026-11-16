@@ -45,6 +45,12 @@ function releaseTranscode(userId: string) {
  * or the inclusive byte span. Supports `a-b`, `a-` and suffix `-n` (last n bytes);
  * an end past EOF is clamped to the last byte.
  */
+/** `?start=` for a transcode: seconds, clamped to 0..24h; junk means 0. */
+export function parseStartSec(v: unknown): number {
+  const n = typeof v === "string" ? Number(v) : NaN;
+  return Number.isFinite(n) ? Math.min(Math.max(n, 0), 86_400) : 0;
+}
+
 export function parseRange(
   header: string | undefined,
   total: number,
@@ -62,7 +68,11 @@ export function parseRange(
     end = total - 1;
   } else {
     start = parseInt(m[1], 10);
-    end = m[2] ? Math.min(parseInt(m[2], 10), total - 1) : total - 1;
+    const last = m[2] ? parseInt(m[2], 10) : Infinity;
+    // RFC 9110 §14.1.1: last-pos < first-pos is an invalid range spec, so the
+    // header is ignored and the whole file is served (200), not a 416.
+    if (last < start) return null;
+    end = Math.min(last, total - 1);
   }
   if (!Number.isSafeInteger(start) || start >= total || start > end) return "unsatisfiable";
   return { start, end };
@@ -81,6 +91,8 @@ router.get("/album/:albumId/cover", requireMediaAuth, async (req, res) => {
 /**
  * GET /api/stream/:trackId
  *   ?format=mp3|opus|aac & bitrate=128   -> transcode on the fly
+ *     & start=<seconds>                  -> ...starting that far in (how a
+ *                                           transcode is "seeked")
  *   (no params)                          -> direct file with HTTP Range support
  */
 router.get("/:trackId", requireMediaAuth, async (req, res) => {
@@ -111,7 +123,8 @@ router.get("/:trackId", requireMediaAuth, async (req, res) => {
     const bitrate = Math.min(Math.max(qnum(req.query.bitrate) || 128, 32), 320);
     res.setHeader("Content-Type", CONTENT_TYPE[fmt]);
     res.setHeader("Accept-Ranges", "none");
-    const ff = transcodeStream(track.path, { format: fmt, bitrate });
+    const startSec = parseStartSec(req.query.start);
+    const ff = transcodeStream(track.path, { format: fmt, bitrate, startSec });
     acquireTranscode(userId);
     let released = false;
     const release = () => {

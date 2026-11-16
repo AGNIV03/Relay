@@ -39,6 +39,9 @@ export interface Chorus {
 
 const choruses = new Map<string, Chorus>(); // hostId -> chorus
 const memberOf = new Map<string, string>(); // userId -> hostId they belong to
+// userId -> hostId they've asked to join (ask mode). At most one outstanding
+// request per user, and never alongside a membership.
+const pendingOf = new Map<string, string>();
 const waiters = new Map<string, Set<() => void>>(); // hostId -> long-poll wakeups
 
 /** A member not seen polling within this window is dropped from the chorus. */
@@ -93,6 +96,8 @@ function prune(c: Chorus): boolean {
   for (const uid of [...c.pending]) {
     if (now - (c.seen.get(uid) ?? now) > SEEN_WINDOW_MS) {
       c.pending.delete(uid);
+      c.seen.delete(uid);
+      if (pendingOf.get(uid) === c.hostId) pendingOf.delete(uid);
       bump(c);
     }
   }
@@ -103,19 +108,23 @@ function prune(c: Chorus): boolean {
   return true;
 }
 
+/** The chorus a user is in, or has an outstanding request to join (polling it
+ *  keeps the request alive, so a slow host approval doesn't silently expire). */
 export function getChorusForUser(userId: string): Chorus | undefined {
-  const hostId = memberOf.get(userId);
+  const hostId = memberOf.get(userId) ?? pendingOf.get(userId);
   if (!hostId) return undefined;
   const c = choruses.get(hostId);
   if (!c) {
-    memberOf.delete(userId);
+    if (memberOf.get(userId) === hostId) memberOf.delete(userId);
+    if (pendingOf.get(userId) === hostId) pendingOf.delete(userId);
     return undefined;
   }
   touch(c, userId);
   if (!prune(c)) return undefined;
-  // The user may have been pruned/removed while away.
+  // The user may have been pruned/removed/denied while away.
   if (!c.members.has(userId) && !c.pending.has(userId)) {
     if (memberOf.get(userId) === hostId) memberOf.delete(userId);
+    if (pendingOf.get(userId) === hostId) pendingOf.delete(userId);
     return undefined;
   }
   return c;
@@ -176,7 +185,7 @@ export function endChorus(hostId: string): void {
     if (memberOf.get(uid) === hostId) memberOf.delete(uid);
   }
   for (const uid of c.pending) {
-    if (memberOf.get(uid) === hostId) memberOf.delete(uid);
+    if (pendingOf.get(uid) === hostId) pendingOf.delete(uid);
   }
   choruses.delete(hostId);
   wake(hostId); // members' long-polls learn the chorus is gone
@@ -198,17 +207,20 @@ export function joinChorus(
   const c = choruses.get(hostId);
   if (!c) return "notfound";
   if (c.members.has(userId)) return "joined";
-  // Leave any other chorus first.
-  if (memberOf.get(userId) && memberOf.get(userId) !== hostId) leaveChorus(userId);
+  // Leave any other chorus, and withdraw a request to any other host, first.
+  if (memberOf.has(userId) && memberOf.get(userId) !== hostId) leaveChorus(userId);
+  if (pendingOf.has(userId) && pendingOf.get(userId) !== hostId) leaveChorus(userId);
   touch(c, userId);
   if (c.mode === "open") {
     c.members.add(userId);
     c.pending.delete(userId);
+    pendingOf.delete(userId);
     memberOf.set(userId, hostId);
     bump(c);
     return "joined";
   }
   c.pending.add(userId);
+  pendingOf.set(userId, hostId);
   bump(c);
   return "requested";
 }
@@ -217,6 +229,10 @@ export function approve(hostId: string, userId: string): boolean {
   const c = choruses.get(hostId);
   if (!c || !c.pending.has(userId)) return false;
   c.pending.delete(userId);
+  if (pendingOf.get(userId) === hostId) pendingOf.delete(userId);
+  // Defensive: a user is only ever in one chorus.
+  const other = memberOf.get(userId);
+  if (other && other !== hostId) leaveChorus(userId);
   c.members.add(userId);
   c.seen.set(userId, Date.now());
   memberOf.set(userId, hostId);
@@ -226,7 +242,11 @@ export function approve(hostId: string, userId: string): boolean {
 
 export function deny(hostId: string, userId: string): void {
   const c = choruses.get(hostId);
-  if (c && c.pending.delete(userId)) bump(c);
+  if (c && c.pending.delete(userId)) {
+    c.seen.delete(userId);
+    if (pendingOf.get(userId) === hostId) pendingOf.delete(userId);
+    bump(c);
+  }
 }
 
 /** Remove a member (host action) or self-leave. Host leaving ends the chorus. */
@@ -241,11 +261,18 @@ export function removeMember(hostId: string, userId: string): void {
   c.pending.delete(userId);
   c.seen.delete(userId);
   if (memberOf.get(userId) === hostId) memberOf.delete(userId);
+  if (pendingOf.get(userId) === hostId) pendingOf.delete(userId);
   bump(c);
 }
 
 /** A user leaves whatever chorus they're in (ends it if they're the host). */
 export function leaveChorus(userId: string): void {
+  // Withdraw an outstanding request, if any.
+  const askedHost = pendingOf.get(userId);
+  if (askedHost) {
+    pendingOf.delete(userId);
+    removeMember(askedHost, userId);
+  }
   const hostId = memberOf.get(userId);
   if (!hostId) return;
   if (hostId === userId) {

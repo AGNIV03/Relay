@@ -14,11 +14,58 @@ export type CastState = "unavailable" | "no-devices" | "available" | "connecting
 export interface CastItem {
   trackId: string;
   url: string;
+  /** MIME type of what `url` serves. */
+  contentType: string;
+  /** A server transcode: no byte ranges, so seeking reloads it from `start=`. */
+  transcoded: boolean;
   title: string;
   artist: string;
   album: string;
   cover: string;
   duration: number;
+}
+
+/** The MIME type to cast a library file as when the Default Media Receiver can
+ *  decode it natively, else null (send a 320k MP3 transcode instead). Formats
+ *  it plays go as the original file, which stays range-seekable. Mirrors
+ *  app/lib/cast/cast_format.dart. */
+export function nativeCastType(format?: string | null, bitrate?: number | null): string | null {
+  const f = (format ?? "").toLowerCase();
+  const kbps = bitrate ?? 0;
+  switch (f) {
+    case "mp3":
+      return "audio/mpeg";
+    case "aac":
+      return "audio/aac";
+    case "m4a":
+    case "mp4":
+      return kbps > 0 && kbps <= 512 ? "audio/mp4" : null; // AAC; ALAC runs far higher
+    case "ogg":
+    case "oga":
+    case "opus":
+      return "audio/ogg";
+    case "webm":
+      return "audio/webm";
+    case "flac":
+      return kbps > 0 && kbps <= 3300 ? "audio/flac" : null; // up to ~96 kHz / 24-bit
+    case "wav":
+      return kbps > 0 && kbps <= 4608 ? "audio/wav" : null;
+    default:
+      return null;
+  }
+}
+
+/** `url` starting `sec` seconds in (server `start=`); 0 drops the parameter. */
+export function withStart(url: string, sec: number): string {
+  const base = url.replace(/&start=[^&]*/g, "");
+  return sec > 0 ? `${base}&start=${sec.toFixed(3)}` : base;
+}
+
+/** Seconds a cast stream URL starts into its track (from `start=`), else 0. */
+export function startOf(url: string | undefined | null): number {
+  const m = /[?&]start=([0-9.]+)/.exec(url ?? "");
+  const n = m ? Number(m[1]) : 0;
+  return Number.isFinite(n) ? n : 0;
 }
 
 /** What the receiver is doing right now. */
@@ -43,6 +90,10 @@ const w = (): any => (typeof window === "undefined" ? undefined : (window as any
 let loadPromise: Promise<boolean> | null = null;
 let player: any = null;
 let controller: any = null;
+// Loudness normalization while casting: the receiver's STREAM volume (not the
+// TV's) is set per track. The player supplies the per-track gain.
+let gainFor: ((trackId: string) => number) | null = null;
+let gainKey = "";
 const listeners = new Set<Listener>();
 let snap: CastSnapshot = {
   state: "unavailable",
@@ -114,10 +165,15 @@ function session(): any {
 function readPlayer() {
   if (!player) return;
   const ms = session()?.getMediaSession?.();
+  // A transcode reloaded from a seek point plays from `start=`: add it back.
+  const off = startOf(player.mediaInfo?.contentUrl || player.mediaInfo?.contentId);
+  const dur = Number(player.duration) || Number(player.mediaInfo?.duration) || 0;
+  const trackId = trackIdOf(player.mediaInfo);
+  applyGain(ms, trackId);
   emit({
-    trackId: trackIdOf(player.mediaInfo),
-    position: Number(player.currentTime) || 0,
-    duration: Number(player.duration) || Number(player.mediaInfo?.duration) || 0,
+    trackId,
+    position: (Number(player.currentTime) || 0) + off,
+    duration: dur > 0 ? dur + off : 0,
     paused: !!player.isPaused,
     playerState: String(player.playerState ?? "IDLE"),
     volume: typeof player.volumeLevel === "number" ? player.volumeLevel : snap.volume,
@@ -200,19 +256,45 @@ export function endCastSession() {
   session()?.endSession(true);
 }
 
+function applyGain(ms: any, trackId: string | null) {
+  if (!ms || !trackId || !gainFor || typeof ms.setVolume !== "function") return;
+  const g = Math.min(1, Math.max(0, gainFor(trackId)));
+  const key = `${ms.mediaSessionId}:${trackId}@${g.toFixed(3)}`;
+  if (key === gainKey) return;
+  gainKey = key;
+  const c = w().chrome.cast;
+  ms.setVolume(new c.media.VolumeRequest(new c.Volume(g, false)), () => {}, () => {
+    gainKey = ""; // retry on the next status
+  });
+}
+
+/** Per-track normalization gain used while casting (1 = none). */
+export function setCastGain(fn: ((trackId: string) => number) | null) {
+  gainFor = fn;
+  gainKey = "";
+  readPlayer();
+}
+
+/** Re-send the gain now (the normalize setting changed). */
+export function castReapplyGain() {
+  gainKey = "";
+  readPlayer();
+}
+
 function mediaInfoFor(it: CastItem): any {
   const cm = w().chrome.cast.media;
-  const info = new cm.MediaInfo(it.url, "audio/mpeg");
+  const info = new cm.MediaInfo(it.url, it.contentType || "audio/mpeg");
   info.contentUrl = it.url;
   info.streamType = cm.StreamType.BUFFERED;
-  if (it.duration > 0) info.duration = it.duration;
+  const off = startOf(it.url);
+  if (it.duration > 0) info.duration = Math.max(1, it.duration - off);
   const md = new cm.MusicTrackMediaMetadata();
   md.title = it.title;
   md.artist = it.artist;
   md.albumName = it.album;
   md.images = [new (w().chrome.cast.Image)(it.cover)];
   info.metadata = md;
-  info.customData = { trackId: it.trackId };
+  info.customData = { trackId: it.trackId, transcoded: it.transcoded };
   return info;
 }
 
@@ -231,6 +313,13 @@ export async function castLoadQueue(items: CastItem[], startTime: number, autopl
   if (!s || !items.length) return;
   const cm = w().chrome.cast.media;
   emit({ finished: false });
+  gainKey = "";
+  // The receiver can't seek a transcode: have the server start it there.
+  items = items.map((it, k) => (k === 0 ? { ...it, url: withStart(it.url, 0) } : it));
+  if (items[0].transcoded && startTime > 0.5) {
+    items[0] = { ...items[0], url: withStart(items[0].url, startTime) };
+    startTime = 0;
+  }
   if (cm.QueueData) {
     const req = new cm.LoadRequest(mediaInfoFor(items[0]));
     req.autoplay = autoplay;
@@ -315,11 +404,15 @@ export function castPause() {
   if (player && controller && !player.isPaused) controller.playOrPause();
 }
 
-export function castSeek(sec: number) {
-  if (!player || !controller) return;
+/** Seek the receiver. Returns false when the current item is a transcode
+ *  (no byte ranges): the caller reloads it from `sec` instead. */
+export function castSeek(sec: number): boolean {
+  if (!player || !controller) return true;
+  if (player.mediaInfo?.customData?.transcoded) return false;
   player.currentTime = Math.max(0, sec);
   controller.seek();
   emit({ position: Math.max(0, sec) }); // optimistic, the receiver confirms
+  return true;
 }
 
 export function castSetVolume(v: number) {

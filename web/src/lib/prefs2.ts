@@ -1,5 +1,5 @@
-// Client-side preferences in localStorage, shared with the player (W1 reads the
-// same keys). Mirrors app/lib/settings.dart.
+// Client-side preferences in localStorage: the single reader/writer for the
+// settings page and the player (PlayerContext). Mirrors app/lib/settings.dart.
 
 export const SETTINGS_EVENT = "relay-settings";
 
@@ -32,11 +32,19 @@ function write(key: string, value: string) {
   }
 }
 
+/** Unset means the default; "false" / "0" mean off (anything else is on). */
+function readBool(key: string, def: boolean): boolean {
+  const v = read(key);
+  if (v == null) return def;
+  return !(v === "false" || v === "0");
+}
+
+/** The one reader for playback settings (the settings page and the player). */
 export function loadPlaybackSettings(): PlaybackSettings {
-  const fade = Number(read(KEYS.fadeSeconds));
+  const fade = Number(read(KEYS.fadeSeconds) ?? 0);
   return {
-    autoplay: read(KEYS.autoplay) !== "false", // default on
-    normalize: read(KEYS.normalize) !== "false", // default on
+    autoplay: readBool(KEYS.autoplay, true), // default on
+    normalize: readBool(KEYS.normalize, true), // default on
     fadeSeconds: Number.isFinite(fade) ? Math.max(0, Math.min(12, Math.round(fade))) : 0,
   };
 }
@@ -47,6 +55,7 @@ export function savePlaybackSetting<K extends keyof PlaybackSettings>(
   key: K,
   value: PlaybackSettings[K],
 ) {
+  if (typeof window === "undefined") return;
   write(KEYS[key], String(value));
   window.dispatchEvent(
     new CustomEvent(SETTINGS_EVENT, { detail: { key: KEYS[key], value: String(value) } }),

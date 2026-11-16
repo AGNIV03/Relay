@@ -1,7 +1,7 @@
 import "./helpers/env.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseRange } from "../src/routes/stream.js";
+import { parseRange, parseStartSec } from "../src/routes/stream.js";
 
 const T = 1000;
 
@@ -40,10 +40,11 @@ describe("parseRange", () => {
     assert.equal(parseRange("bytes=99999999999999999999-", T), "unsatisfiable");
   });
 
-  it("treats a reversed range (start > end) as unsatisfiable", () => {
-    // Note: RFC 9110 calls this syntactically invalid (ignore → 200 full body);
-    // the server answers 416, which players handle the same way.
-    assert.equal(parseRange("bytes=500-100", T), "unsatisfiable");
+  it("ignores a reversed range (start > end) → whole file, per RFC 9110", () => {
+    assert.equal(parseRange("bytes=500-100", T), null);
+    assert.equal(parseRange("bytes=1-0", T), null);
+    // Still 416 when the (valid) range starts at/after EOF.
+    assert.equal(parseRange("bytes=5000-6000", T), "unsatisfiable");
   });
 
   it("ignores forms it doesn't support (multi-range, other units, garbage) → whole file", () => {
@@ -52,5 +53,17 @@ describe("parseRange", () => {
     assert.equal(parseRange("bytes=-", T), null);
     assert.equal(parseRange("bytes=abc", T), null);
     assert.equal(parseRange("bytes=1.5-2", T), null);
+  });
+});
+
+describe("parseStartSec (transcode ?start=)", () => {
+  it("accepts seconds, clamps to 0..24h and treats junk as 0", () => {
+    assert.equal(parseStartSec("12.5"), 12.5);
+    assert.equal(parseStartSec("0"), 0);
+    assert.equal(parseStartSec("-4"), 0);
+    assert.equal(parseStartSec("999999"), 86_400);
+    assert.equal(parseStartSec("abc"), 0);
+    assert.equal(parseStartSec(undefined), 0);
+    assert.equal(parseStartSec(["1", "2"]), 0);
   });
 });

@@ -95,7 +95,7 @@ class SettingsScreen extends StatelessWidget {
                       onChanged: (v) => s.setFadeSeconds(v.round()),
                     ),
                     const Text(
-                      'On Android songs fade out and back in rather than overlapping.',
+                      'Songs overlap: the next one fades in as the current one fades out.',
                       style: TextStyle(fontSize: 12, color: kMuted),
                     ),
                   ]),
