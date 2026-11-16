@@ -49,7 +49,7 @@ Android release signing uses `app/android/key.properties` + keystore (both git-i
 ```bash
 docker compose up -d --build           # postgres + server + web in containers
 ```
-`pwsh scripts/publish-public.ps1` rebuilds the apps and syncs the `public` branch (the end-user bundle: deploy files + prebuilt downloads, no `app/` source or secrets). `-SkipBuild` reuses existing app builds.
+Built apps are never committed. Android ships through Google Play (signed AAB); the Windows build is attached to a GitHub Release (tag `vX.Y.Z`, zip of `app/build/windows/x64/runner/Release` plus `THIRD_PARTY_NOTICES.md`).
 
 ## Architecture
 

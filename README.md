@@ -4,8 +4,31 @@ Your own music server: host audio files on a box you control, manage everything
 from a web instance, and stream to a browser, a Windows desktop app, and Android —
 with collaborative listening, friend activity, lyrics, and offline downloads.
 
+![Relay on Windows: home](docs/screenshots/desktop-home.png)
+
+<p align="center">
+  <img src="docs/screenshots/android-home.jpg" width="24%" alt="Android: home" />
+  <img src="docs/screenshots/android-songs.jpg" width="24%" alt="Android: songs" />
+  <img src="docs/screenshots/android-playlist.jpg" width="24%" alt="Android: playlist" />
+  <img src="docs/screenshots/android-nowplaying.jpg" width="24%" alt="Android: synced lyrics with translation" />
+</p>
+
+## Get the apps
+
+| Platform | Where |
+|---|---|
+| **Android** | [Google Play](https://play.google.com/store/apps/details?id=site.agniv.relay) |
+| **Windows** | The `Relay-Windows-<version>.zip` attached to the latest [GitHub Release](../../releases/latest). Extract it anywhere and run `Relay.exe`. |
+| **Browser** | Your own server's web address (the web app is part of the server stack). |
+
+On first launch, enter your server's URL and sign in. New users join with an invite
+code from the server admin ("Have an invite code? Create an account").
+Relay needs a server: see [Quick start](#quick-start-docker--recommended) to run your own.
+
+## Repository layout
+
 ```
-A:\stream
+relay/
 ├── server/      Express + TypeScript + Prisma API (auth, library scan, streaming, transcoding, social, chorus)
 ├── web/         Next.js web app — admin + browser player (also the /api reverse proxy)
 ├── app/         Flutter app — Windows / Android, one codebase
@@ -40,10 +63,24 @@ A:\stream
   edit the queue, play/pause, and seek. Auto-starts when you play; open or ask-to-join.
 - User profiles, likes / Liked Songs, playlists with collaborators.
 
+**Listening**
+- **Autoplay** keeps the music going with similar songs when the queue runs out.
+- **Volume normalization** (EBU R128, measured at ingest; attenuation only) and **crossfade**
+  (0 to 12 s, a true overlap on every client).
+- **Chromecast** from the Android, Windows and web apps (Default Media Receiver; no extra setup).
+- **Scrobbling** to Last.fm and ListenBrainz, per user.
+- **Playlist import** from M3U files, pasted lists or Spotify links; drag-to-reorder and
+  multi-select in playlists.
+- **Rewind**: a yearly listening recap with a shareable card.
+
 **Apps**
 - Windows + Android from one Flutter codebase; background playback, lock-screen / media-key
-  controls, Android Auto browsing.
+  controls (Windows SMTC included), Android Auto browsing and voice search, a desktop mini player.
 - **Offline mode** — downloaded songs/playlists play with no connection, even logged out.
+  Wi-Fi-only downloads and storage management on Android.
+
+**Admin**
+- Web admin dashboard: users, roles, invite codes (uses + expiry), storage, rejected uploads.
 
 **Real-time sync** uses long-polling (the server holds the request and returns the instant
 state changes) so pauses/seeks/song-changes propagate in well under a second, with exponential
@@ -56,6 +93,9 @@ position to "now" on arrival (covering download latency and track load time).
 services about the *music* (never about users): LRCLIB and Musixmatch for lyrics (artist, title,
 album, length), Google Translate for lyric translations (the lyric text), and, only if
 `ACOUSTID_API_KEY` is set, AcoustID/MusicBrainz for auto-tagging (an audio fingerprint + length).
+Scrobbling (Last.fm / ListenBrainz) and Spotify playlist import only run for users who turn them on.
+The Musixmatch and Google Translate endpoints are unofficial and can stop working at any time;
+lyrics then fall back to LRCLIB, and translations are skipped.
 
 ## Quick start (Docker — recommended)
 
@@ -200,9 +240,15 @@ The Flutter app builds for Windows and Android from `app/`:
 
 ```bash
 cd app
-flutter build apk --release          # Android
+flutter build appbundle --release    # Android (signed AAB for Google Play)
+flutter build apk --release          # Android APK for sideloading / testing
 flutter build windows --release      # Windows (needs the VS C++ toolchain)
 ```
+
+Built apps are never committed. Android releases go through Google Play; Windows builds are
+attached to [GitHub Releases](../../releases) (zip `app/build/windows/x64/runner/Release` and
+include [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). Note that Google Play re-signs the app,
+so an APK you build yourself can't update a Play install (uninstall first).
 
 **Android signing** — release builds are signed from `app/android/key.properties` (git-ignored),
 which points at a keystore (also git-ignored). If those are absent the build falls back to debug
@@ -321,3 +367,20 @@ release APKs.
 - [x] **Server** — auth, scan, stream (Range), transcode, playlists, likes, social, chorus, admin. Hardened + verified end-to-end.
 - [x] **Web** — login, admin, browser player, friends, listen-along, chorus, lyrics. Security headers + CSP.
 - [x] **Flutter app** — Windows + Android: browse/search/player, background playback, Android Auto, friends, listen-along, chorus, offline downloads. Release-signed APK.
+
+## License
+
+Relay is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only).
+You can use, modify and self-host it freely. If you distribute a modified version, or run one
+as a service for other people, you must publish your changes under the same license.
+The forks in `app/third_party/` keep their own licenses (MIT / Unlicense); see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Security
+
+Please report vulnerabilities privately; see [SECURITY.md](SECURITY.md).
+
+## Third-party software
+
+Relay builds on open-source components and talks to a few outside services; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
